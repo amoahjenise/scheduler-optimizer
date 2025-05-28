@@ -10,6 +10,12 @@
 !.yarn/releases
 !.yarn/versions
 
+/frontend/node_modules/
+/frontend/.next/
+/frontend/.vercel/
+/frontend/.env*
+/frontend/.DS_Store
+
 # testing
 /coverage
 
