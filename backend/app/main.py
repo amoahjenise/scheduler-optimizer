@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes import user, schedule, optimized_schedule
+from app.api.routes import user, schedule, optimized_schedule, webhook
 from app.core.config import settings
 
 app = FastAPI()
@@ -22,3 +22,4 @@ def root():
 app.include_router(user.router, prefix="/users", tags=["Users"])
 app.include_router(schedule.router, prefix="/schedules", tags=["Schedules"])
 app.include_router(optimized_schedule.router, prefix="/optimized", tags=["Optimized Schedules"])
+app.include_router(webhook.router)  
