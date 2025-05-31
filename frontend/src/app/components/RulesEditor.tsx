@@ -14,9 +14,15 @@ export default function RulesEditor({
       <textarea
         value={rules}
         onChange={(e) => setRules(e.target.value)}
-        placeholder="Max 3 night shifts per week, avoid back-to-back shifts..."
-        rows={4}
-        className="w-full rounded-md border border-blue-200 bg-white p-3 text-sm"
+        placeholder={`Write rules as key=value pairs, one per line.
+Example:
+max_consecutive_days=3
+day_required_nurses=5
+night_required_nurses=4
+chemo_certtified_required_per_shift=2
+full_time_hours=75`}
+        rows={6}
+        className="w-full rounded-md border border-blue-200 bg-white p-3 text-sm font-mono whitespace-pre-wrap"
       />
     </SectionCard>
   )
