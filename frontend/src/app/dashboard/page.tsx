@@ -1,4 +1,3 @@
-// app/dashboard/page.tsx
 'use client'
 
 import { useState, useEffect } from 'react'
@@ -11,8 +10,14 @@ import NotesEditor from '../components/NotesEditor'
 import SchedulePreview from '../components/SchedulePreview'
 import SectionCard from '../components/SectionCard'
 import { validateComments } from './utils'
+import { parseImageWithFastAPI } from '@/app/lib/ocrFastAPI'
 
 export default function Dashboard() {
+  const today = new Date().toISOString().split('T')[0]
+  const twoWeeksLater = new Date(Date.now() + 13 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+
+  const [startDate, setStartDate] = useState(today)
+  const [endDate, setEndDate] = useState(twoWeeksLater)
   const [screenshots, setScreenshots] = useState<File[]>([])
   const [notes, setNotes] = useState('')
   const [rules, setRules] = useState('')
@@ -20,22 +25,69 @@ export default function Dashboard() {
   const [marker, setMarker] = useState('✱')
   const [validationErrors, setValidationErrors] = useState<string[]>([])
 
-  // Mock OCR Data
-  const [ocrDates, setOcrDates] = useState([
-    '2025-06-01',
-    '2025-06-02',
-    '2025-06-03',
-    '2025-06-04',
-    '2025-06-05',
-  ])
+  const [ocrDates, setOcrDates] = useState<string[]>([])
+  const [ocrGrid, setOcrGrid] = useState<{ nurse: string; shifts: string[] }[]>([])
+  const [ocrLoading, setOcrLoading] = useState(false)
+  const [ocrError, setOcrError] = useState<string | null>(null)
 
-  const [ocrGrid, setOcrGrid] = useState([
-    { nurse: 'Jane Doe', shifts: ['Day ✱', '', 'Night', '', ''] },
-    { nurse: 'Mark Lee', shifts: ['', 'Night', '', 'Day', 'Off'] },
-    { nurse: 'Ella Smith', shifts: ['', '', 'Day', '', 'Night'] },
-  ])
+  useEffect(() => {
+    if (
+      screenshots.length === 0 ||
+      !startDate ||
+      !endDate ||
+      new Date(startDate) > new Date(endDate)
+    ) return
 
-  // Update autoComments based on ocrGrid and marker
+    async function runOCR() {
+      setOcrLoading(true)
+      setOcrError(null)
+
+      try {
+        const allDates = new Set<string>()
+        const combinedGrid: { [nurse: string]: { [date: string]: string } } = {}
+
+        for (const file of screenshots) {
+          const result: {
+            dates: string[]
+            grid: { nurse: string; shifts: string[] }[]
+          } = await parseImageWithFastAPI(file, startDate, endDate)
+
+          result.dates.forEach((date: string) => allDates.add(date))
+
+          result.grid.forEach((entry: { nurse: string; shifts: string[] }) => {
+            const { nurse, shifts } = entry
+            if (!combinedGrid[nurse]) combinedGrid[nurse] = {}
+
+            result.dates.forEach((date: string, i: number) => {
+              const shift = shifts[i]
+              if (shift) {
+                combinedGrid[nurse][date] = shift
+              }
+            })
+          })
+        }
+
+        const sortedDates = Array.from(allDates).sort()
+        const finalGrid = Object.entries(combinedGrid).map(
+          ([nurse, shiftMap]: [string, { [date: string]: string }]) => ({
+            nurse,
+            shifts: sortedDates.map(date => shiftMap[date] || ''),
+          })
+        )
+
+        setOcrDates(sortedDates)
+        setOcrGrid(finalGrid)
+      } catch (err: any) {
+        console.error('OCR error', err)
+        setOcrError(err.message || 'Failed to extract schedule')
+      } finally {
+        setOcrLoading(false)
+      }
+    }
+
+    runOCR()
+  }, [screenshots, startDate, endDate])
+
   useEffect(() => {
     const lines: string[] = []
 
@@ -50,7 +102,6 @@ export default function Dashboard() {
     setAutoComments(lines.join('\n'))
   }, [ocrGrid, ocrDates, marker])
 
-  // Validate autoComments on change
   useEffect(() => {
     setValidationErrors(validateComments(autoComments))
   }, [autoComments])
@@ -60,7 +111,6 @@ export default function Dashboard() {
   }
 
   function handleExport() {
-    // Export autoComments as JSON
     const comments = autoComments
       .split('\n')
       .filter(Boolean)
@@ -81,19 +131,41 @@ export default function Dashboard() {
   return (
     <main className="min-h-screen bg-gradient-to-br from-sky-50 to-blue-100 text-gray-900 px-6 py-10">
       <div className="max-w-6xl mx-auto flex flex-col gap-10">
-        <h1
-          className="text-5xl font-extrabold text-blue-900 tracking-tight"
-          style={{ fontFamily: 'var(--font-geist-sans)' }}
-        >
+        <h1 className="text-5xl font-extrabold text-blue-900 tracking-tight" style={{ fontFamily: 'var(--font-geist-sans)' }}>
           Chronofy Dashboard
         </h1>
 
         <UploadInput screenshots={screenshots} setScreenshots={setScreenshots} />
 
-        <SectionCard
-          title="Employee Comment Marker"
-          icon={<Eye className="text-sky-600" />}
-        >
+        <SectionCard title="Period Dates" icon={<CalendarHeart className="text-sky-600" />}>
+          <div className="flex flex-col gap-2">
+            <div className="flex gap-4 flex-wrap">
+              <label className="flex flex-col text-sm">
+                Start Date
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="border border-blue-300 rounded-md px-3 py-1"
+                />
+              </label>
+              <label className="flex flex-col text-sm">
+                End Date
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="border border-blue-300 rounded-md px-3 py-1"
+                />
+              </label>
+            </div>
+            <div className="text-sm text-gray-700">
+              Period Selected: <strong>{startDate}</strong> → <strong>{endDate}</strong>
+            </div>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Employee Comment Marker" icon={<Eye className="text-sky-600" />}>
           <input
             type="text"
             maxLength={2}
@@ -103,6 +175,9 @@ export default function Dashboard() {
             aria-label="Custom marker for comments"
           />
         </SectionCard>
+
+        {ocrLoading && <p className="text-blue-600">Processing screenshots with OCR...</p>}
+        {ocrError && <p className="text-red-600">OCR Error: {ocrError}</p>}
 
         <EditableOCRGrid
           ocrDates={ocrDates}

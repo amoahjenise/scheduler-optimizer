@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     CLERK_WEBHOOK_SIGNING_SECRET: str
     CLERK_PUBLIC_KEY: str
     FASTAPI_BACKEND_URL: str
+    AWS_ACCESS_KEY_ID: str
+    AWS_SECRET_ACCESS_KEY: str
+    AWS_DEFAULT_REGION: str = 'us-east-1'
     class Config:
         env_file = ".env"
         extra = "forbid"  # Optional: ensures no extra variables are silently accepted
