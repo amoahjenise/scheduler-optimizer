@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { CalendarHeart, Stethoscope, Eye } from 'lucide-react'
+import { CalendarHeart, Stethoscope, Eye, UploadCloud, CheckCircle2, Download } from 'lucide-react'
 import UploadInput from '../components/UploadInput'
 import EditableOCRGrid from '../components/EditableOCRGrid'
 import AutoCommentsBox from '../components/AutoCommentsBox'
@@ -15,6 +15,7 @@ import { parseImageWithFastAPI, createScheduleAPI, optimizeScheduleAPI } from '@
 import {
   useUser
 } from '@clerk/nextjs'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 
 export default function Dashboard() {
   const today = new Date().toISOString().split('T')[0]
@@ -39,6 +40,8 @@ export default function Dashboard() {
   const [myScheduleId, setMyScheduleId] = useState<string | null>(null)
 
   const [optimizing, setOptimizing] = useState(false)
+
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
   const { user } = useUser();
   const userId = user?.id || '';
@@ -225,56 +228,122 @@ export default function Dashboard() {
           Chronofy Dashboard
         </h1>
 
-        <SystemPrompt/>
-  
+        {/* Advanced Settings toggle */}
+        <section className="border border-gray-300 rounded-md bg-white shadow-sm">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="flex items-center justify-between w-full px-4 py-3 font-semibold text-sky-700 hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400 rounded-t-md"
+                  aria-expanded={showAdvanced}
+                  aria-controls="advanced-settings-panel"
+                >
+                  <span>Advanced Settings</span>
+                  {showAdvanced ? (
+                    <ChevronDown className="w-5 h-5 text-sky-700" aria-hidden="true" />
+                  ) : (
+                    <ChevronRight className="w-5 h-5 text-sky-700" aria-hidden="true" />
+                  )}
+                </button>
+
+                {showAdvanced && (
+                  <div id="advanced-settings-panel" className="p-4 border-t border-gray-200">
+                    <SystemPrompt />
+                  </div>
+                )}
+              </section>  
         {/* Combined horizontal row for Period Dates, Marker */}
-        <div className="flex flex-wrap items-stretch gap-4">     
+                {/* Dates & Marker */}
+        <section
+          aria-label="Schedule period and comment marker selection"
+          className="grid grid-cols-1 md:grid-cols-3 gap-6"
+        >
           {/* Period Dates */}
           <SectionCard
             title="Period Dates"
-            icon={<CalendarHeart className="text-sky-600" />}
-            className="flex-1 min-w-[250px]"
+            icon={<CalendarHeart className="text-sky-600" size={24} aria-hidden="true" />}
+            className="min-w-0"
           >
-            <div className="flex gap-4 flex-wrap items-center">
-              <label className="flex flex-col text-sm">
-                Start Date
+            <form
+              className="flex flex-wrap gap-4 items-center"
+              onSubmit={(e) => e.preventDefault()}
+              aria-describedby="period-dates-desc"
+            >
+              <div className="flex flex-col">
+                <label htmlFor="startDate" className="text-sm font-semibold text-sky-700 mb-1">
+                  Start Date
+                </label>
                 <input
+                  id="startDate"
                   type="date"
                   value={startDate}
                   onChange={(e) => setStartDate(e.target.value)}
-                  className="border border-blue-300 rounded-md px-3 py-1"
+                  className="border border-blue-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sky-400"
+                  aria-required="true"
+                  min={today}          
+                  max={endDate}
                 />
-              </label>
-              <label className="flex flex-col text-sm">
-                End Date
+              </div>
+              <div className="flex flex-col">
+                <label htmlFor="endDate" className="text-sm font-semibold text-sky-700 mb-1">
+                  End Date
+                </label>
                 <input
+                  id="endDate"
                   type="date"
                   value={endDate}
                   onChange={(e) => setEndDate(e.target.value)}
-                  className="border border-blue-300 rounded-md px-3 py-1"
-                />
-              </label>
-            </div>
+                  className="border border-blue-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sky-400"
+                  aria-required="true"
+                  min={startDate > today ? startDate : today}  // ensure endDate not before startDate or today
+                  />
+              </div>
+            </form>
+            <p id="period-dates-desc" className="mt-1 text-xs text-gray-500 max-w-xs">
+              Select the schedule period. The end date must be on or after the start date.
+            </p>
           </SectionCard>
 
-          {/* Marker */}
+          {/* Comment Marker */}
           <SectionCard
             title="Comment Marker"
-            icon={<Eye className="text-sky-600" />}
-            className="flex-1 min-w-[250px]"
+            icon={<Eye className="text-sky-600" size={24} aria-hidden="true" />}
+            className="min-w-0"
           >
+            <label htmlFor="markerInput" className="sr-only">
+              Custom marker for comments
+            </label>
             <input
+              id="markerInput"
               type="text"
               maxLength={2}
               value={marker}
               onChange={(e) => setMarker(e.target.value || '✱')}
-              className="border border-blue-300 rounded-md px-3 py-3 w-full text-center"
-              aria-label="Custom marker for comments"
+              className="border border-blue-300 rounded-md px-3 py-3 w-full text-center text-lg font-semibold placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-sky-400"
+              aria-describedby="markerHelp"
+              placeholder="✱"
             />
+            <p id="markerHelp" className="mt-1 text-xs text-gray-500">
+              Set a symbol to mark comments in the schedule grid (max 2 characters).
+            </p>
           </SectionCard>
-        </div>
 
-        <UploadInput screenshots={screenshots} setScreenshots={setScreenshots} />
+          {/* Placeholder or future controls */}
+      
+          {/* Upload */}
+              <UploadInput screenshots={screenshots} setScreenshots={setScreenshots} />
+              {ocrLoading && (
+                <p role="status" className="mt-3 text-blue-600 flex items-center gap-2 font-medium">
+                  <UploadCloud className="animate-spin" />
+                  Processing screenshots with OCR...
+                </p>
+              )}
+              {ocrError && (
+                <p role="alert" className="mt-3 text-red-600 font-semibold">
+                  OCR Error: {ocrError}
+                </p>
+              )}
+            </section>          
+
 
         {ocrLoading && <p className="text-blue-600">Processing screenshots with OCR...</p>}
         {ocrError && <p className="text-red-600">OCR Error: {ocrError}</p>}
