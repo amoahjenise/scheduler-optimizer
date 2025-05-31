@@ -113,4 +113,49 @@ export async function optimizeScheduleAPI(reqBody: {
     }
   
     return await res.json();
-  }  
+}  
+
+// Fetch all system prompts (returns SystemPrompt[])
+export async function fetchSystemPromptsAPI() {
+  const res = await fetch(`${API_BASE}/system-prompt/`);
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.detail || 'Failed to fetch system prompts');
+  }
+  return res.json(); // returns array of { id, name, content }
+}
+
+// Save a new system prompt with name and content
+export async function saveSystemPromptAPI(name: string, content: string) {
+  const res = await fetch(`${API_BASE}/system-prompt/`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, content }),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.detail || 'Failed to save system prompt');
+  }
+  return res.json(); // returns the created SystemPrompt object
+}
+
+export async function getSystemPromptById(id: number) {
+  const res = await fetch(`${API_BASE}/system-prompt/${id}`);
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.detail || 'Failed to fetch system prompt');
+  }
+  return res.json();
+}
+
+export async function resetSystemPromptAPI() {
+  const response = await fetch(`${API_BASE}/system-prompt/reset/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!response.ok) {
+    throw new Error('Failed to reset system prompt');
+  }
+  const data = await response.json();
+  return data; // assuming response returns { content: string } with the default prompt
+}

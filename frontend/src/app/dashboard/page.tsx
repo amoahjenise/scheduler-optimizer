@@ -9,6 +9,7 @@ import RulesTextarea from '../components/RulesEditor'
 import NotesEditor from '../components/NotesEditor'
 import SchedulePreview from '../components/SchedulePreview'
 import SectionCard from '../components/SectionCard'
+import SystemPrompt from '../components/SystemPrompt'
 import { validateComments } from './utils'
 import { parseImageWithFastAPI, createScheduleAPI, optimizeScheduleAPI } from '@/app/lib/api'
 import {
@@ -56,7 +57,7 @@ export default function Dashboard() {
       alert('Failed to create schedule: ' + error.message)
     }
   }
-
+  
   useEffect(() => {
     if (screenshots.length === 0 || !startDate || !endDate || new Date(startDate) > new Date(endDate)) return
   
@@ -223,6 +224,8 @@ export default function Dashboard() {
         >
           Chronofy Dashboard
         </h1>
+
+        <SystemPrompt/>
   
         {/* Combined horizontal row for Period Dates, Marker */}
         <div className="flex flex-wrap items-stretch gap-4">     

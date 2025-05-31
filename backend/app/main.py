@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import user, schedule, optimized_schedule, system_prompts, webhook
 from app.core.config import settings
@@ -21,5 +21,5 @@ def root():
 app.include_router(user.router, prefix="/users", tags=["Users"])
 app.include_router(schedule.router, prefix="/schedules", tags=["Schedules"])
 app.include_router(optimized_schedule.router, prefix="/optimize", tags=["Optimized Schedules"])
-app.include_router(system_prompts.router, prefix="/system-prompts", tags=["system-prompts"])
+app.include_router(system_prompts.router, prefix="/system-prompt", tags=["system-prompts"])
 app.include_router(webhook.router)  
