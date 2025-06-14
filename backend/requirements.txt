@@ -27,3 +27,5 @@ svix
 httpx
 boto3
 openai
+ortools
+tenacity>=8.2.3

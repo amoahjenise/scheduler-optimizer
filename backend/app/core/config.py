@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str
     AWS_DEFAULT_REGION: str = 'us-east-1'
     OPENAI_API_KEY: str
+    DEFAULT_PROMPT_ID: int = 0
+    GLOBAL_PROMPT_ID: int = 1
     class Config:
         env_file = ".env"
         extra = "forbid"  # Optional: ensures no extra variables are silently accepted
