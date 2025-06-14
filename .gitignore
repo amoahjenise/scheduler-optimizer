@@ -15,6 +15,7 @@
 /frontend/.vercel/
 /frontend/.env*
 /frontend/.DS_Store
+/frontend/uploads/
 
 # testing
 /coverage
