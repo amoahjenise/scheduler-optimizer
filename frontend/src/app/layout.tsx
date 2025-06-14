@@ -32,18 +32,26 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <ClerkProvider appearance={{ baseTheme: dark }}
-    >
+    <ClerkProvider appearance={{ baseTheme: dark }}>
       <html lang="en">
         <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-          <header className="flex justify-end items-center p-4 gap-4 h-16">
-            <SignedOut>
-              <SignInButton mode="modal"><button>Sign in</button></SignInButton>
-              <SignUpButton mode="modal"><button>Sign up</button></SignUpButton>
-            </SignedOut>
-            <SignedIn>
-              <UserButton />
-            </SignedIn>
+          <header className="sticky top-0 z-50 flex justify-between items-center px-6 py-4 h-16 bg-gray-900 text-white shadow-md">
+            <div className="text-2xl font-extrabold tracking-wide text-sky-400">
+              Chronofy
+            </div>
+            <div className="flex gap-4 items-center">
+              <SignedOut>
+                <SignInButton mode="modal">
+                  <button className="text-sm px-3 py-1 bg-sky-700 hover:bg-sky-800 rounded-md">Sign in</button>
+                </SignInButton>
+                <SignUpButton mode="modal">
+                  <button className="text-sm px-3 py-1 bg-slate-700 hover:bg-slate-800 rounded-md">Sign up</button>
+                </SignUpButton>
+              </SignedOut>
+              <SignedIn>
+                <UserButton />
+              </SignedIn>
+            </div>
           </header>
           {children}
         </body>

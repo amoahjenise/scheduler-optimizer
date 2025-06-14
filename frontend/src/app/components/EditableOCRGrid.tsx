@@ -3,17 +3,33 @@
 import React from 'react'
 import SectionCard from './SectionCard'
 
+type ShiftEntry = {
+  date: string
+  shift: string
+  shiftType: 'day' | 'night'
+  hours: number
+  startTime: string
+  endTime: string
+}
+
 type GridRow = {
   id: string // unique id for stable keys
   nurse: string
-  shifts: string[]
+  shifts: ShiftEntry[]
 }
 
-function generateEmptyRow(ocrDatesLength: number): GridRow {
+function generateEmptyRow(ocrDatesLength: number, ocrDates: string[]): GridRow {
   return {
     id: crypto.randomUUID(),
     nurse: '',
-    shifts: Array(ocrDatesLength).fill(''),
+    shifts: ocrDates.map((date) => ({
+      date,
+      shift: '',
+      shiftType: 'day',
+      hours: 0,
+      startTime: '',
+      endTime: '',
+    })),
   }
 }
 
@@ -35,12 +51,10 @@ export default function EditableOCRGrid({
   })
 
   React.useEffect(() => {
-    // When dates change, adjust widths array length accordingly
     setColWidths((prev) => {
       const baseWidth = 120
       const shiftColWidth = 80
       const newWidths = [baseWidth, ...ocrDates.map(() => shiftColWidth), 60]
-      // Keep existing widths for unchanged cols to avoid jump
       return newWidths.map((w, i) => prev[i] || w)
     })
   }, [ocrDates])
@@ -78,11 +92,11 @@ export default function EditableOCRGrid({
   function handleShiftChange(rowIndex: number, colIndex: number, value: string) {
     setOcrGrid((prev) => {
       const updated = [...prev]
-      updated[rowIndex] = {
-        ...updated[rowIndex],
-        shifts: [...updated[rowIndex].shifts],
-      }
-      updated[rowIndex].shifts[colIndex] = value
+      const row = { ...updated[rowIndex] }
+      const shifts = [...row.shifts]
+      shifts[colIndex] = { ...shifts[colIndex], shift: value }
+      row.shifts = shifts
+      updated[rowIndex] = row
       return updated
     })
   }
@@ -99,7 +113,7 @@ export default function EditableOCRGrid({
   }
 
   function handleAddRow() {
-    setOcrGrid((prev) => [...prev, generateEmptyRow(ocrDates.length)])
+    setOcrGrid((prev) => [...prev, generateEmptyRow(ocrDates.length, ocrDates)])
   }
 
   function handleRemoveRow(rowIndex: number) {
@@ -109,14 +123,13 @@ export default function EditableOCRGrid({
   return (
     <SectionCard title="Editable Schedule Grid (OCR Review)" icon={<span>📝</span>}>
       <div className="overflow-x-auto">
-        <table className="table-auto border-collapse w-full text-sm text-left text-gray-700"
-               style={{ tableLayout: 'fixed' }}>
+        <table className="table-auto border-collapse w-full text-sm text-left text-gray-700" style={{ tableLayout: 'fixed' }}>
           <thead>
             <tr>
-            <th
-              className="border border-blue-200 bg-blue-100 p-2 relative whitespace-normal break-words"
-              style={{ width: colWidths[0], minWidth: 120, maxWidth: 300 }}
-            >
+              <th
+                className="border border-blue-200 bg-blue-100 p-2 relative whitespace-normal break-words"
+                style={{ width: colWidths[0], minWidth: 120, maxWidth: 300 }}
+              >
                 Nurse
                 <div
                   onMouseDown={(e) => handleMouseDown(e, 0)}
@@ -158,18 +171,18 @@ export default function EditableOCRGrid({
                     onChange={(e) => handleNurseChange(rowIndex, e.target.value)}
                     placeholder="Nurse name"
                     className="w-full bg-transparent focus:outline-none resize-y overflow-auto break-words"
-                    />
+                  />
                 </td>
                 {row.shifts.map((shift, colIndex) => (
                   <td
                     key={colIndex}
                     className={`border border-blue-200 bg-white p-1 text-center ${
-                      shift.includes(marker) ? 'bg-yellow-100' : ''
+                      shift.shift.includes(marker) ? 'bg-yellow-100' : ''
                     }`}
                     style={{ width: colWidths[colIndex + 1], minWidth: 40, maxWidth: 300 }}
                   >
                     <input
-                      value={shift}
+                      value={shift.shift}
                       onChange={(e) => handleShiftChange(rowIndex, colIndex, e.target.value)}
                       className="w-full text-center bg-transparent focus:outline-none resize-y overflow-auto"
                     />

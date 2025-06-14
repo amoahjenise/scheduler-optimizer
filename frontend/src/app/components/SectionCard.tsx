@@ -6,11 +6,13 @@ export default function SectionCard({
   children,
   icon,
   className = '',
+  actions
 }: {
   title: string
   children: React.ReactNode
   icon?: React.ReactNode
   className?: string
+  actions?: React.ReactNode
 }) {
   return (
     <section
@@ -19,6 +21,7 @@ export default function SectionCard({
       <div className="flex items-center gap-3">
         {icon && <div className="text-2xl">{icon}</div>}
         <h2 className="text-lg font-semibold text-blue-800">{title}</h2>
+        {actions && <div className="flex items-center gap-2">{actions}</div>}
       </div>
       {children}
     </section>

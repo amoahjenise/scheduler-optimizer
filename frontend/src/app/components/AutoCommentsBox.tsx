@@ -1,5 +1,6 @@
 import React from 'react'
 import SectionCard from './SectionCard'
+import { User2 } from 'lucide-react'
 
 export default function AutoCommentsBox({
   autoComments,
@@ -11,7 +12,7 @@ export default function AutoCommentsBox({
   validationErrors: string[]
 }) {
   return (
-    <SectionCard title="Detected Marker Comments (Employee Notes)">
+    <SectionCard title="Detected Marker Comments (Employee Notes)" icon={<User2 className="text-sky-600" size={24} aria-hidden="true" />}>
       <textarea
         value={autoComments}
         onChange={(e) => setAutoComments(e.target.value)}

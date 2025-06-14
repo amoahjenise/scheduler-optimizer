@@ -21,19 +21,31 @@ export default function SystemPrompt() {
     '{end_date}',
     '{nurses_list}',
     '{notes}',
-    '{rules_lines}',
+    // '{rules_lines}',
     '{comments_json}',
     '{assignments_json}',
   ]
 
-  const immutableSection = `Return ONLY a valid JSON object in the format:
-{{
-  "Nurse Name (ID, Experience, Hours)": ["shift_1", "shift_2", ..., "shift_N"]
-}}
+  const immutableSection = `
+  • The schedule optimization must fully cover the entire period;
+  
+  4. OUTPUT FORMAT:
+  {{
+    "Nurse Name (ID, Exp, Hours)": [
+      {{
+        "date": "YYYY-MM-DD",
+        "shift": "code",        // exact code provided
+        "shiftType": "day/night",
+        "hours": 8|12,
+        "startTime": "HH:mm",
+        "endTime": "HH:mm"
+      }}
+    ]
+  }}
 
 The schedule optimization must fully cover the entire period;
 
-IMPORTANT: Return ONLY the JSON object without any explanations, comments, or additional text.`
+IMPORTANT: Return ONLY valid JSON output with no additional text or formatting,  no trailing commas, and complete the full JSON without truncation.`
 
   useEffect(() => {
     async function loadPrompt() {
