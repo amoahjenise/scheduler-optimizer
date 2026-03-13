@@ -1,160 +1,144 @@
 # Scheduler Optimizer
 
-**AI-Driven Constraint Optimization for Legacy Industrial & Healthcare Schedules**
+Healthcare-focused scheduling and handover platform.
 
----
+## Product Scope
 
-The Scheduler Optimizer is a technical proof-of-concept designed to bridge the gap between siloed, legacy scheduling data (screenshots, PDFs, paper scans) and modern, optimized staffing. By utilizing OCR (Optical Character Recognition) for data ingestion and AI Agent logic for constraint satisfaction, this application transforms static images into editable, optimized workforce plans.
+This app is designed for clinical teams to:
 
-This project was developed as a solo engineering initiative to explore the intersection of **Computer Vision**, **AI-driven decision-making**, and **modern identity management** within a PHP-based ecosystem.
+1. Create and optimize nurse schedules from OCR or manual data.
+2. Manage handoff workflows (day/night) tied to active patients.
+3. Manage nurses, patient records, and organization-level settings.
+4. Provide operational visibility (dashboard, activities, schedule status).
 
----
+## Core Modules
 
-## 🧩 Key Features
+- Scheduler Optimizer (`/scheduler`)
+	- OCR-assisted schedule capture
+	- Rule-based + AI-assisted optimization
+	- Draft persistence and finalized schedule management
+	- Shift code and staff requirement handling
 
-### 1. Intelligent Data Ingestion (OCR)
+- Shift Handover (`/handover`)
+	- Day/night handoff workflow
+	- Patient-level report management
+	- Printable handoff support
 
-- **Legacy Ingestion:** Upload multiple screenshots of existing schedules.
-- **OCR Pipeline:** Extracts text data from unstructured images to identify shifts, staff names, and current assignments.
-- **Validation:** Basic validation for image dimensions and file types to ensure high-fidelity extraction.
+- Nurse Management (`/nurses`)
+	- Nurse profile CRUD
+	- Certification and workload fields
 
-### 2. Constraint-Based AI Optimization
+- Patient Management (`/patients`)
+	- Patient census CRUD
+	- Active/inactive filtering
 
-- **Rule Definition:** Approvers can set specific optimization parameters:
-  - Maximum consecutive shifts.
-  - Minimum requirements for specialized staff (e.g., Chemo-certified nurses).
-  - Employee preferences and availability notes.
-- **AI Agent Integration:** Leverages AI agents to process extracted data against defined rules to generate an optimized staffing calendar that satisfies all constraints.
+- Dashboard (`/dashboard`)
+	- Current shift visibility
+	- Recent activity feed
+	- Operational shortcuts
 
-### 3. Visual Schedule Canvas
+- Schedule Management (`/schedules`, `/admin/schedules`)
+	- Draft/finalized schedule viewing and governance
 
-- **Pre-Optimization View:** A table-like interface allowing users to review extracted data, tag shifts, and add manual comments.
-- **Editable Calendar:** A post-optimization view where the Approver can make final manual adjustments to the AI-generated results.
+- Settings (`/settings`)
+	- Organization-level config and branding
+	- Weekly targets and operational options
 
-### 4. Secure Approver Workflow
+## Trust & Compliance Surface
 
-- **Identity Management:** Integrated with Clerk Auth for secure Approver-only access.
-- **Data Persistence:** Synchronizes Clerk `user_id` with a relational database for consistent state management.
+Frontpage includes trust controls expected for healthcare-grade tooling:
 
----
+- Signed BAA
+- AES-256 encryption at rest + TLS in transit
+- Audit logs
+- Reliability-focused uptime/support posture
 
-## 🛠 Tech Stack
+## Architecture
 
-| Layer              | Technology                              |
-| ------------------ | --------------------------------------- |
-| **Core**           | PHP 8.x                                 |
-| **Frontend**       | HTML5, CSS3, JavaScript (Visual Canvas) |
-| **Authentication** | Clerk Auth                              |
-| **Data Extraction**| Tesseract OCR / AI-based Vision API     |
-| **Logic Engine**   | AI Agent (LLM-based constraint satisfaction) |
-| **Database**       | MySQL / PostgreSQL                      |
+Monorepo with separate backend and frontend applications:
 
----
+- `backend/`: FastAPI + SQLAlchemy + Alembic
+- `frontend/`: Next.js (App Router) + TypeScript + Clerk auth
 
-## 🏗 Architecture Overview
+### Backend (FastAPI)
 
+- API routes under `backend/app/api/routes`
+- ORM models under `backend/app/models`
+- DB migrations under `backend/alembic/versions`
+
+### Frontend (Next.js)
+
+- App routes under `frontend/src/app`
+- Shared API client under `frontend/src/app/lib/api.ts`
+- Global layout/style under `frontend/src/app/layout.tsx` and `frontend/src/app/globals.css`
+
+## Requirements
+
+- Python 3.10+
+- Node.js 18+
+- npm 9+
+
+## Local Development
+
+### 1) Backend
+
+From repo root:
+
+```bash
+cd backend
+python -m venv ../.venv
+source ../.venv/bin/activate
+pip install -r requirements.txt
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           SCHEDULER OPTIMIZER                           │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────┐  │
-│  │  INGESTION      │    │  CONTEXT        │    │  REASONING          │  │
-│  │  LAYER          │───▶│  LAYER          │───▶│  LAYER              │  │
-│  │                 │    │                 │    │                     │  │
-│  │  • File Upload  │    │  • Digitized    │    │  • AI Agent         │  │
-│  │  • OCR Engine   │    │    Schedule     │    │  • Constraint       │  │
-│  │  • Digitization │    │  • User Rules   │    │    Satisfaction     │  │
-│  └─────────────────┘    └─────────────────┘    └──────────┬──────────┘  │
-│                                                           │             │
-│                                                           ▼             │
-│                                              ┌─────────────────────┐    │
-│                                              │  UI/REVIEW          │    │
-│                                              │  LAYER              │    │
-│                                              │                     │    │
-│                                              │  • Editable Canvas  │    │
-│                                              │  • Human-in-Loop    │    │
-│                                              │  • Final Approval   │    │
-│                                              └─────────────────────┘    │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
+
+Run migrations:
+
+```bash
+alembic upgrade head
 ```
 
-1. **Ingestion Layer:** PHP handles the file upload and interacts with the OCR engine to digitize the schedule.
-2. **Context Layer:** The digitized data is paired with "Optimization Rules" defined by the user.
-3. **Reasoning Layer:** An AI Agent receives the schedule context and the constraint rules, then performs a combinatorial optimization to produce a suggested plan.
-4. **UI/Review Layer:** The result is rendered onto an editable canvas for human-in-the-loop verification.
+Start API:
 
----
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
 
-## 🚀 Getting Started
+### 2) Frontend
 
-### Prerequisites
+From repo root:
 
-- PHP 8.1+
-- Composer
-- A Clerk Auth account and API Keys
-- An OCR engine (e.g., Tesseract) or Vision API credentials
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-### Installation
+## Environment Variables
 
-1. **Clone the repository:**
+Configure as needed (frontend and backend):
 
-   ```bash
-   git clone https://github.com/amoahjenise/scheduler-optimizer.git
-   cd scheduler-optimizer
-   ```
+- Frontend:
+	- `NEXT_PUBLIC_API_BASE_URL`
+	- Clerk public keys/settings
+- Backend:
+	- Database connection settings
+	- Auth-related settings
 
-2. **Install dependencies:**
+## Build & Validation
 
-   ```bash
-   composer install
-   ```
+Frontend production build:
 
-3. **Configure Environment:**
+```bash
+cd frontend
+npm run build
+```
 
-   Create a `.env` file in the root directory:
+## Data & Migration Policy
 
-   ```ini
-   CLERK_SECRET_KEY=your_secret_key
-   CLERK_PUBLISHABLE_KEY=your_publishable_key
-   DB_HOST=localhost
-   DB_NAME=scheduler_db
-   DB_USER=root
-   DB_PASS=password
-   AI_API_KEY=your_ai_service_key
-   ```
+Alembic revision files are intentionally kept. They are required for reliable schema history, reproducible upgrades, rollback support, and team synchronization across environments.
 
-4. **Database Migration:**
+## Repository Conventions
 
-   Initialize your database tables:
-
-   ```bash
-   php migrate.php
-   ```
-
-5. **Run Locally:**
-
-   ```bash
-   php -S localhost:8000
-   ```
-
----
-
-## 📈 Future Enhancements
-
-- [ ] **Real-time Collaboration:** Using WebSockets to allow multiple schedulers to edit the canvas simultaneously.
-- [ ] **Heuristic Engine:** Moving from LLM-based reasoning to a dedicated solver (like OptaPlanner) for larger datasets.
-- [ ] **Export Options:** Direct export to SAP (PM/PP modules) or CSV.
-
----
-
-## 🤝 Collaboration
-
-This project is a showcase of bridging legacy industrial data with modern AI logic. Inquiries regarding the architecture or optimization algorithms are welcome.
-
----
-
-## 📄 License
-
-This project is available for review and educational purposes.
+- Keep this README as the single source of project-level specification.
+- Keep migration history in `backend/alembic/versions`.
+- Keep page layout consistency via shared classes in `globals.css`.

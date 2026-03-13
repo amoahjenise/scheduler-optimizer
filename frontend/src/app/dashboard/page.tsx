@@ -1,459 +1,1002 @@
-'use client'
+"use client";
 
-import { useState, useEffect, useRef } from 'react'
-import { CalendarHeart, Eye, UploadCloud, CheckCircle2, Download, AlertTriangle } from 'lucide-react'
-import UploadInput from '../components/UploadInput'
-import EditableOCRGrid from '../components/EditableOCRGrid'
-import AutoCommentsBox from '../components/AutoCommentsBox'
-import NotesEditor from '../components/NotesEditor'
-import SchedulePreview from '../components/SchedulePreview'
-import SectionCard from '../components/SectionCard'
-import SystemPrompt from '../components/SystemPrompt'
-import { validateComments } from './utils'
-import { parseImageWithFastAPI, createScheduleAPI, optimizeScheduleAPI } from '@/app/lib/api'
-import { useUser } from '@clerk/nextjs'
-import { ChevronDown, ChevronRight, CheckCircle, Wand2, FileDown } from 'lucide-react'
-import Confetti from 'react-confetti'
-import { useWindowSize } from 'react-use'
-import { motion } from 'framer-motion'
-import CharacterAssistant from '../components/CharacterAssistant'
-import CoverageDeltaGrid from '../components/CoverageDeltaGrid'
-import StaffRequirementsEditor from '../components/StaffRequirementsEditor'
+import { useUser } from "@clerk/nextjs";
+import Link from "next/link";
+import { useState, useEffect } from "react";
+import {
+  fetchPatientsAPI,
+  fetchTodaysHandoversAPI,
+  fetchOptimizedSchedulesAPI,
+  fetchDeletionActivitiesAPI,
+  type Handover,
+  type OptimizedSchedule,
+  type DeletionActivity,
+} from "../lib/api";
+import {
+  Calendar,
+  FileText,
+  Users,
+  ArrowRight,
+  Clock,
+  Activity,
+  ChevronRight,
+  X,
+  Bed,
+  User,
+  RefreshCw,
+  UserCheck,
+} from "lucide-react";
+import { useOrganization } from "../context/OrganizationContext";
+import type { Patient } from "../lib/api";
 
-interface ShiftAssignment {
-  date: string
-  shift: string
-  shiftType: 'day' | 'night'
-  hours: number
-  startTime: string
-  endTime: string
+interface ScheduleShift {
+  nurse: string;
+  shiftType: string;
+  shiftTime: string;
+  hours: number;
 }
 
-interface ShiftEntry extends ShiftAssignment {}
+interface DaySchedule {
+  date: string;
+  dayStaff: ScheduleShift[];
+  nightStaff: ScheduleShift[];
+}
 
-interface OptimizedScheduleResponse {
-  optimized_schedule: Record<string, ShiftAssignment[]>
-  id: string
+interface RecentActivityItem {
+  id: string;
+  type: "handover" | "schedule" | "patient";
+  title: string;
+  subtitle: string;
+  timestamp: number;
+}
+
+const RECENT_ACTIVITY_LIMIT = 3;
+
+function parseTimeToMinutes(value: string): number | null {
+  const match = value.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+  return hours * 60 + minutes;
+}
+
+function minutesToTime(totalMinutes: number): string {
+  const normalized = ((totalMinutes % 1440) + 1440) % 1440;
+  const hours = Math.floor(normalized / 60)
+    .toString()
+    .padStart(2, "0");
+  const minutes = (normalized % 60).toString().padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function formatShiftTimeRange(shift: any): string {
+  const rawTime = typeof shift?.time === "string" ? shift.time.trim() : "";
+  const hasRangeInRaw = rawTime.includes("-") || rawTime.includes("–");
+  if (hasRangeInRaw) return rawTime.replace(/\s*[–-]\s*/, " - ");
+
+  const start =
+    (typeof shift?.startTime === "string" ? shift.startTime.trim() : "") ||
+    rawTime;
+  const end = typeof shift?.endTime === "string" ? shift.endTime.trim() : "";
+
+  if (start && end) return `${start} - ${end}`;
+
+  const hours = Number(shift?.hours ?? 0);
+  const startMinutes = start ? parseTimeToMinutes(start) : null;
+  if (startMinutes !== null && hours > 0) {
+    const computedEnd = minutesToTime(startMinutes + Math.round(hours * 60));
+    return `${start} - ${computedEnd}`;
+  }
+
+  return start || rawTime || "";
 }
 
 export default function Dashboard() {
-  const today = new Date().toISOString().split('T')[0]
-  const twoWeeksLater = new Date(Date.now() + 13 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+  const { user } = useUser();
+  const {
+    currentOrganization,
+    isAdmin,
+    getAuthHeaders,
+    isLoading: orgLoading,
+  } = useOrganization();
+  const [stats, setStats] = useState({
+    activePatients: 0,
+    completedHandovers: 0,
+    schedulesCreated: 0,
+    finalizedSchedules: 0,
+    loading: true,
+  });
+  const [patients, setPatients] = useState<Patient[]>([]);
+  const [recentActivities, setRecentActivities] = useState<
+    RecentActivityItem[]
+  >([]);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [todaySchedule, setTodaySchedule] = useState<DaySchedule | null>(null);
+  const [weekSchedules, setWeekSchedules] = useState<Map<string, DaySchedule>>(
+    new Map(),
+  );
+  const [hoveredDay, setHoveredDay] = useState<number | null>(null);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
-  const [startDate, setStartDate] = useState(today)
-  const [endDate, setEndDate] = useState(twoWeeksLater)
-  const [screenshots, setScreenshots] = useState<File[]>([])
-  const [notes, setNotes] = useState('')
-  const [rules, setRules] = useState('')
-  const [autoComments, setAutoComments] = useState('')
-  const [marker, setMarker] = useState('*')
-  const [validationErrors, setValidationErrors] = useState<string[]>([])
-
-  const [ocrDates, setOcrDates] = useState<string[]>([])
-  type GridRow = { id: string; nurse: string; shifts: ShiftEntry[] }
-  const [ocrGrid, setOcrGrid] = useState<GridRow[]>([])
-  const [optimizedSchedule, setOptimizedSchedule] = useState<Record<string, ShiftAssignment[]> | null>(null)
-  const [ocrLoading, setOcrLoading] = useState(false)
-  const [ocrError, setOcrError] = useState<string | null>(null)
-
-  const [myScheduleId, setMyScheduleId] = useState<string | null>(null)
-  const [optimizing, setOptimizing] = useState(false)
-  const [showAdvanced, setShowAdvanced] = useState(false)
-  const [showConfetti, setShowConfetti] = useState(false)
-  const { width, height } = useWindowSize()
-  const previewRef = useRef<HTMLDivElement>(null)
-  const { user } = useUser()
-  const userId = user?.id || ''
-
-  const [requiredStaff, setRequiredStaff] = useState<Record<string, Record<string, number>>>({});
-  const [shiftHours, setShiftHours] = useState<Record<string, number>>({});
-  const shiftTypes = ['Morning', 'Afternoon', 'Evening']
-
-  async function createSchedule() {
-    if (screenshots.length === 0) {
-      alert('Please upload at least one schedule image.')
-      return
-    }
-
-    try {
-      const data = await createScheduleAPI(screenshots, startDate, endDate, notes, rules, autoComments, userId)
-      setMyScheduleId(data.id)
-      setShowConfetti(true)
-      setTimeout(() => setShowConfetti(false), 5000)
-    } catch (error: any) {
-      alert('Failed to create schedule: ' + error.message)
-    }
-  }
-  
   useEffect(() => {
-    if (screenshots.length === 0 || !startDate || !endDate || new Date(startDate) > new Date(endDate)) return
-  
-    async function runOCR() {
-      setOcrLoading(true)
-      setOcrError(null)
-  
+    async function loadStats() {
+      setStats((prev) => ({ ...prev, loading: true }));
+      setRefreshError(null);
+
       try {
-        const allDates = new Set<string>()
-        const combinedGrid: { [nurse: string]: { [date: string]: ShiftEntry } } = {}
-  
-        for (const file of screenshots) {
-          const result: {
-            dates: string[]
-            grid: { nurse: string; shifts: string[] }[]
-          } = await parseImageWithFastAPI(file, startDate, endDate)
-  
-          result.dates.forEach((date: string) => allDates.add(date))
-  
-          result.grid.forEach((entry: { nurse: string; shifts: string[] }) => {
-            const { nurse, shifts } = entry
-            if (!combinedGrid[nurse]) combinedGrid[nurse] = {}
-  
-            result.dates.forEach((date: string, i: number) => {
-              const shift = shifts[i]
-              if (shift) {
-                combinedGrid[nurse][date] = {
-                  date,
-                  shift,
-                  shiftType: 'day',
-                  hours: 0,
-                  startTime: '',
-                  endTime: ''
-                }
-              }
-            })
-          })
-        }
-  
-        const sortedDates = Array.from(allDates).sort()
-        const finalGrid = Object.entries(combinedGrid).map(
-          ([nurse, shiftMap]: [string, { [date: string]: ShiftEntry }]) => ({
-            nurse,
-            shifts: sortedDates.map((date) => shiftMap[date] || {
-              date,
-              shift: '',
-              shiftType: 'day',
-              hours: 0,
-              startTime: '',
-              endTime: ''
-            }),
-          })
-        )
-  
-        setOcrDates(sortedDates)
-  
-        const gridWithIds: GridRow[] = finalGrid.map((row) => ({
-          id: crypto.randomUUID(),
-          nurse: row.nurse,
-          shifts: row.shifts,
-        }))
-  
-        setOcrGrid(gridWithIds)
-        setShowConfetti(true)
-        setTimeout(() => setShowConfetti(false), 5000)
+        const authHeaders = await getAuthHeaders();
 
-      } catch (err: any) {
-        console.error('OCR error', err)
-        setOcrError(err.message || 'Failed to extract schedule')
-      } finally {
-        setOcrLoading(false)
-      }
-    }
-  
-    runOCR()
-  }, [screenshots, startDate, endDate])  
+        const [
+          patientsRes,
+          dayHandovers,
+          nightHandovers,
+          schedulesList,
+          deletionActivities,
+        ]: [any, any, any, OptimizedSchedule[], DeletionActivity[]] =
+          await Promise.all([
+            fetchPatientsAPI({ active_only: true }),
+            fetchTodaysHandoversAPI("day"),
+            fetchTodaysHandoversAPI("night"),
+            fetchOptimizedSchedulesAPI(authHeaders),
+            fetchDeletionActivitiesAPI(authHeaders, 25),
+          ]);
 
-  useEffect(() => {
-    const lines: string[] = []
+        // Get active patient IDs to filter handoffs
+        const activePatientIds = new Set(
+          (patientsRes.patients || []).map((p: Patient) => p.id),
+        );
 
-    ocrGrid.forEach((row) => {
-      row.shifts.forEach((shift) => {
-        if (shift.shift.includes(marker)) {
-          lines.push(`${row.nurse}|${shift.date}|`)
-        }
-      })
-    })
+        // Filter handoffs to only include those for active patients
+        const activeHandoversDay = (dayHandovers.handovers || []).filter(
+          (h: Handover) => activePatientIds.has(h.patient_id),
+        );
+        const activeHandoversNight = (nightHandovers.handovers || []).filter(
+          (h: Handover) => activePatientIds.has(h.patient_id),
+        );
 
-    setAutoComments(lines.join('\n'))
-  }, [ocrGrid, marker])
-
-  useEffect(() => {
-    setValidationErrors(validateComments(autoComments))
-  }, [autoComments])
-
-  async function handleOptimize() {
-    setOptimizing(true)
-    try {
-      function parseRulesText(rulesText: string): Record<string, number> {
-        const rulesObj: Record<string, number> = {}
-        rulesText.split('\n').forEach((line) => {
-          const [key, value] = line.split('=').map((s) => s.trim())
-          if (key && value !== undefined) {
-            const number = Number(value)
-            if (!isNaN(number)) {
-              rulesObj[key] = number
-            }
+        // Combine and dedupe by patient + shift (defensive guard)
+        const allHandoversRaw = [
+          ...activeHandoversDay,
+          ...activeHandoversNight,
+        ];
+        const dedupedMap = new Map<string, Handover>();
+        allHandoversRaw.forEach((handover) => {
+          const key = `${handover.patient_id}-${handover.shift_type}`;
+          const existing = dedupedMap.get(key);
+          if (!existing) {
+            dedupedMap.set(key, handover);
+            return;
           }
-        })
-        return rulesObj
-      }
-  
-      const parsedRules = parseRulesText(rules)
-  
-      const assignments: Record<string, string[]> = {}
-      ocrGrid.forEach(({ nurse, shifts }) => {
-        assignments[nurse] = shifts.map(shift => shift.shift)
-      })
-  
-      const comments: Record<string, Record<string, string>> = {}
-      autoComments.split('\n').forEach((line) => {
-        if (!line.trim()) return
-        const [nurse, date, comment] = line.split('|')
-        if (!comments[nurse]) comments[nurse] = {}
-        comments[nurse][date] = comment || ''
-      })
-  
-      const reqBody = {
-        schedule_id: myScheduleId,
-        nurses: ocrGrid.map((row) => row.nurse),
-        dates: ocrDates,
-        assignments,
-        comments,
-        rules: parsedRules,
-        notes,
-        start_date: startDate,
-        end_date: endDate
-      }      
-  
-      const data: OptimizedScheduleResponse = await optimizeScheduleAPI(reqBody)
-      setOptimizedSchedule(data.optimized_schedule)
-      setShowConfetti(true)
-      setTimeout(() => setShowConfetti(false), 5000)
-      
-      setTimeout(() => {
-        previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }, 200)
 
-    } catch (error: any) {
-      alert('Unexpected error during optimization: ' + error.message)
-    } finally {
-      setOptimizing(false)
+          const existingTs = new Date(
+            existing.updated_at || existing.created_at || existing.shift_date,
+          ).getTime();
+          const nextTs = new Date(
+            handover.updated_at || handover.created_at || handover.shift_date,
+          ).getTime();
+          if (nextTs > existingTs) {
+            dedupedMap.set(key, handover);
+          }
+        });
+
+        const allHandovers = Array.from(dedupedMap.values());
+        const completedPatientIds = new Set(
+          allHandovers.filter((h) => h.is_completed).map((h) => h.patient_id),
+        );
+        const completedHandovers = (patientsRes.patients || []).filter(
+          (p: Patient) => completedPatientIds.has(p.id),
+        ).length;
+
+        const handoverActivities: RecentActivityItem[] = allHandovers.map(
+          (handover) => ({
+            id: `handover-${handover.id}`,
+            type: "handover",
+            title: `Hand-off completed by ${handover.outgoing_nurse}`,
+            subtitle: `${handover.shift_type === "day" ? "Day" : "Night"} shift • ${new Date(handover.shift_date).toLocaleDateString()}`,
+            timestamp: new Date(handover.shift_date).getTime(),
+          }),
+        );
+
+        const patientActivities: RecentActivityItem[] = (
+          patientsRes.patients || []
+        ).map((patient: Patient) => ({
+          id: `patient-${patient.id}`,
+          type: "patient",
+          title: `Patient added: ${patient.last_name}, ${patient.first_name}`,
+          subtitle: `Room ${patient.room_number}${patient.bed ? ` • Bed ${patient.bed}` : ""}`,
+          timestamp: new Date(patient.created_at).getTime(),
+        }));
+
+        const formatSchedulePeriod = (schedule: OptimizedSchedule) => {
+          const rawData =
+            typeof schedule.schedule_data === "string"
+              ? (() => {
+                  try {
+                    return JSON.parse(schedule.schedule_data);
+                  } catch {
+                    return {};
+                  }
+                })()
+              : (schedule.schedule_data ?? {});
+
+          const data =
+            rawData && typeof rawData === "object"
+              ? (rawData as Record<string, any>)
+              : {};
+          const draftState =
+            data.draft_state && typeof data.draft_state === "object"
+              ? (data.draft_state as Record<string, any>)
+              : {};
+
+          const startRaw =
+            draftState.startDate ||
+            schedule.start_date ||
+            data.start_date ||
+            data?.dateRange?.start;
+          const endRaw =
+            draftState.endDate ||
+            schedule.end_date ||
+            data.end_date ||
+            data?.dateRange?.end;
+
+          const fallbackDates = Array.isArray(data.dates)
+            ? data.dates
+            : Array.isArray(draftState.ocrDates)
+              ? draftState.ocrDates
+              : [];
+          const start = startRaw || fallbackDates[0];
+          const end = endRaw || fallbackDates[fallbackDates.length - 1];
+
+          if (!start || !end) return "Schedule period unavailable";
+
+          const startDate = new Date(
+            /^\d{4}-\d{2}-\d{2}$/.test(start) ? `${start}T00:00:00` : start,
+          );
+          const endDate = new Date(
+            /^\d{4}-\d{2}-\d{2}$/.test(end) ? `${end}T00:00:00` : end,
+          );
+
+          if (
+            Number.isNaN(startDate.getTime()) ||
+            Number.isNaN(endDate.getTime())
+          ) {
+            return "Schedule period unavailable";
+          }
+
+          return `${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}`;
+        };
+
+        const scheduleActivities: RecentActivityItem[] = (
+          Array.isArray(schedulesList) ? schedulesList : []
+        ).map((schedule) => ({
+          id: `schedule-${schedule.id}`,
+          type: "schedule",
+          title: `${schedule.is_finalized ? "Schedule finalized" : "Draft schedule saved"}: ${formatSchedulePeriod(schedule)}`,
+          subtitle: `Created ${new Date(schedule.created_at).toLocaleDateString()}`,
+          timestamp: new Date(schedule.created_at).getTime(),
+        }));
+
+        const deletionRecentActivities: RecentActivityItem[] = (
+          Array.isArray(deletionActivities) ? deletionActivities : []
+        ).map((activity: DeletionActivity) => ({
+          id: `deletion-${activity.id}`,
+          type: activity.object_type,
+          title: `${activity.object_type === "patient" ? "Patient" : activity.object_type === "schedule" ? "Schedule" : "Hand-off"} deleted: ${activity.object_label}`,
+          subtitle: `Deleted by ${activity.performed_by_name || "Unknown user"}${activity.details ? ` • ${activity.details}` : ""}`,
+          timestamp: new Date(activity.occurred_at).getTime(),
+        }));
+
+        const mergedRecentActivities = [
+          ...patientActivities,
+          ...handoverActivities,
+          ...scheduleActivities,
+          ...deletionRecentActivities,
+        ]
+          .sort((a, b) => b.timestamp - a.timestamp)
+          .slice(0, RECENT_ACTIVITY_LIMIT);
+
+        setPatients(patientsRes.patients || []);
+        setRecentActivities(mergedRecentActivities);
+        setStats({
+          activePatients: patientsRes.patients?.length || 0,
+          completedHandovers,
+          schedulesCreated: Array.isArray(schedulesList)
+            ? schedulesList.length
+            : 0,
+          finalizedSchedules: Array.isArray(schedulesList)
+            ? schedulesList.filter((s: OptimizedSchedule) => s.is_finalized)
+                .length
+            : 0,
+          loading: false,
+        });
+        setLastRefreshedAt(new Date());
+
+        // Find schedule that includes today
+        await loadTodaySchedule(schedulesList, authHeaders);
+      } catch (err) {
+        console.error("Failed to load stats:", err);
+        setRefreshError("Refresh failed");
+        setStats((prev) => ({ ...prev, loading: false }));
+      }
     }
-  }  
-  
-  function convertOptimizedToGrid(
-    optimizedSchedule: Record<string, ShiftAssignment[]> | null,
-    ocrDates: string[]
-  ): { nurse: string; shifts: ShiftEntry[] }[] {
-    if (!optimizedSchedule) return [];
-  
-    return Object.entries(optimizedSchedule).map(([nurse, assignments]) => {
-      const shifts: ShiftEntry[] = ocrDates.map(date => {
-        const assignment = assignments.find(a => a.date === date);
-        return assignment
-          ? { ...assignment }
-          : {
-              date,
-              shift: '',
-              shiftType: 'day',
-              hours: 0,
-              startTime: '',
-              endTime: '',
-            };
-      });
-      return { nurse, shifts };
-    });
-  }
-  
-  
+
+    async function loadTodaySchedule(
+      schedulesList: OptimizedSchedule[],
+      authHeaders: Record<string, string>,
+    ) {
+      try {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const toDateOnly = (value?: string) => {
+          if (!value) return "";
+          return value.split("T")[0];
+        };
+
+        const extractScheduleData = (schedule: OptimizedSchedule): any => {
+          const raw =
+            typeof schedule.schedule_data === "string"
+              ? JSON.parse(schedule.schedule_data)
+              : schedule.schedule_data;
+          return raw && typeof raw === "object" ? raw : {};
+        };
+
+        const resolveRange = (schedule: OptimizedSchedule) => {
+          const data = extractScheduleData(schedule);
+          const dates = Array.isArray(data?.dates) ? data.dates : [];
+          const start =
+            toDateOnly(schedule.start_date) ||
+            toDateOnly(data?.start_date) ||
+            toDateOnly(data?.dateRange?.start) ||
+            (dates.length ? toDateOnly(dates[0]) : "");
+          const end =
+            toDateOnly(schedule.end_date) ||
+            toDateOnly(data?.end_date) ||
+            toDateOnly(data?.dateRange?.end) ||
+            (dates.length ? toDateOnly(dates[dates.length - 1]) : "");
+          return { start, end, data };
+        };
+
+        // Find schedules that include today
+        const activeSchedule = schedulesList.find((schedule) => {
+          const { start: startStr, end: endStr } = resolveRange(schedule);
+          if (!startStr || !endStr || !schedule.is_finalized) return false;
+          const start = new Date(startStr);
+          const end = new Date(endStr);
+          start.setHours(0, 0, 0, 0);
+          end.setHours(23, 59, 59, 999);
+          return today >= start && today <= end;
+        });
+
+        if (!activeSchedule) {
+          setTodaySchedule(null);
+          setWeekSchedules(new Map());
+          return;
+        }
+
+        // Use schedule data directly from the list response (no need for second API call)
+        // Parse schedule data
+        const { data: scheduleData } = resolveRange(activeSchedule);
+
+        // Build map of dates to staff
+        const weekMap = new Map<string, DaySchedule>();
+        const todayStr = today.toISOString().split("T")[0];
+
+        if (scheduleData.dates && Array.isArray(scheduleData.dates)) {
+          scheduleData.dates.forEach((dateStr: string, dateIndex: number) => {
+            const dayStaff: ScheduleShift[] = [];
+            const nightStaff: ScheduleShift[] = [];
+
+            const rows = Array.isArray(scheduleData.schedule)
+              ? scheduleData.schedule
+              : Array.isArray(scheduleData.grid)
+                ? scheduleData.grid
+                : [];
+
+            // Iterate through nurses
+            rows.forEach((nurseRow: any) => {
+              const shift = nurseRow.shifts?.[dateIndex];
+              if (!shift) return;
+
+              const hours = Number(shift.hours ?? 0);
+              if (hours <= 0) return;
+
+              const shiftInfo: ScheduleShift = {
+                nurse: nurseRow.nurse || nurseRow.name || "Unknown",
+                shiftType: shift.shiftType || shift.shift || "",
+                shiftTime: formatShiftTimeRange(shift),
+                hours,
+              };
+
+              // Determine if day or night shift based on explicit type or time
+              const isNightShift =
+                shift.shiftType === "night" ||
+                shift.time?.includes("19:00") ||
+                shift.time?.includes("23:00") ||
+                shift.startTime?.includes("19:00") ||
+                shift.startTime?.includes("23:00");
+
+              if (isNightShift) {
+                nightStaff.push(shiftInfo);
+              } else {
+                dayStaff.push(shiftInfo);
+              }
+            });
+
+            weekMap.set(dateStr, {
+              date: dateStr,
+              dayStaff,
+              nightStaff,
+            });
+          });
+        }
+
+        setWeekSchedules(weekMap);
+        setTodaySchedule(weekMap.get(todayStr) || null);
+      } catch (err) {
+        console.error("Failed to load today's schedule:", err);
+        setTodaySchedule(null);
+        setWeekSchedules(new Map());
+      }
+    }
+
+    if (user?.id && !orgLoading) {
+      loadStats();
+
+      // Auto-refresh every 30 seconds
+      const interval = setInterval(() => {
+        loadStats();
+      }, 30000);
+
+      return () => clearInterval(interval);
+    }
+
+    if (!orgLoading && !user?.id) {
+      setStats((prev) => ({ ...prev, loading: false }));
+    }
+  }, [currentOrganization, getAuthHeaders, refreshKey, user?.id, orgLoading]);
+
+  const currentTime = new Date();
+  const isDayShiftActive =
+    currentTime.getHours() >= 7 && currentTime.getHours() < 19;
+  const [activeShiftTab, setActiveShiftTab] = useState<"day" | "night">(
+    isDayShiftActive ? "day" : "night",
+  );
+
+  useEffect(() => {
+    setActiveShiftTab(isDayShiftActive ? "day" : "night");
+  }, [isDayShiftActive]);
+
+  const greeting =
+    currentTime.getHours() < 12
+      ? "Good morning"
+      : currentTime.getHours() < 18
+        ? "Good afternoon"
+        : "Good evening";
+
+  const weekDays = ["S", "M", "T", "W", "T", "F", "S"];
+  const today = currentTime.getDay();
+
+  // Generate week dates
+  const getWeekDates = () => {
+    const dates = [];
+    for (let i = 0; i < 7; i++) {
+      const date = new Date(currentTime);
+      date.setDate(currentTime.getDate() - today + i);
+      dates.push(date.getDate());
+    }
+    return dates;
+  };
+  const weekDates = getWeekDates();
+
   return (
-    <>
-      {showConfetti && (
-        <motion.div
-          className="fixed inset-0 pointer-events-none z-50"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-        >
-          <Confetti width={width} height={height} />
-        </motion.div>
-      )}
-  
-      <main className="min-h-screen bg-gradient-to-br from-sky-50 to-blue-100 text-gray-900 px-6 py-10">
-        <div className="max-w-6xl mx-auto flex flex-col gap-7">
-          <h1 className="text-5xl font-extrabold text-blue-900 tracking-tight">
-            Dashboard 
-          </h1>
-          <p className="mt-1 text-lg text-slate-600">
-            Configure, preview, and optimize your schedule with confidence.
-          </p>
-  
-          <section className="border border-gray-300 rounded-md bg-white shadow-sm">
-            <button
-              type="button"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="flex items-center justify-between w-full px-4 py-3 font-semibold text-sky-700 hover:bg-sky-50 focus:outline-none focus:ring-2 focus:ring-sky-400 rounded-t-md"
-              aria-expanded={showAdvanced}
-              aria-controls="advanced-settings-panel"
-            >
-              <span>Advanced Settings</span>
-              {showAdvanced ? (
-                <ChevronDown className="w-5 h-5 text-sky-700" aria-hidden="true" />
-              ) : (
-                <ChevronRight className="w-5 h-5 text-sky-700" aria-hidden="true" />
-              )}
-            </button>
-  
-            {showAdvanced && (
-              <div id="advanced-settings-panel" className="p-4 border-t border-gray-200">
-                <SystemPrompt />
+    <div className="page-frame">
+      <div className="page-container py-8">
+        {/* Main Container Card */}
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 lg:p-7">
+          {/* Header */}
+          <div className="flex items-start justify-between mb-6">
+            <div>
+              <p className="text-gray-400 text-sm mb-1">
+                {currentTime.toLocaleDateString("en-US", {
+                  weekday: "long",
+                  month: "long",
+                  day: "numeric",
+                })}
+              </p>
+              <h1 className="text-[28px] font-bold text-gray-900">
+                {greeting}, {user?.firstName || "there"}
+              </h1>
+              <div className="mt-2">
+                <span
+                  className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold border ${
+                    isDayShiftActive
+                      ? "bg-amber-100 text-amber-800 border-amber-200"
+                      : "bg-indigo-100 text-indigo-800 border-indigo-200"
+                  }`}
+                >
+                  {isDayShiftActive
+                    ? "☀️ Current shift: Day (7AM - 7PM)"
+                    : "🌙 Current shift: Night (7PM - 7AM)"}
+                </span>
               </div>
-            )}
-          </section>
-  
-          <section className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <SectionCard
-              title="Period Dates"
-              icon={<CalendarHeart className="text-sky-600" size={24} aria-hidden="true" />}
-              className="min-w-0"
-            >
-              <form
-                className="flex flex-wrap gap-4 items-center"
-                onSubmit={(e) => e.preventDefault()}
-                aria-describedby="period-dates-desc"
+            </div>
+            <div className="flex flex-col items-end gap-1">
+              <button
+                onClick={() => setRefreshKey((prev) => prev + 1)}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-[#1A5CFF] hover:bg-blue-50 rounded-xl transition-colors disabled:opacity-70 disabled:cursor-not-allowed"
+                disabled={stats.loading}
               >
-                <div className="flex flex-col">
-                  <label htmlFor="startDate" className="text-sm font-semibold text-sky-700 mb-1">
-                    Start Date
-                  </label>
-                  <input
-                    id="startDate"
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                    className="border border-blue-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sky-400"
-                    aria-required="true"
-                    min={today}
-                    max={endDate}
-                  />
-                </div>
-                <div className="flex flex-col">
-                  <label htmlFor="endDate" className="text-sm font-semibold text-sky-700 mb-1">
-                    End Date
-                  </label>
-                  <input
-                    id="endDate"
-                    type="date"
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    className="border border-blue-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-sky-400"
-                    aria-required="true"
-                    min={startDate > today ? startDate : today}
-                  />
-                </div>
-              </form>
-              <p id="period-dates-desc" className="mt-1 text-xs text-gray-500 max-w-xs">
-                Select the schedule period. The end date must be on or after the start date.
+                <RefreshCw
+                  className={`w-4 h-4 ${stats.loading ? "animate-spin" : ""}`}
+                />
+                {stats.loading ? "Refreshing..." : "Refresh"}
+              </button>
+              <p className="text-[11px] text-gray-400 min-h-[16px]">
+                {stats.loading
+                  ? "Updating dashboard..."
+                  : refreshError
+                    ? refreshError
+                    : lastRefreshedAt
+                      ? `Updated ${lastRefreshedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                      : ""}
               </p>
-            </SectionCard>
-  
-            <SectionCard
-              title="Comment Marker"
-              icon={<Eye className="text-sky-600" size={24} aria-hidden="true" />}
-              className="min-w-0"
-            >
-              <label htmlFor="markerInput" className="sr-only">
-                Custom marker for comments
-              </label>
-              <input
-                id="markerInput"
-                type="text"
-                maxLength={2}
-                value={marker}
-                onChange={(e) => setMarker(e.target.value || '✱')}
-                className="border border-blue-300 rounded-md px-3 py-3 w-full text-center text-lg font-semibold placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-sky-400"
-                aria-describedby="markerHelp"
-                placeholder="✱"
-              />
-              <p id="markerHelp" className="mt-1 text-xs text-gray-500">
-                Set a symbol to mark comments in the schedule grid (max 2 characters).
-              </p>
-            </SectionCard>
-  
-            <UploadInput screenshots={screenshots} setScreenshots={setScreenshots} />
-            {ocrLoading && (
-              <div className="mt-3 text-blue-600 flex items-center gap-2 font-medium" role="status">
-                <UploadCloud className="animate-spin w-5 h-5" />
-                Processing screenshots... This may take a moment.
-              </div>
-            )}
-            {ocrError && (
-              <div className="mt-3 text-red-600 flex items-center gap-2 font-semibold" role="alert">
-                <AlertTriangle className="w-5 h-5" />
-                OCR failed: {ocrError}. Please try again or upload different images.
-              </div>
-            )}
-          </section>
-  
-          <EditableOCRGrid ocrDates={ocrDates} ocrGrid={ocrGrid} setOcrGrid={setOcrGrid} marker={marker} />
-          <AutoCommentsBox autoComments={autoComments} setAutoComments={setAutoComments} validationErrors={validationErrors} />
-          <NotesEditor notes={notes} setNotes={setNotes} />
-          
-          <div ref={previewRef}>
-          <SchedulePreview 
-            ocrGrid={
-              optimizedSchedule
-                ? convertOptimizedToGrid(optimizedSchedule, ocrDates) ?? []
-                : ocrGrid
-            }
-            ocrDates={ocrDates}
-          />
+            </div>
           </div>
-          {/* <StaffRequirementsEditor
-            requiredStaff={requiredStaff}
-            setRequiredStaff={setRequiredStaff}
-            shiftHours={shiftHours}
-            setShiftHours={setShiftHours}
-            ocrDates={ocrDates}
-            shiftTypes={shiftTypes}
-                      
-          /> */}
-          {/* <CoverageDeltaGrid
-            ocrGrid={optimizedSchedule ?? ocrGrid} // always falls back to ocrGrid
-            ocrDates={ocrDates}
-            requiredStaff={requiredStaff}
-            shiftHours={shiftHours}
-          /> */}
-          <div className="flex flex-wrap gap-4 mt-6">
-            <button
-              onClick={createSchedule}
-              className="flex items-center gap-2 px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-md font-semibold shadow-sm transition"
+
+          {/* Stats Cards Row */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            {/* Active Patients Card - Clickable */}
+            <Link
+              href="/patients"
+              className="bg-gradient-to-br from-blue-50 to-white rounded-2xl p-4 border border-blue-100 text-left hover:shadow-lg hover:-translate-y-0.5 transition-all cursor-pointer block"
             >
-              <CheckCircle className="w-5 h-5" />
-              Create Schedule
-            </button>
-            <button
-              onClick={handleOptimize}
-              disabled={!myScheduleId || optimizing}
-              className={`flex items-center gap-2 px-6 py-3 rounded-md font-semibold transition shadow-sm ${
-                myScheduleId && !optimizing
-                  ? 'bg-sky-600 hover:bg-sky-700 text-white'
-                  : 'bg-gray-300 text-gray-600 cursor-not-allowed'
-              }`}
+              <div className="flex items-center justify-between mb-3">
+                <div className="w-10 h-10 rounded-xl bg-[#1A5CFF]/10 flex items-center justify-center">
+                  <Activity className="w-5 h-5 text-[#1A5CFF]" />
+                </div>
+                <span className="text-xs font-medium text-[#1A5CFF] flex items-center gap-1">
+                  View details <ChevronRight className="w-3 h-3" />
+                </span>
+              </div>
+              <div className="flex items-end justify-between">
+                <div>
+                  <p className="text-3xl font-bold text-gray-900">
+                    {stats.loading ? "–" : stats.activePatients}
+                  </p>
+                  <p className="text-sm text-gray-500 mt-1">Patients</p>
+                </div>
+                {/* Mini bar chart */}
+                <div className="flex items-end gap-1 h-12">
+                  {[40, 65, 45, 80, 55, 70, 90].map((h, i) => (
+                    <div
+                      key={i}
+                      className="w-2 bg-[#1A5CFF]/20 rounded-full"
+                      style={{ height: `${h}%` }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </Link>
+
+            {/* Today's Hand-offs Card - Clickable */}
+            <Link
+              href="/handover"
+              className="bg-gradient-to-br from-emerald-50 to-white rounded-2xl p-4 border border-emerald-100 text-left hover:shadow-lg hover:-translate-y-0.5 transition-all cursor-pointer block"
             >
-              <Wand2 className="w-5 h-5" />
-              {optimizing ? 'Optimizing...' : 'Optimize Schedule'}
-            </button>
+              <div className="flex items-center justify-between mb-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center">
+                  <FileText className="w-5 h-5 text-emerald-600" />
+                </div>
+                <span className="text-xs font-medium text-emerald-600 flex items-center gap-1">
+                  View details <ChevronRight className="w-3 h-3" />
+                </span>
+              </div>
+              <div className="flex items-end justify-between">
+                <div>
+                  <p className="text-3xl font-bold text-gray-900">
+                    {stats.loading
+                      ? "–"
+                      : `${stats.completedHandovers}/${stats.activePatients}`}
+                  </p>
+                  <p className="text-sm text-gray-500 mt-1">
+                    Hand-Offs Completed
+                  </p>
+                </div>
+                <div className="flex items-end gap-1 h-12">
+                  {[30, 50, 70, 45, 85, 60, 40].map((h, i) => (
+                    <div
+                      key={i}
+                      className="w-2 bg-emerald-500/20 rounded-full"
+                      style={{ height: `${h}%` }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </Link>
+
+            {/* Schedules Card - Clickable */}
+            <Link
+              href={isAdmin ? "/admin/schedules" : "/schedules"}
+              className="bg-gradient-to-br from-purple-50 to-white rounded-2xl p-4 border border-purple-100 text-left hover:shadow-lg hover:-translate-y-0.5 transition-all cursor-pointer block"
+            >
+              <div className="flex items-center justify-between mb-3">
+                <div className="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center">
+                  <Calendar className="w-5 h-5 text-purple-600" />
+                </div>
+                <span className="text-xs font-medium text-purple-600 flex items-center gap-1">
+                  View details <ChevronRight className="w-3 h-3" />
+                </span>
+              </div>
+              <div className="flex items-end justify-between">
+                <div>
+                  <p className="text-3xl font-bold text-gray-900">
+                    {stats.loading
+                      ? "–"
+                      : `${stats.finalizedSchedules}/${stats.schedulesCreated}`}
+                  </p>
+                  <p className="text-sm text-gray-500 mt-1">
+                    Finalized Schedules
+                  </p>
+                </div>
+                <div className="flex items-end gap-1 h-12">
+                  {[55, 75, 35, 90, 50, 65, 80].map((h, i) => (
+                    <div
+                      key={i}
+                      className="w-2 bg-purple-500/20 rounded-full"
+                      style={{ height: `${h}%` }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </Link>
           </div>
-          
-          <CharacterAssistant 
-            status={
-              optimizing ? 'loading' :
-              ocrError ? 'error' :
-              (showConfetti ? 'success' : 'idle')
-            } 
-          />
+
+          {/* Quick Actions - high-clarity shortcuts */}
+          <div className="mb-6 bg-gray-50 border border-gray-200 rounded-2xl p-4 shadow-sm">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold text-gray-900">
+                Quick Actions
+              </h2>
+              <span className="text-xs text-gray-500">
+                Most-used tasks for shift workflow
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <Link
+                href="/handover"
+                className="flex items-center gap-3 rounded-xl border border-blue-200 bg-white px-4 py-3 hover:bg-blue-50 hover:shadow-sm transition-all"
+              >
+                <div className="w-9 h-9 rounded-lg bg-blue-100 flex items-center justify-center">
+                  <FileText className="w-4 h-4 text-blue-700" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">
+                    Hand-Off
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    Create or update reports
+                  </p>
+                </div>
+              </Link>
+
+              <Link
+                href="/patients"
+                className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-white px-4 py-3 hover:bg-emerald-50 hover:shadow-sm transition-all"
+              >
+                <div className="w-9 h-9 rounded-lg bg-emerald-100 flex items-center justify-center">
+                  <Users className="w-4 h-4 text-emerald-700" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">
+                    Patients
+                  </p>
+                  <p className="text-xs text-gray-500">Add/edit patient info</p>
+                </div>
+              </Link>
+
+              <Link
+                href={isAdmin ? "/scheduler" : "/schedules"}
+                className="flex items-center gap-3 rounded-xl border border-purple-200 bg-white px-4 py-3 hover:bg-purple-50 hover:shadow-sm transition-all"
+              >
+                <div className="w-9 h-9 rounded-lg bg-purple-100 flex items-center justify-center">
+                  <Calendar className="w-4 h-4 text-purple-700" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">
+                    {isAdmin ? "Schedule Optimizer" : "Schedules"}
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    {isAdmin
+                      ? "Create or refine staffing plan"
+                      : "Review finalized roster"}
+                  </p>
+                </div>
+              </Link>
+            </div>
+          </div>
+
+          {/* Main Content Grid - Reorganized by importance */}
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+            {/* Left Column - Stats & Quick Access */}
+            <div className="xl:col-span-8 space-y-4">
+              {/* Shift Overview - Most Important */}
+              <div className="bg-gradient-to-br from-blue-50 to-white rounded-2xl p-5 border border-blue-100 shadow-sm">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#1A5CFF]/10 flex items-center justify-center">
+                    <Activity className="w-5 h-5 text-[#1A5CFF]" />
+                  </div>
+                  <div>
+                    <p className="font-semibold text-gray-900">Current Shift</p>
+                    <p className="text-xs text-gray-500">
+                      {isDayShiftActive
+                        ? "Day Shift (7AM - 7PM)"
+                        : "Night Shift (7PM - 7AM)"}
+                    </p>
+                  </div>
+                </div>
+
+                {todaySchedule ? (
+                  <div className="space-y-3">
+                    <div className="inline-flex rounded-xl border border-blue-200 bg-white p-1">
+                      <button
+                        type="button"
+                        onClick={() => setActiveShiftTab("day")}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                          activeShiftTab === "day"
+                            ? "bg-blue-600 text-white"
+                            : "text-gray-600 hover:bg-blue-50"
+                        }`}
+                      >
+                        ☀️ Day ({todaySchedule.dayStaff.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveShiftTab("night")}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                          activeShiftTab === "night"
+                            ? "bg-indigo-600 text-white"
+                            : "text-gray-600 hover:bg-indigo-50"
+                        }`}
+                      >
+                        🌙 Night ({todaySchedule.nightStaff.length})
+                      </button>
+                    </div>
+
+                    {(() => {
+                      const activeStaff =
+                        activeShiftTab === "day"
+                          ? todaySchedule.dayStaff
+                          : todaySchedule.nightStaff;
+                      const iconColor =
+                        activeShiftTab === "day" ? "text-[#1A5CFF]" : "text-indigo-600";
+
+                      if (activeStaff.length === 0) {
+                        return (
+                          <div className="text-center py-6 bg-white rounded-xl border border-gray-100">
+                            <Users className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                            <p className="text-sm text-gray-500">
+                              No staff scheduled for this shift
+                            </p>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          {activeStaff.map((shift, idx) => (
+                            <div
+                              key={`${activeShiftTab}-${idx}-${shift.nurse}`}
+                              className="flex items-center gap-2 p-2.5 bg-white rounded-lg border border-gray-100"
+                            >
+                              <UserCheck className={`w-4 h-4 ${iconColor} flex-shrink-0`} />
+                              <div className="min-w-0 flex-1">
+                                <p className="text-sm font-medium text-gray-900 truncate">
+                                  {shift.nurse}
+                                </p>
+                                <p className="text-xs text-gray-500">
+                                  {shift.shiftTime || `${shift.hours}h`}
+                                </p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                ) : (
+                  <div className="text-center py-6">
+                    <Calendar className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+                    <p className="text-sm font-medium text-gray-600 mb-1">
+                      No Active Schedule
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      Create a schedule to see staff assignments
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right Column - Week Calendar */}
+            <div className="xl:col-span-4 space-y-4">
+              {/* Week Calendar */}
+              <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-gray-900">This Week</h3>
+                  <Clock className="w-4 h-4 text-gray-400" />
+                </div>
+                <div className="flex justify-between relative">
+                  {weekDays.map((day, index) => {
+                    const dayDate = new Date(currentTime);
+                    dayDate.setDate(currentTime.getDate() - today + index);
+                    const dateStr = dayDate.toISOString().split("T")[0];
+                    const daySchedule = weekSchedules.get(dateStr);
+                    const hasSchedule =
+                      daySchedule &&
+                      (daySchedule.dayStaff.length > 0 ||
+                        daySchedule.nightStaff.length > 0);
+
+                    return (
+                      <div
+                        key={index}
+                        className="relative"
+                        onMouseEnter={() => setHoveredDay(index)}
+                        onMouseLeave={() => setHoveredDay(null)}
+                      >
+                        <div
+                          className={`flex flex-col items-center py-2 px-2 rounded-xl transition-colors cursor-pointer ${
+                            index === today
+                              ? "bg-[#1A5CFF] text-white"
+                              : hasSchedule
+                                ? "text-gray-700 hover:bg-blue-50 bg-white border border-blue-200"
+                                : "text-gray-500 hover:bg-gray-100"
+                          }`}
+                        >
+                          <span className="text-xs font-medium mb-1">
+                            {day}
+                          </span>
+                          <span
+                            className={`text-sm font-semibold ${index === today ? "text-white" : "text-gray-900"}`}
+                          >
+                            {weekDates[index]}
+                          </span>
+                          {hasSchedule && index !== today && (
+                            <div className="w-1 h-1 rounded-full bg-[#1A5CFF] mt-1"></div>
+                          )}
+                        </div>
+
+                        {/* Hover Tooltip */}
+                        {hoveredDay === index && daySchedule && hasSchedule && (
+                          <div className="absolute z-50 top-full mt-2 left-1/2 -translate-x-1/2 w-64 bg-white rounded-xl shadow-xl border border-gray-200 p-3">
+                            <div className="text-xs font-semibold text-gray-900 mb-2">
+                              {dayDate.toLocaleDateString("en-US", {
+                                weekday: "short",
+                                month: "short",
+                                day: "numeric",
+                              })}
+                            </div>
+
+                            {daySchedule.dayStaff.length > 0 && (
+                              <div className="mb-2">
+                                <div className="text-xs font-medium text-gray-600 mb-1">
+                                  ☀️ Day ({daySchedule.dayStaff.length})
+                                </div>
+                                <div className="space-y-1 max-h-32 overflow-y-auto">
+                                  {daySchedule.dayStaff.map((shift, idx) => (
+                                    <div
+                                      key={idx}
+                                      className="text-xs text-gray-700 truncate flex items-center gap-1"
+                                    >
+                                      <div className="w-1 h-1 rounded-full bg-[#1A5CFF]"></div>
+                                      {shift.nurse}{" "}
+                                      <span className="text-gray-500">
+                                        • {shift.shiftTime || `${shift.hours}h`}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {daySchedule.nightStaff.length > 0 && (
+                              <div>
+                                <div className="text-xs font-medium text-gray-600 mb-1">
+                                  🌙 Night ({daySchedule.nightStaff.length})
+                                </div>
+                                <div className="space-y-1 max-h-32 overflow-y-auto">
+                                  {daySchedule.nightStaff.map((shift, idx) => (
+                                    <div
+                                      key={idx}
+                                      className="text-xs text-gray-700 truncate flex items-center gap-1"
+                                    >
+                                      <div className="w-1 h-1 rounded-full bg-indigo-600"></div>
+                                      {shift.nurse}{" "}
+                                      <span className="text-gray-500">
+                                        • {shift.shiftTime || `${shift.hours}h`}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Recent Activity */}
+              <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-gray-900">
+                    Recent Activity
+                  </h3>
+                  <Link
+                    href="/activities"
+                    className="text-xs font-medium text-[#1A5CFF] hover:underline"
+                  >
+                    View all
+                  </Link>
+                </div>
+                <div className="space-y-2.5">
+                  {recentActivities.length > 0 ? (
+                    recentActivities.map((activity) => (
+                      <div
+                        key={activity.id}
+                        className="flex items-center gap-2.5 p-2.5 bg-white rounded-xl"
+                      >
+                        <div
+                          className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                            activity.type === "schedule"
+                              ? "bg-purple-100"
+                              : activity.type === "patient"
+                                ? "bg-emerald-100"
+                                : "bg-blue-100"
+                          }`}
+                        >
+                          {activity.type === "schedule" ? (
+                            <Calendar className="w-4 h-4 text-purple-600" />
+                          ) : activity.type === "patient" ? (
+                            <User className="w-4 h-4 text-emerald-600" />
+                          ) : (
+                            <FileText className="w-4 h-4 text-blue-600" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">
+                            {activity.title}
+                          </p>
+                          <p className="text-xs text-gray-400 truncate">
+                            {activity.subtitle}
+                          </p>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-center py-5">
+                      <p className="text-sm text-gray-400">
+                        No activity today yet
+                      </p>
+                      <Link
+                        href="/handover"
+                        className="inline-flex items-center gap-1 text-sm font-medium text-[#1A5CFF] mt-2 hover:underline"
+                      >
+                        Create your first hand-off{" "}
+                        <ArrowRight className="w-3 h-3" />
+                      </Link>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-      </main>
-    </>
-  )
+      </div>
+    </div>
+  );
 }
