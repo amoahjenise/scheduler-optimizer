@@ -13,5 +13,9 @@
   "[typescriptreact]": {
     "editor.defaultFormatter": "esbenp.prettier-vscode"
   },
+  "python.analysis.extraPaths": ["./backend"],
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingModuleSource": "none"
+  },
   "python.envFile": "${workspaceFolder}/backend/.env"
 }

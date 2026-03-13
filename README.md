@@ -14,35 +14,41 @@ This app is designed for clinical teams to:
 ## Core Modules
 
 - Scheduler Optimizer (`/scheduler`)
-	- OCR-assisted schedule capture
-	- Rule-based + AI-assisted optimization
-	- Draft persistence and finalized schedule management
-	- Shift code and staff requirement handling
+
+  - OCR-assisted schedule capture
+  - Rule-based + AI-assisted optimization
+  - Draft persistence and finalized schedule management
+  - Shift code and staff requirement handling
 
 - Shift Handover (`/handover`)
-	- Day/night handoff workflow
-	- Patient-level report management
-	- Printable handoff support
+
+  - Day/night handoff workflow
+  - Patient-level report management
+  - Printable handoff support
 
 - Nurse Management (`/nurses`)
-	- Nurse profile CRUD
-	- Certification and workload fields
+
+  - Nurse profile CRUD
+  - Certification and workload fields
 
 - Patient Management (`/patients`)
-	- Patient census CRUD
-	- Active/inactive filtering
+
+  - Patient census CRUD
+  - Active/inactive filtering
 
 - Dashboard (`/dashboard`)
-	- Current shift visibility
-	- Recent activity feed
-	- Operational shortcuts
+
+  - Current shift visibility
+  - Recent activity feed
+  - Operational shortcuts
 
 - Schedule Management (`/schedules`, `/admin/schedules`)
-	- Draft/finalized schedule viewing and governance
+
+  - Draft/finalized schedule viewing and governance
 
 - Settings (`/settings`)
-	- Organization-level config and branding
-	- Weekly targets and operational options
+  - Organization-level config and branding
+  - Weekly targets and operational options
 
 ## Trust & Compliance Surface
 
@@ -118,11 +124,11 @@ npm run dev
 Configure as needed (frontend and backend):
 
 - Frontend:
-	- `NEXT_PUBLIC_API_BASE_URL`
-	- Clerk public keys/settings
+  - `NEXT_PUBLIC_API_BASE_URL`
+  - Clerk public keys/settings
 - Backend:
-	- Database connection settings
-	- Auth-related settings
+  - Database connection settings
+  - Auth-related settings
 
 ## Build & Validation
 

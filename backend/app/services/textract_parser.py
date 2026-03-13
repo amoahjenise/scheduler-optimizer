@@ -7,6 +7,56 @@ from difflib import get_close_matches
 from app.core.config import settings
 
 
+def clean_nurse_name(raw_name: str) -> str:
+    """
+    Clean OCR-extracted nurse names by removing employee IDs, suffixes, and noise.
+    Examples:
+      "Alexandra Zatylny 42564 7Y-339.27D" -> "Alexandra Zatylny"
+      "Trong Khoi\nTran" -> "Trong Khoi Tran"
+      "Khady Gueye 7580 197.40D 33:45" -> "Khady Gueye"
+    """
+    if not raw_name:
+        return raw_name
+    
+    # Step 0: Replace newlines and multiple spaces with single space (handles multi-line names)
+    cleaned = raw_name.replace('\n', ' ').replace('\r', ' ')
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    
+    # Step 1: Remove common OCR suffixes (employee IDs, time codes, etc.)
+    # Pattern: numbers followed by Y-xxx.xxD or just numbers at end
+    patterns_to_remove = [
+        r'\s+\d+\s+\d*Y?-?\d*\.?\d*D?$',  # "42564 7Y-339.27D"
+        r'\s+\d+\s+\d+\.\d+D?$',           # "783 8.40D"
+        r'\s+\d+\.\d+D\s*\d*:?\d*$',       # "197.40D 33:45"
+        r'\s+\d{4,}\s+',                    # 4+ digit employee IDs in middle
+        r'\s+\d+:?\d*$',                    # Trailing time like "45:00" or "52:30"
+        r'\s+\d+\s*$',                      # Trailing numbers
+    ]
+    for pattern in patterns_to_remove:
+        cleaned = re.sub(pattern, '', cleaned)
+    
+    # Step 2: Remove any remaining standalone numbers at end
+    cleaned = re.sub(r'\s+\d+\s*$', '', cleaned)
+    
+    # Step 3: Remove shift code suffixes that may have been captured
+    cleaned = re.sub(r'\s+[A-Z]{1,2}\d?-?\d*\.?\d*[A-Z]?\s*$', '', cleaned)
+    
+    # Step 4: Remove trailing character + dash patterns (common OCR errors like "Glodovizay-")
+    # This catches cases where OCR adds an extra letter before a trailing dash
+    cleaned = re.sub(r'[a-z][-–—]+$', '', cleaned)
+    
+    # Step 5: Remove any remaining trailing dashes and hyphens
+    cleaned = re.sub(r'[-–—]+$', '', cleaned)
+    
+    # Step 6: Clean up whitespace
+    cleaned = ' '.join(cleaned.split())
+    
+    # Step 7: Capitalize first letter of each word (proper name formatting)
+    cleaned = ' '.join(word.capitalize() for word in cleaned.split())
+    
+    return cleaned.strip()
+
+
 def parse_schedule_from_image(image_bytes: bytes, start_date: date, end_date: date) -> Dict:
     textract = boto3.client(
         'textract',
@@ -69,11 +119,16 @@ def parse_schedule_from_image(image_bytes: bytes, start_date: date, end_date: da
     # Step 3: Sort columns by matched date
     sorted_cols = sorted(col_date_map.items(), key=lambda x: x[1])  # [(col_idx, date), ...]
 
-    # Step 4: Extract grid
+    # Step 4: Extract grid with cleaned nurse names
     ocrGrid = []
     for row in range(3, max_row + 1):
         nurse_cell = cell_map.get((row, 1), {})
-        nurse_info = get_text(nurse_cell).strip()
+        nurse_info_raw = get_text(nurse_cell).strip()
+        if not nurse_info_raw:
+            continue
+        
+        # Clean the nurse name to remove employee IDs and suffixes
+        nurse_info = clean_nurse_name(nurse_info_raw)
         if not nurse_info:
             continue
 

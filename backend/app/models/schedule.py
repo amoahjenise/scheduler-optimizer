@@ -9,6 +9,7 @@ class Schedule(Base):
     __tablename__ = "schedules"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id = Column(String, nullable=False)
+    organization_id = Column(String, nullable=True, index=True)  # Multi-tenant org ID
     period = Column(String, nullable=False)
     rules = Column(JSON, nullable=True)
     notes = Column(Text, nullable=True)
