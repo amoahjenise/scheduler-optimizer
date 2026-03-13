@@ -1,30 +1,34 @@
-'use client'
+"use client";
 
-import { useState, useEffect, useRef } from 'react'
-import { Stethoscope, Eye, EyeOff } from 'lucide-react'
-import SectionCard from './SectionCard'
-import { fetchSystemPromptsAPI, saveSystemPromptAPI, resetSystemPromptAPI } from '@/app/lib/api'
+import { useState, useEffect, useRef } from "react";
+import { Stethoscope, Eye, EyeOff } from "lucide-react";
+import SectionCard from "./SectionCard";
+import {
+  fetchSystemPromptsAPI,
+  saveSystemPromptAPI,
+  resetSystemPromptAPI,
+} from "@/app/lib/api";
 
 export default function SystemPrompt() {
-  const [editablePrompt, setEditablePrompt] = useState('')
-  const [loadingPrompt, setLoadingPrompt] = useState(false)
-  const [savingPrompt, setSavingPrompt] = useState(false)
-  const [promptError, setPromptError] = useState<string | null>(null)
-  const [isEditing, setIsEditing] = useState(false)
-  const [hasChanges, setHasChanges] = useState(false)
-  const [showFullPreview, setShowFullPreview] = useState(false)
+  const [editablePrompt, setEditablePrompt] = useState("");
+  const [loadingPrompt, setLoadingPrompt] = useState(false);
+  const [savingPrompt, setSavingPrompt] = useState(false);
+  const [promptError, setPromptError] = useState<string | null>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [hasChanges, setHasChanges] = useState(false);
+  const [showFullPreview, setShowFullPreview] = useState(false);
 
-  const originalPrompt = useRef('')
+  const originalPrompt = useRef("");
 
   const requiredPlaceholders = [
-    '{start_date}',
-    '{end_date}',
-    '{nurses_list}',
-    '{notes}',
+    "{start_date}",
+    "{end_date}",
+    "{nurses_list}",
+    "{notes}",
     // '{rules_lines}',
-    '{comments_json}',
-    '{assignments_json}',
-  ]
+    "{comments_json}",
+    "{assignments_json}",
+  ];
 
   const immutableSection = `
   • The schedule optimization must fully cover the entire period;
@@ -45,96 +49,113 @@ export default function SystemPrompt() {
 
 The schedule optimization must fully cover the entire period;
 
-IMPORTANT: Return ONLY valid JSON output with no additional text or formatting,  no trailing commas, and complete the full JSON without truncation.`
+IMPORTANT: Return ONLY valid JSON output with no additional text or formatting,  no trailing commas, and complete the full JSON without truncation.`;
 
   useEffect(() => {
     async function loadPrompt() {
-      setLoadingPrompt(true)
-      setPromptError(null)
+      setLoadingPrompt(true);
+      setPromptError(null);
       try {
-        const data = await fetchSystemPromptsAPI()
-        const prompt = data.content || ''
-        const [editable, immutable] = prompt.split(immutableSection)
-        setEditablePrompt(editable.trim())
-        originalPrompt.current = editable.trim()
-        setHasChanges(false)
-        setIsEditing(false)
+        const data = await fetchSystemPromptsAPI();
+        const prompt = Array.isArray(data)
+          ? data.find((p) => p?.name === "global")?.content ||
+            data[0]?.content ||
+            ""
+          : data?.content || "";
+        const [editable, immutable] = prompt.split(immutableSection);
+        setEditablePrompt(editable.trim());
+        originalPrompt.current = editable.trim();
+        setHasChanges(false);
+        setIsEditing(false);
       } catch (error: any) {
-        setPromptError(error.message || 'Failed to load system prompt')
+        setPromptError(error.message || "Failed to load system prompt");
       } finally {
-        setLoadingPrompt(false)
+        setLoadingPrompt(false);
       }
     }
-    loadPrompt()
-  }, [])
+    loadPrompt();
+  }, []);
 
   function onChangePrompt(value: string) {
-    setEditablePrompt(value)
-    setHasChanges(value !== originalPrompt.current)
-    if (promptError) setPromptError(null)
+    setEditablePrompt(value);
+    setHasChanges(value !== originalPrompt.current);
+    if (promptError) setPromptError(null);
   }
 
   function validateBeforeSave(text: string) {
-    const missing = requiredPlaceholders.filter(ph => !text.includes(ph))
+    const missing = requiredPlaceholders.filter((ph) => !text.includes(ph));
     if (missing.length > 0) {
-      return `Missing required placeholders: ${missing.join(', ')}`
+      return `Missing required placeholders: ${missing.join(", ")}`;
     }
-    return null
+    return null;
   }
 
   async function savePrompt() {
-    setSavingPrompt(true)
-    setPromptError(null)
+    setSavingPrompt(true);
+    setPromptError(null);
 
-    const error = validateBeforeSave(editablePrompt)
+    const error = validateBeforeSave(editablePrompt);
     if (error) {
-      setPromptError(error)
-      setSavingPrompt(false)
-      return
+      setPromptError(error);
+      setSavingPrompt(false);
+      return;
     }
 
     try {
-      const fullPrompt = `${editablePrompt.trim()}\n\n${immutableSection}`
-      await saveSystemPromptAPI('global', fullPrompt)
-      alert('System prompt saved!')
-      originalPrompt.current = editablePrompt.trim()
-      setHasChanges(false)
-      setIsEditing(false)
+      const fullPrompt = `${editablePrompt.trim()}\n\n${immutableSection}`;
+      await saveSystemPromptAPI("global", fullPrompt);
+      alert("System prompt saved!");
+      originalPrompt.current = editablePrompt.trim();
+      setHasChanges(false);
+      setIsEditing(false);
     } catch (error: any) {
-      setPromptError(error.message || 'Failed to save system prompt')
+      setPromptError(error.message || "Failed to save system prompt");
     } finally {
-      setSavingPrompt(false)
+      setSavingPrompt(false);
     }
   }
 
   function cancelEditing() {
-    setEditablePrompt(originalPrompt.current)
-    setHasChanges(false)
-    setPromptError(null)
-    setIsEditing(false)
+    setEditablePrompt(originalPrompt.current);
+    setHasChanges(false);
+    setPromptError(null);
+    setIsEditing(false);
   }
 
   async function resetPrompt() {
-    setLoadingPrompt(true)
-    setPromptError(null)
+    // Confirm before reset
+    if (
+      !confirm(
+        "Are you sure you want to reset the system prompt to default? All your customizations will be lost.",
+      )
+    ) {
+      return;
+    }
+
+    setLoadingPrompt(true);
+    setPromptError(null);
     try {
-      const data = await resetSystemPromptAPI()
-      const prompt = data.content || ''
-      const [editable, _] = prompt.split(immutableSection)
-      setEditablePrompt(editable.trim())
-      originalPrompt.current = editable.trim()
-      alert('System prompt reset to default!')
-      setHasChanges(false)
-      setIsEditing(false)
+      const data = await resetSystemPromptAPI();
+      const prompt = data.content || "";
+      const [editable, _] = prompt.split(immutableSection);
+      setEditablePrompt(editable.trim());
+      originalPrompt.current = editable.trim();
+      alert("System prompt reset to default!");
+      setHasChanges(false);
+      setIsEditing(false);
     } catch (error: any) {
-      setPromptError(error.message || 'Failed to reset system prompt')
+      setPromptError(error.message || "Failed to reset system prompt");
     } finally {
-      setLoadingPrompt(false)
+      setLoadingPrompt(false);
     }
   }
 
   return (
-    <SectionCard title="System Prompt" icon={<Stethoscope className="text-sky-600" />} className="w-full">
+    <SectionCard
+      title="System Prompt"
+      icon={<Stethoscope className="text-sky-600" />}
+      className="w-full"
+    >
       {loadingPrompt ? (
         <p>Loading prompt...</p>
       ) : (
@@ -142,9 +163,15 @@ IMPORTANT: Return ONLY valid JSON output with no additional text or formatting, 
           {promptError && <p className="text-red-600 mb-2">{promptError}</p>}
 
           <p className="mb-3 text-gray-700">
-            This system prompt guides the optimizer’s behavior. These placeholders must remain untouched:
-            {requiredPlaceholders.map(ph => (
-              <code key={ph} className="bg-gray-100 px-1 rounded mx-0.5 font-mono text-sm">{ph}</code>
+            This system prompt guides the optimizer’s behavior. These
+            placeholders must remain untouched:
+            {requiredPlaceholders.map((ph) => (
+              <code
+                key={ph}
+                className="bg-gray-100 px-1 rounded mx-0.5 font-mono text-sm"
+              >
+                {ph}
+              </code>
             ))}
           </p>
 
@@ -165,16 +192,26 @@ IMPORTANT: Return ONLY valid JSON output with no additional text or formatting, 
             <div className="relative">
               <pre
                 className={`whitespace-pre-wrap p-4 border border-blue-300 rounded-md bg-gray-50 text-gray-800 font-mono transition-all duration-300 ${
-                    showFullPreview ? 'max-h-[600px] overflow-auto' : 'max-h-[160px] overflow-hidden'
+                  showFullPreview
+                    ? "max-h-[600px] overflow-auto"
+                    : "max-h-[160px] overflow-hidden"
                 }`}
-                >
+              >
                 {`${editablePrompt.trim()}\n\n${immutableSection}`}
               </pre>
               <button
-                onClick={() => setShowFullPreview(prev => !prev)}
+                onClick={() => setShowFullPreview((prev) => !prev)}
                 className="text-sm text-blue-600 hover:underline mt-2 flex items-center gap-1"
               >
-                {showFullPreview ? <><EyeOff size={16} /> Hide Preview</> : <><Eye size={16} /> Show Full Preview</>}
+                {showFullPreview ? (
+                  <>
+                    <EyeOff size={16} /> Hide Preview
+                  </>
+                ) : (
+                  <>
+                    <Eye size={16} /> Show Full Preview
+                  </>
+                )}
               </button>
             </div>
           )}
@@ -187,11 +224,11 @@ IMPORTANT: Return ONLY valid JSON output with no additional text or formatting, 
                   disabled={savingPrompt || !hasChanges}
                   className={`px-4 py-2 rounded-md font-medium text-white ${
                     savingPrompt || !hasChanges
-                      ? 'bg-gray-400 cursor-not-allowed'
-                      : 'bg-green-600 hover:bg-green-700'
+                      ? "bg-gray-400 cursor-not-allowed"
+                      : "bg-green-600 hover:bg-green-700"
                   }`}
                 >
-                  {savingPrompt ? 'Saving...' : 'Save'}
+                  {savingPrompt ? "Saving..." : "Save"}
                 </button>
                 <button
                   onClick={cancelEditing}
@@ -214,14 +251,16 @@ IMPORTANT: Return ONLY valid JSON output with no additional text or formatting, 
               onClick={resetPrompt}
               disabled={loadingPrompt || savingPrompt}
               className={`px-4 py-2 rounded-md font-medium text-white ${
-                loadingPrompt ? 'bg-gray-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'
+                loadingPrompt
+                  ? "bg-gray-400 cursor-not-allowed"
+                  : "bg-red-600 hover:bg-red-700"
               }`}
             >
-              {loadingPrompt ? 'Resetting...' : 'Reset to Default'}
+              {loadingPrompt ? "Resetting..." : "Reset to Default"}
             </button>
           </div>
         </>
       )}
     </SectionCard>
-  )
+  );
 }

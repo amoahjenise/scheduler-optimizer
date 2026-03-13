@@ -1,8 +1,9 @@
 from pydantic_settings import BaseSettings
+import json
 
 class Settings(BaseSettings):
     APP_NAME: str = "Scheduler Optimizer"
-    DEBUG: bool = True
+    DEBUG: bool = False
     DATABASE_URL: str
     ALLOW_ORIGINS: list[str] = []
     CLERK_SECRET_KEY: str
@@ -19,10 +20,15 @@ class Settings(BaseSettings):
         env_file = ".env"
         extra = "forbid"  # Optional: ensures no extra variables are silently accepted
 
-    # Override the __init__ to parse comma-separated strings for ALLOW_ORIGINS
+    # Override the __init__ to parse comma-separated strings or JSON arrays for ALLOW_ORIGINS
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         if isinstance(self.ALLOW_ORIGINS, str):
-            self.ALLOW_ORIGINS = [origin.strip() for origin in self.ALLOW_ORIGINS.split(",")]
+            # Try parsing as JSON first
+            try:
+                self.ALLOW_ORIGINS = json.loads(self.ALLOW_ORIGINS)
+            except json.JSONDecodeError:
+                # Fall back to comma-separated
+                self.ALLOW_ORIGINS = [origin.strip() for origin in self.ALLOW_ORIGINS.split(",")]
 
 settings = Settings()

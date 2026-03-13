@@ -8,7 +8,8 @@ from app.db.database import Base
 class OptimizedSchedule(Base):
     __tablename__ = "optimized_schedules"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    schedule_id = Column(UUID(as_uuid=True), ForeignKey("schedules.id"), nullable=False)
+    schedule_id = Column(UUID(as_uuid=True), ForeignKey("schedules.id"), nullable=True)
+    organization_id = Column(String, nullable=True, index=True)  # Multi-tenant org ID
     result = Column(JSON)
     finalized = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)

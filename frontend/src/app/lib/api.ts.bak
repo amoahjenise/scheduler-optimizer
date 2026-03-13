@@ -1,0 +1,1057 @@
+// TODO: remove obsolete backup file
+// lib/api.ts
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL!;
+
+export async function parseImageWithFastAPI(
+  file: File,
+  startDate: string,
+  endDate: string,
+) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("start_date", startDate);
+  formData.append("end_date", endDate);
+
+  const response = await fetch(`${API_BASE}/schedules/upload-schedule/`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`Server Error: ${error}`);
+  }
+
+  const data = await response.json();
+
+  if (data.error) {
+    throw new Error(data.error);
+  }
+
+  return data;
+}
+
+export async function createScheduleAPI(
+  screenshots: File[],
+  startDate: string,
+  endDate: string,
+  notes: string,
+  rules: string,
+  autoComments: string,
+  userId: string,
+) {
+  const formData = new FormData();
+
+  function parseRulesInput(rulesText: string): Record<string, number | string> {
+    const lines = rulesText.split("\n");
+    const rulesObj: Record<string, number | string> = {};
+
+    for (const line of lines) {
+      const [key, value] = line.split("=").map((part) => part.trim());
+      if (key && value !== undefined) {
+        const numeric = Number(value);
+        rulesObj[key] = isNaN(numeric) ? value : numeric;
+      }
+    }
+
+    return rulesObj;
+  }
+
+  function parseAutoComments(input: string) {
+    const lines = input.trim().split("\n");
+    const result: Record<string, Record<string, string>> = {};
+
+    for (const line of lines) {
+      if (!line.includes("|")) continue;
+      const [name, date, comment] = line.split("|").map((part) => part.trim());
+      if (!name || !date || !comment) continue;
+      if (!result[name]) result[name] = {};
+      result[name][date] = comment;
+    }
+
+    return result;
+  }
+
+  formData.append("period", `${startDate} to ${endDate}`);
+  formData.append("user_id", userId);
+  formData.append("notes", notes);
+  formData.append("rules", JSON.stringify(parseRulesInput(rules)));
+  formData.append(
+    "employee_comments",
+    autoComments.trim()
+      ? JSON.stringify(parseAutoComments(autoComments))
+      : "{}",
+  );
+
+  screenshots.forEach((file) => {
+    formData.append("raw_images", file);
+  });
+
+  const res = await fetch(`${API_BASE}/schedules/`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || res.statusText);
+  }
+
+  return await res.json();
+}
+
+export async function optimizeScheduleAPI(reqBody: {
+  schedule_id: string | null;
+  nurses: string[];
+  dates: string[];
+  assignments: Record<string, string[]>;
+  comments: Record<string, Record<string, string>>;
+  rules: Record<string, number>;
+  notes: string;
+}) {
+  const res = await fetch(`${API_BASE}/optimize/`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(reqBody),
+  });
+
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.detail || res.statusText);
+  }
+
+  return await res.json();
+}
+
+// Fetch list of saved optimized schedules
+export async function fetchOptimizedSchedulesAPI() {
+  const res = await fetch(`${API_BASE}/optimize/`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || res.statusText);
+  }
+  return await res.json();
+}
+
+// Fetch a specific optimized schedule by ID
+export async function fetchOptimizedScheduleByIdAPI(scheduleId: string) {
+  const res = await fetch(`${API_BASE}/optimize/${scheduleId}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || res.statusText);
+  }
+  return await res.json();
+}
+
+// Finalize (approve) an optimized schedule
+export async function finalizeScheduleAPI(scheduleId: string) {
+  const res = await fetch(`${API_BASE}/optimize/${scheduleId}/finalize`, {
+    method: "PATCH",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || res.statusText);
+  }
+  return await res.json();
+}
+
+// Fetch all system prompts (returns SystemPrompt[])
+export async function fetchSystemPromptsAPI() {
+  const res = await fetch(`${API_BASE}/system-prompt/`);
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.detail || "Failed to fetch system prompts");
+  }
+  return res.json(); // returns array of { id, name, content }
+}
+
+// Save a new system prompt with name and content
+export async function saveSystemPromptAPI(name: string, content: string) {
+  const res = await fetch(`${API_BASE}/system-prompt/`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, content }),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.detail || "Failed to save system prompt");
+  }
+  return res.json(); // returns the created SystemPrompt object
+}
+
+export async function getSystemPromptById(id: number) {
+  const res = await fetch(`${API_BASE}/system-prompt/${id}`);
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.detail || "Failed to fetch system prompt");
+  }
+  return res.json();
+}
+
+export async function resetSystemPromptAPI() {
+  const response = await fetch(`${API_BASE}/system-prompt/reset/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error("Failed to reset system prompt");
+  }
+  const data = await response.json();
+  return data; // assuming response returns { content: string } with the default prompt
+}
+
+// ============================================
+// PATIENT API FUNCTIONS
+// ============================================
+
+export interface Patient {
+  id: string;
+  mrn: string;
+  first_name: string;
+  last_name: string;
+  date_of_birth?: string;
+  room_number: string;
+  bed?: string;
+  diagnosis?: string;
+  attending_physician?: string;
+  admission_date?: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PatientCreate {
+  mrn: string;
+  first_name: string;
+  last_name: string;
+  date_of_birth?: string;
+  room_number: string;
+  bed?: string;
+  diagnosis?: string;
+  attending_physician?: string;
+  admission_date?: string;
+}
+
+export async function fetchPatientsAPI(params?: {
+  active_only?: boolean;
+  search?: string;
+}): Promise<{ patients: Patient[]; total: number }> {
+  const searchParams = new URLSearchParams();
+  if (params?.active_only !== undefined) {
+    searchParams.set("active_only", String(params.active_only));
+  }
+  if (params?.search) {
+    searchParams.set("search", params.search);
+  }
+
+  const res = await fetch(`${API_BASE}/patients/?${searchParams}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to fetch patients");
+  }
+  return res.json();
+}
+
+export async function createPatientAPI(data: PatientCreate): Promise<Patient> {
+  const res = await fetch(`${API_BASE}/patients/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to create patient");
+  }
+  return res.json();
+}
+
+export async function updatePatientAPI(
+  id: string,
+  data: Partial<PatientCreate>,
+): Promise<Patient> {
+  const res = await fetch(`${API_BASE}/patients/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to update patient");
+  }
+  return res.json();
+}
+
+export async function deletePatientAPI(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/patients/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to delete patient");
+  }
+}
+
+export async function createBulkPatientsAPI(
+  patients: PatientCreate[],
+): Promise<Patient[]> {
+  const res = await fetch(`${API_BASE}/patients/bulk`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patients),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to create patients");
+  }
+  return res.json();
+}
+
+// ============================================
+// HANDOVER API FUNCTIONS
+// ============================================
+
+export type PatientStatus =
+  | "stable"
+  | "improved"
+  | "unchanged"
+  | "worsening"
+  | "critical";
+export type AcuityLevel = "low" | "moderate" | "high" | "critical";
+export type IsolationType =
+  | "none"
+  | "contact"
+  | "droplet"
+  | "airborne"
+  | "neutropenic"
+  | "protective"
+  | "cytotoxic";
+export type ShiftType = "day" | "evening" | "night";
+
+export interface HandoverPatient {
+  id: string;
+  mrn: string;
+  first_name: string;
+  last_name: string;
+  room_number: string;
+  bed?: string;
+  diagnosis?: string;
+}
+
+export interface Handover {
+  id: string;
+  patient_id: string;
+  shift_date: string;
+  shift_type: ShiftType;
+  outgoing_nurse: string;
+  incoming_nurse?: string;
+  status: PatientStatus;
+  acuity: AcuityLevel;
+  isolation: IsolationType;
+  code_status?: string;
+  code_status_manual?: string;
+  revision_date?: string;
+  revision_author?: string;
+
+  // Header Section (Static)
+  pertinent_issues?: string;
+  admit_date?: string;
+  anticipated_discharge?: string;
+  allergies?: string;
+  medications_summary?: string;
+  prn_medications?: string;
+  chemotherapies?: string;
+
+  // Labs
+  wbc?: string;
+  hgb?: string;
+  plt?: string;
+  anc?: string;
+  abnormal_labs?: string;
+
+  // VS/Pain
+  abnormal_vitals?: string;
+  bpews_score?: string;
+  pain_scale?: string;
+  pain_location?: string;
+  pain_relieved_post_med?: string;
+  pca_checkbox?: boolean;
+  nca_checkbox?: boolean;
+  pca_nca_bolus?: string;
+  pain_notes?: string;
+  monitoring_cardiac?: boolean;
+  monitoring_o2_sat?: boolean;
+
+  // IV
+  iv_access?: string;
+  cvad_type?: string;
+  cvad_dressing?: string;
+  iv_infusions?: string;
+  tpn?: string;
+
+  // G.U.
+  urine_output?: string;
+  strict_io?: boolean;
+  io_00?: string;
+  io_06?: string;
+  io_12?: string;
+  io_18?: string;
+  strict_io_00?: string;
+  strict_io_06?: string;
+  strict_io_12?: string;
+  strict_io_18?: string;
+  foley?: boolean;
+  urine_sg?: string;
+  urine_ph?: string;
+  urine_ob?: string;
+  urine_glucose?: string;
+  urine_ketones?: string;
+
+  // Neurological
+  neuro_normal?: boolean;
+  altered_loc?: boolean;
+  speech_changes?: boolean;
+  confusion?: boolean;
+  vp_shunt?: boolean;
+  glasgow_score?: string;
+  gcs_score?: string;
+  neuro_notes?: string;
+
+  // Resp/Cardio
+  lung_assessment?: string;
+  oxygen?: string;
+  oxygen_needs?: string;
+  cardiovascular?: string;
+  chest_tube_left?: boolean;
+  chest_tube_right?: boolean;
+  chest_tube_type_lws?: boolean;
+  chest_tube_type_sd?: boolean;
+  heart_rate_notes?: string;
+
+  // G.I.
+  gi_tenderness?: boolean;
+  gi_distention?: boolean;
+  gi_girth?: string;
+  vomiting?: boolean;
+  vomiting_quantity?: string;
+  nausea?: boolean;
+  last_bowel_movement?: string;
+  constipation?: boolean;
+  diarrhea?: boolean;
+  diarrhea_quantity?: string;
+  colostomy?: boolean;
+  bowel_movements?: string;
+  diet?: string;
+
+  // Nutrition
+  po_intake?: string;
+  fluid_intake_po?: string;
+  fluid_intake_iv?: string;
+  fluid_intake_ng?: string;
+  weight?: string;
+  formula_checkbox?: boolean;
+  formula?: string;
+  total_fluid?: string;
+  breast_milk?: boolean;
+  continuous_feeding?: boolean;
+  continuous_feeding_rate?: string;
+  bolus_feeding?: boolean;
+  bolus_amount?: string;
+  ng_tube?: boolean;
+  nj_tube?: boolean;
+  gt_tube?: boolean;
+  npo?: boolean;
+  feeding_goal?: string;
+  see_feeding_schedule?: boolean;
+  tube_type?: string;
+
+  // Musculoskeletal
+  mobility_restrictions?: string;
+  positioning?: string;
+  assistive_devices?: string;
+  activity?: string;
+
+  // Skin
+  braden_q_score?: string;
+  skin_care_plan?: string;
+  skin_assessment?: string;
+  pressure_sore_stage?: string;
+  pressure_sore_location?: string;
+  pressure_sore_treatment?: string;
+  pressure_sore_staging?: string;
+
+  // Psycho-Social
+  psychosocial_notes?: string;
+  family_notes?: string;
+
+  // Discharge Planning
+  expected_discharge_date?: string;
+  discharge_teaching?: string;
+  discharge_prescriptions?: string;
+  home_enteral_feeding?: string;
+  followup_appointments?: string;
+
+  // To Do & Follow Up
+  todo_items?: string;
+  followup_items?: string;
+
+  // Legacy
+  events_this_shift?: string;
+  pending_tasks?: string;
+  pending_labs?: string;
+  consults?: string;
+  additional_notes?: string;
+  voice_transcription?: string;
+
+  is_draft: boolean;
+  is_completed: boolean;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+  patient?: HandoverPatient;
+}
+
+export interface HandoverCreate {
+  patient_id: string;
+  shift_date: string;
+  shift_type: ShiftType;
+  outgoing_nurse: string;
+  incoming_nurse?: string;
+  status?: PatientStatus;
+  acuity?: AcuityLevel;
+  isolation?: IsolationType;
+  code_status?: string;
+
+  // Header/Static fields that carry over
+  pertinent_issues?: string;
+  admit_date?: string;
+  anticipated_discharge?: string;
+  allergies?: string;
+  medications_summary?: string;
+  prn_medications?: string;
+  chemotherapies?: string;
+
+  // IV Access
+  iv_access?: string;
+  cvad_type?: string;
+  cvad_dressing?: string;
+  tpn?: string;
+
+  // Tubes
+  foley?: boolean;
+  tube_type?: string;
+
+  // Diet/Activity
+  diet?: string;
+  activity?: string;
+
+  // Oxygen
+  oxygen_needs?: string;
+
+  // Skin/Mobility
+  braden_q_score?: string;
+  skin_care_plan?: string;
+  mobility_restrictions?: string;
+  assistive_devices?: string;
+  positioning?: string;
+
+  // Discharge Planning
+  expected_discharge_date?: string;
+  discharge_teaching?: string;
+  discharge_prescriptions?: string;
+  home_enteral_feeding?: string;
+  followup_appointments?: string;
+
+  // Legacy fields
+  events_this_shift?: string;
+  pending_tasks?: string;
+  pending_labs?: string;
+  consults?: string;
+  pain_notes?: string;
+  family_notes?: string;
+  additional_notes?: string;
+  voice_transcription?: string;
+}
+
+export interface HandoverUpdate {
+  outgoing_nurse?: string;
+  incoming_nurse?: string;
+  status?: PatientStatus;
+  acuity?: AcuityLevel;
+  isolation?: IsolationType;
+  code_status?: string;
+  code_status_manual?: string;
+  revision_date?: string;
+  revision_author?: string;
+  shift_type?: ShiftType;
+
+  // Header Section
+  pertinent_issues?: string;
+  admit_date?: string;
+  anticipated_discharge?: string;
+  allergies?: string;
+  medications_summary?: string;
+  prn_medications?: string;
+  chemotherapies?: string;
+
+  // Labs
+  wbc?: string;
+  hgb?: string;
+  plt?: string;
+  anc?: string;
+  abnormal_labs?: string;
+
+  // VS/Pain
+  abnormal_vitals?: string;
+  bpews_score?: string;
+  pain_scale?: string;
+  pain_location?: string;
+  pain_relieved_post_med?: string;
+  pca_checkbox?: boolean;
+  nca_checkbox?: boolean;
+  pca_nca_bolus?: string;
+  pain_notes?: string;
+  monitoring_cardiac?: boolean;
+  monitoring_o2_sat?: boolean;
+
+  // IV
+  iv_access?: string;
+  cvad_type?: string;
+  cvad_dressing?: string;
+  iv_infusions?: string;
+  tpn?: string;
+
+  // G.U.
+  urine_output?: string;
+  strict_io?: boolean;
+  io_00?: string;
+  io_06?: string;
+  io_12?: string;
+  io_18?: string;
+  strict_io_00?: string;
+  strict_io_06?: string;
+  strict_io_12?: string;
+  strict_io_18?: string;
+  foley?: boolean;
+  urine_sg?: string;
+  urine_ph?: string;
+  urine_ob?: string;
+  urine_glucose?: string;
+  urine_ketones?: string;
+
+  // Neurological
+  neuro_normal?: boolean;
+  altered_loc?: boolean;
+  speech_changes?: boolean;
+  confusion?: boolean;
+  vp_shunt?: boolean;
+  glasgow_score?: string;
+  gcs_score?: string;
+  neuro_notes?: string;
+
+  // Resp/Cardio
+  lung_assessment?: string;
+  oxygen?: string;
+  oxygen_needs?: string;
+  cardiovascular?: string;
+  chest_tube_left?: boolean;
+  chest_tube_right?: boolean;
+  chest_tube_type_lws?: boolean;
+  chest_tube_type_sd?: boolean;
+  heart_rate_notes?: string;
+
+  // G.I.
+  gi_tenderness?: boolean;
+  gi_distention?: boolean;
+  gi_girth?: string;
+  vomiting?: boolean;
+  vomiting_quantity?: string;
+  nausea?: boolean;
+  last_bowel_movement?: string;
+  constipation?: boolean;
+  diarrhea?: boolean;
+  diarrhea_quantity?: string;
+  colostomy?: boolean;
+  bowel_movements?: string;
+  diet?: string;
+
+  // Nutrition
+  po_intake?: string;
+  fluid_intake_po?: string;
+  fluid_intake_iv?: string;
+  fluid_intake_ng?: string;
+  weight?: string;
+  formula_checkbox?: boolean;
+  formula?: string;
+  total_fluid?: string;
+  breast_milk?: boolean;
+  continuous_feeding?: boolean;
+  continuous_feeding_rate?: string;
+  bolus_feeding?: boolean;
+  bolus_amount?: string;
+  ng_tube?: boolean;
+  nj_tube?: boolean;
+  gt_tube?: boolean;
+  npo?: boolean;
+  feeding_goal?: string;
+  see_feeding_schedule?: boolean;
+  tube_type?: string;
+
+  // Musculoskeletal
+  mobility_restrictions?: string;
+  positioning?: string;
+  assistive_devices?: string;
+  activity?: string;
+
+  // Skin
+  braden_q_score?: string;
+  skin_care_plan?: string;
+  skin_assessment?: string;
+  pressure_sore_stage?: string;
+  pressure_sore_location?: string;
+  pressure_sore_treatment?: string;
+  pressure_sore_staging?: string;
+
+  // Psycho-Social
+  psychosocial_notes?: string;
+  family_notes?: string;
+
+  // Discharge Planning
+  expected_discharge_date?: string;
+  discharge_teaching?: string;
+  discharge_prescriptions?: string;
+  home_enteral_feeding?: string;
+  followup_appointments?: string;
+
+  // To Do & Follow Up
+  todo_items?: string;
+  followup_items?: string;
+
+  // Legacy
+  events_this_shift?: string;
+  pending_tasks?: string;
+  pending_labs?: string;
+  consults?: string;
+  additional_notes?: string;
+  voice_transcription?: string;
+
+  is_draft?: boolean;
+  is_completed?: boolean;
+}
+
+export async function fetchHandoversAPI(params?: {
+  shift_date?: string;
+  shift_type?: ShiftType;
+  is_completed?: boolean;
+  patient_id?: string;
+  outgoing_nurse?: string;
+}): Promise<{ handovers: Handover[]; total: number }> {
+  const searchParams = new URLSearchParams();
+  if (params?.shift_date) searchParams.set("shift_date", params.shift_date);
+  if (params?.shift_type) searchParams.set("shift_type", params.shift_type);
+  if (params?.is_completed !== undefined)
+    searchParams.set("is_completed", String(params.is_completed));
+  if (params?.patient_id) searchParams.set("patient_id", params.patient_id);
+  if (params?.outgoing_nurse)
+    searchParams.set("outgoing_nurse", params.outgoing_nurse);
+
+  const res = await fetch(`${API_BASE}/handovers/?${searchParams}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to fetch handovers");
+  }
+  return res.json();
+}
+
+export async function fetchTodaysHandoversAPI(
+  shift_type?: ShiftType,
+): Promise<{ handovers: Handover[]; total: number }> {
+  const searchParams = new URLSearchParams();
+  if (shift_type) searchParams.set("shift_type", shift_type);
+
+  const res = await fetch(`${API_BASE}/handovers/today?${searchParams}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to fetch today's handovers");
+  }
+  return res.json();
+}
+
+export async function fetchHandoverAPI(id: string): Promise<Handover> {
+  const res = await fetch(`${API_BASE}/handovers/${id}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to fetch handover");
+  }
+  return res.json();
+}
+
+export async function createHandoverAPI(
+  data: HandoverCreate,
+): Promise<Handover> {
+  const res = await fetch(`${API_BASE}/handovers/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to create handover");
+  }
+  return res.json();
+}
+
+export async function updateHandoverAPI(
+  id: string,
+  data: HandoverUpdate,
+): Promise<Handover> {
+  const res = await fetch(`${API_BASE}/handovers/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to update handover");
+  }
+  return res.json();
+}
+
+export async function completeHandoverAPI(
+  id: string,
+  incoming_nurse: string,
+): Promise<Handover> {
+  const res = await fetch(`${API_BASE}/handovers/${id}/complete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ incoming_nurse }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to complete handover");
+  }
+  return res.json();
+}
+
+export async function deleteHandoverAPI(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/handovers/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to delete handover");
+  }
+}
+
+export async function createBulkHandoversAPI(data: {
+  patient_ids: string[];
+  shift_date: string;
+  shift_type: ShiftType;
+  outgoing_nurse: string;
+}): Promise<Handover[]> {
+  const res = await fetch(`${API_BASE}/handovers/bulk`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to create bulk handovers");
+  }
+  return res.json();
+}
+
+export async function fetchLatestHandoverForPatientAPI(
+  patient_id: string,
+): Promise<Handover | null> {
+  const res = await fetch(`${API_BASE}/handovers/patient/${patient_id}/latest`);
+  if (!res.ok) {
+    if (res.status === 404) return null;
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to fetch latest handover");
+  }
+  return res.json();
+}
+
+// Schedule Optimization APIs
+export async function previewConstraintsAPI(payload: any) {
+  const res = await fetch(`${API_BASE}/optimize/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to preview constraints");
+  }
+
+  return res.json();
+}
+
+export async function optimizeWithConstraintsAPI(
+  constraints: any,
+  assignments?: any,
+  schedule_id?: string,
+) {
+  const res = await fetch(`${API_BASE}/optimize/optimize-with-constraints`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ constraints, assignments, schedule_id }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to optimize schedule");
+  }
+
+  return res.json();
+}
+
+export async function refineScheduleAPI(
+  schedule: any,
+  refinement_request: string,
+  dates: string[],
+) {
+  const res = await fetch(`${API_BASE}/optimize/refine`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ schedule, refinement_request, dates }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to refine schedule");
+  }
+
+  return res.json();
+}
+
+// ============================================
+// NURSE MANAGEMENT API
+// ============================================
+
+export interface Nurse {
+  id: string;
+  user_id: string;
+  name: string;
+  employee_id?: string;
+  employment_type: "full-time" | "part-time";
+  max_weekly_hours: number;
+  is_chemo_certified: boolean;
+  other_certifications?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NurseCreate {
+  name: string;
+  employee_id?: string;
+  employment_type: "full-time" | "part-time";
+  max_weekly_hours: number;
+  is_chemo_certified: boolean;
+  other_certifications?: string;
+}
+
+export interface NurseUpdate {
+  name?: string;
+  employee_id?: string;
+  employment_type?: "full-time" | "part-time";
+  max_weekly_hours?: number;
+  is_chemo_certified?: boolean;
+  other_certifications?: string;
+}
+
+export async function listNursesAPI(
+  userId: string,
+  page = 1,
+  pageSize = 50,
+  search?: string,
+): Promise<{
+  nurses: Nurse[];
+  total: number;
+  page: number;
+  page_size: number;
+}> {
+  const params = new URLSearchParams({
+    user_id: userId,
+    page: page.toString(),
+    page_size: pageSize.toString(),
+  });
+  if (search) params.append("search", search);
+
+  const res = await fetch(`${API_BASE}/nurses?${params.toString()}`);
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to fetch nurses");
+  }
+
+  return res.json();
+}
+
+export async function getNurseAPI(
+  nurseId: string,
+  userId: string,
+): Promise<Nurse> {
+  const res = await fetch(`${API_BASE}/nurses/${nurseId}?user_id=${userId}`);
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to fetch nurse");
+  }
+
+  return res.json();
+}
+
+export async function createNurseAPI(
+  userId: string,
+  nurse: NurseCreate,
+): Promise<Nurse> {
+  const res = await fetch(`${API_BASE}/nurses?user_id=${userId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(nurse),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to create nurse");
+  }
+
+  return res.json();
+}
+
+export async function updateNurseAPI(
+  nurseId: string,
+  userId: string,
+  nurse: NurseUpdate,
+): Promise<Nurse> {
+  const res = await fetch(`${API_BASE}/nurses/${nurseId}?user_id=${userId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(nurse),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to update nurse");
+  }
+
+  return res.json();
+}
+
+export async function deleteNurseAPI(
+  nurseId: string,
+  userId: string,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/nurses/${nurseId}?user_id=${userId}`, {
+    method: "DELETE",
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to delete nurse");
+  }
+}
