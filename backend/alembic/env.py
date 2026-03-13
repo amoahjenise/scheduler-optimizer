@@ -10,6 +10,8 @@ import app.models.user
 import app.models.schedule
 import app.models.optimized_schedule
 
+import app.models.deletion_activity
+import app.models.recurrence
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config

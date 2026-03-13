@@ -771,7 +771,9 @@ export default function Dashboard() {
                           ? todaySchedule.dayStaff
                           : todaySchedule.nightStaff;
                       const iconColor =
-                        activeShiftTab === "day" ? "text-[#1A5CFF]" : "text-indigo-600";
+                        activeShiftTab === "day"
+                          ? "text-[#1A5CFF]"
+                          : "text-indigo-600";
 
                       if (activeStaff.length === 0) {
                         return (
@@ -791,7 +793,9 @@ export default function Dashboard() {
                               key={`${activeShiftTab}-${idx}-${shift.nurse}`}
                               className="flex items-center gap-2 p-2.5 bg-white rounded-lg border border-gray-100"
                             >
-                              <UserCheck className={`w-4 h-4 ${iconColor} flex-shrink-0`} />
+                              <UserCheck
+                                className={`w-4 h-4 ${iconColor} flex-shrink-0`}
+                              />
                               <div className="min-w-0 flex-1">
                                 <p className="text-sm font-medium text-gray-900 truncate">
                                   {shift.nurse}

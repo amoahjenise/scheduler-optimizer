@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi import APIRouter, Depends, UploadFile, File, Form, Header
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from app.db.deps import get_db
 from app.models.schedule import Schedule
 from app.schemas.schedule import ScheduleCreate
+from app.core.auth import get_optional_auth, AuthContext
 import uuid, shutil, os, json
 from app.services.textract_parser import parse_schedule_from_image
 
@@ -37,6 +38,7 @@ async def create_schedule(
     rules: str = Form("{}"),
     employee_comments: str = Form("{}"),
     raw_images: List[UploadFile] = File(...),
+    auth: AuthContext = Depends(get_optional_auth),
     db: Session = Depends(get_db)
 ):
     file_paths = []
@@ -47,8 +49,12 @@ async def create_schedule(
             shutil.copyfileobj(image.file, buffer)
         file_paths.append(filepath)
 
+    # Use organization_id if available
+    org_id = auth.organization_id if auth.is_authenticated else None
+    
     schedule = Schedule(
         user_id=user_id,
+        organization_id=org_id,
         period=period,
         notes=notes,
         rules=json.loads(rules),
