@@ -13,6 +13,10 @@ export { BalancingShiftsPanel } from "./BalancingShiftsPanel";
 export { ShiftTemplateManager } from "./ShiftTemplateManager";
 export { PreferenceImportPanel } from "./PreferenceImportPanel";
 export { PreferenceResultsPanel } from "./PreferenceResultsPanel";
+export {
+  SaveTemplateDialog,
+  TemplatePicker,
+} from "./ScheduleTemplateManager";
 
 // Export types from the central types file
 export type { ShiftCode } from "../types";

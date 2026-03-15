@@ -7,6 +7,7 @@ export { useSchedulerOCRWorkflow } from "./useSchedulerOCRWorkflow";
 export { useOptimization } from "./useOptimization";
 export { useSelfScheduling } from "./useSelfScheduling";
 export { usePreferenceImport } from "./usePreferenceImport";
+export { useScheduleTemplates } from "./useScheduleTemplates";
 export * from "./optimizationPayload";
 
 // Export utility functions

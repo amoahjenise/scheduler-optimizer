@@ -261,11 +261,26 @@ export function PreferenceImportPanel({
                 How to export from Logibec eEspresso
               </summary>
               <div className="mt-2 p-3 bg-gray-50 rounded-lg text-gray-600 space-y-1.5">
-                <p>1. Open <strong>Logibec GCH Espresso</strong> → <em>Workforce Management</em> → <em>Reports</em></p>
-                <p>2. Select <strong>Self-Scheduling Export</strong> (Rapport de l&apos;auto-inscription)</p>
+                <p>
+                  1. Open <strong>Logibec GCH Espresso</strong> →{" "}
+                  <em>Workforce Management</em> → <em>Reports</em>
+                </p>
+                <p>
+                  2. Select <strong>Self-Scheduling Export</strong> (Rapport de
+                  l&apos;auto-inscription)
+                </p>
                 <p>3. Choose your unit and period</p>
-                <p>4. Export as <strong>CSV (Comma Delimited)</strong></p>
-                <p className="text-gray-400 mt-1">The parser automatically skips metadata headers and detects Matricule, Nom_Prénom, Statut_FTE columns and DD-MM-YYYY date format. Concatenated codes like <code className="bg-gray-200 px-1 rounded">CF-3 07</code> and <code className="bg-gray-200 px-1 rounded">Z23 B</code> are recognised.</p>
+                <p>
+                  4. Export as <strong>CSV (Comma Delimited)</strong>
+                </p>
+                <p className="text-gray-400 mt-1">
+                  The parser automatically skips metadata headers and detects
+                  Matricule, Nom_Prénom, Statut_FTE columns and DD-MM-YYYY date
+                  format. Concatenated codes like{" "}
+                  <code className="bg-gray-200 px-1 rounded">CF-3 07</code> and{" "}
+                  <code className="bg-gray-200 px-1 rounded">Z23 B</code> are
+                  recognised.
+                </p>
               </div>
             </details>
           </div>
@@ -600,107 +615,112 @@ Employee ID\tName\tDate\tShift Code
                   <ChevronDown className="w-4 h-4" />
                 )}
               </button>
-              {showPreview && (() => {
-                // Derive FTE map from parsedRows
-                const fteMap = new Map<string, number>();
-                for (const row of result.parsedRows) {
-                  if (row.fte != null && !fteMap.has(row.nurseName)) {
-                    fteMap.set(row.nurseName, row.fte);
+              {showPreview &&
+                (() => {
+                  // Derive FTE map from parsedRows
+                  const fteMap = new Map<string, number>();
+                  for (const row of result.parsedRows) {
+                    if (row.fte != null && !fteMap.has(row.nurseName)) {
+                      fteMap.set(row.nurseName, row.fte);
+                    }
                   }
-                }
-                return (
-                <div className="max-h-64 overflow-y-auto">
-                  {result.submissions.map((sub) => {
-                    const fte = fteMap.get(sub.nurseName);
-                    const holidayShifts = sub.primaryRequests.filter(
-                      (p) => p.reason && p.reason.startsWith("Holiday:")
-                    );
-                    return (
-                    <div
-                      key={sub.nurseId}
-                      className="px-4 py-3 border-t border-gray-100"
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm font-medium text-gray-800">
-                          {sub.nurseName}
-                          {sub.nurseId !== sub.nurseName && (
-                            <span className="text-gray-400 ml-1 text-xs">
-                              ({sub.nurseId})
-                            </span>
-                          )}
-                          {fte != null && (
-                            <span
-                              className={`ml-1.5 px-1.5 py-0.5 rounded text-xs font-normal ${
-                                fte >= 1.0
-                                  ? "bg-emerald-50 text-emerald-700"
-                                  : "bg-amber-50 text-amber-700"
-                              }`}
-                            >
-                              {fte >= 1.0 ? "FT" : `PT ${fte}`}
-                            </span>
-                          )}
-                        </span>
-                        <div className="flex items-center gap-2 text-xs text-gray-500">
-                          <span>
-                            {sub.primaryRequests.length} shift
-                            {sub.primaryRequests.length !== 1 ? "s" : ""}
-                          </span>
-                          {sub.offRequests.length > 0 && (
-                            <span>• {sub.offRequests.length} off</span>
-                          )}
-                          {holidayShifts.length > 0 && (
-                            <span className="text-purple-600">
-                              • {holidayShifts.length} holiday
-                            </span>
-                          )}
-                          <span className="px-1.5 py-0.5 rounded bg-gray-100">
-                            {sub.preferredShiftLength}
-                          </span>
-                          <span className="px-1.5 py-0.5 rounded bg-gray-100">
-                            {sub.shiftTypePreference}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="flex flex-wrap gap-1">
-                        {sub.primaryRequests.slice(0, 14).map((pref, i) => (
-                          <span
-                            key={i}
-                            className={`px-1.5 py-0.5 rounded text-xs ${
-                              pref.reason?.startsWith("Holiday:")
-                                ? "bg-purple-50 text-purple-700 ring-1 ring-purple-200"
-                                : "bg-blue-50 text-blue-700"
-                            }`}
-                            title={pref.reason || undefined}
+                  return (
+                    <div className="max-h-64 overflow-y-auto">
+                      {result.submissions.map((sub) => {
+                        const fte = fteMap.get(sub.nurseName);
+                        const holidayShifts = sub.primaryRequests.filter(
+                          (p) => p.reason && p.reason.startsWith("Holiday:"),
+                        );
+                        return (
+                          <div
+                            key={sub.nurseId}
+                            className="px-4 py-3 border-t border-gray-100"
                           >
-                            {pref.date.slice(5)} {pref.shiftCode}
-                            {pref.reason?.startsWith("Holiday:") && " 🏖"}
-                          </span>
-                        ))}
-                        {sub.offRequests.slice(0, 5).map((d, i) => (
-                          <span
-                            key={`off-${i}`}
-                            className="px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600"
-                          >
-                            {d.slice(5)} OFF
-                          </span>
-                        ))}
-                        {sub.primaryRequests.length + sub.offRequests.length >
-                          19 && (
-                          <span className="text-xs text-gray-400">
-                            +
-                            {sub.primaryRequests.length +
-                              sub.offRequests.length -
-                              19}{" "}
-                            more
-                          </span>
-                        )}
-                      </div>
+                            <div className="flex items-center justify-between mb-1">
+                              <span className="text-sm font-medium text-gray-800">
+                                {sub.nurseName}
+                                {sub.nurseId !== sub.nurseName && (
+                                  <span className="text-gray-400 ml-1 text-xs">
+                                    ({sub.nurseId})
+                                  </span>
+                                )}
+                                {fte != null && (
+                                  <span
+                                    className={`ml-1.5 px-1.5 py-0.5 rounded text-xs font-normal ${
+                                      fte >= 1.0
+                                        ? "bg-emerald-50 text-emerald-700"
+                                        : "bg-amber-50 text-amber-700"
+                                    }`}
+                                  >
+                                    {fte >= 1.0 ? "FT" : `PT ${fte}`}
+                                  </span>
+                                )}
+                              </span>
+                              <div className="flex items-center gap-2 text-xs text-gray-500">
+                                <span>
+                                  {sub.primaryRequests.length} shift
+                                  {sub.primaryRequests.length !== 1 ? "s" : ""}
+                                </span>
+                                {sub.offRequests.length > 0 && (
+                                  <span>• {sub.offRequests.length} off</span>
+                                )}
+                                {holidayShifts.length > 0 && (
+                                  <span className="text-purple-600">
+                                    • {holidayShifts.length} holiday
+                                  </span>
+                                )}
+                                <span className="px-1.5 py-0.5 rounded bg-gray-100">
+                                  {sub.preferredShiftLength}
+                                </span>
+                                <span className="px-1.5 py-0.5 rounded bg-gray-100">
+                                  {sub.shiftTypePreference}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap gap-1">
+                              {sub.primaryRequests
+                                .slice(0, 14)
+                                .map((pref, i) => (
+                                  <span
+                                    key={i}
+                                    className={`px-1.5 py-0.5 rounded text-xs ${
+                                      pref.reason?.startsWith("Holiday:")
+                                        ? "bg-purple-50 text-purple-700 ring-1 ring-purple-200"
+                                        : "bg-blue-50 text-blue-700"
+                                    }`}
+                                    title={pref.reason || undefined}
+                                  >
+                                    {pref.date.slice(5)} {pref.shiftCode}
+                                    {pref.reason?.startsWith("Holiday:") &&
+                                      " 🏖"}
+                                  </span>
+                                ))}
+                              {sub.offRequests.slice(0, 5).map((d, i) => (
+                                <span
+                                  key={`off-${i}`}
+                                  className="px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600"
+                                >
+                                  {d.slice(5)} OFF
+                                </span>
+                              ))}
+                              {sub.primaryRequests.length +
+                                sub.offRequests.length >
+                                19 && (
+                                <span className="text-xs text-gray-400">
+                                  +
+                                  {sub.primaryRequests.length +
+                                    sub.offRequests.length -
+                                    19}{" "}
+                                  more
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                    );
-                  })}
-                </div>
-                );
-              })()}
+                  );
+                })()}
             </div>
 
             {/* Action buttons */}
