@@ -1,4 +1,13 @@
+import os
 import pytest
+
+# Skip this test file if DATABASE_URL is not configured (e.g., in CI)
+# The mocked version (test_scheduler_targets_mocked.py) runs without a DB.
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("DATABASE_URL"),
+    reason="DATABASE_URL not set - skipping tests that require database connection"
+)
+
 from app.api.routes.optimized_schedule import RobustScheduler
 
 
