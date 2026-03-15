@@ -1,5 +1,6 @@
 """API routes for Handover management."""
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 from typing import List, Optional
 from datetime import datetime, date, timezone, timedelta
@@ -16,6 +17,7 @@ from app.schemas.handover import (
 )
 from app.core.auth import OptionalAuth
 from app.utils.audit import log_audit, diff_fields
+from app.services.deletion_activity import record_deletion_activity
 
 router = APIRouter()
 
@@ -37,9 +39,14 @@ def get_handovers(
     """
     query = db.query(Handover).options(joinedload(Handover.patient))
     
-    # Filter by organization if available
+    # Filter by organization if available (include NULL org for legacy records)
     if auth.is_authenticated and auth.organization_id:
-        query = query.filter(Handover.organization_id == auth.organization_id)
+        query = query.filter(
+            or_(
+                Handover.organization_id == auth.organization_id,
+                Handover.organization_id.is_(None),
+            )
+        )
     
     if shift_date:
         # Filter by date portion
@@ -60,10 +67,29 @@ def get_handovers(
     if outgoing_nurse:
         query = query.filter(Handover.outgoing_nurse.ilike(f"%{outgoing_nurse}%"))
     
-    total = query.count()
-    handovers = query.order_by(Handover.created_at.desc()).offset(skip).limit(limit).all()
-    
-    return HandoverListResponse(handovers=handovers, total=total)
+    # Deduplicate: keep only the most recent handover per patient identity.
+    ordered = query.order_by(Handover.updated_at.desc(), Handover.created_at.desc()).all()
+
+    deduped: list[Handover] = []
+    seen_keys: set[tuple] = set()
+    for handover in ordered:
+        if handover.patient_id:
+            key = (handover.patient_id,)
+        else:
+            key = (
+                (handover.p_first_name or "").strip().lower(),
+                (handover.p_last_name or "").strip().lower(),
+                (handover.p_room_number or "").strip(),
+            )
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(handover)
+
+    total = len(deduped)
+    paginated = deduped[skip : skip + limit]
+
+    return HandoverListResponse(handovers=paginated, total=total)
 
 
 @router.get("/today", response_model=HandoverListResponse)
@@ -78,17 +104,24 @@ def get_todays_handovers(
     """
     now_utc = datetime.now(timezone.utc)
     today_utc = now_utc.date()
-    # Widen window: include yesterday-local in case of TZ mismatch (UTC vs Eastern)
-    start = datetime.combine(today_utc - timedelta(days=1), datetime.min.time())
+    # Use a tight window for today: from yesterday 18:00 UTC (to catch evening
+    # shifts stored near midnight in local-tz) through end of today UTC+1.
+    # This is narrower than the old 3-day window which pulled stale records.
+    start = datetime.combine(today_utc - timedelta(days=1), datetime.min.time().replace(hour=18))
     end = datetime.combine(today_utc + timedelta(days=1), datetime.min.time())
     query = db.query(Handover).options(joinedload(Handover.patient)).filter(
         Handover.shift_date >= start,
         Handover.shift_date < end
     )
     
-    # Filter by organization if available
+    # Filter by organization if available (include NULL org for legacy records)
     if auth.is_authenticated and auth.organization_id:
-        query = query.filter(Handover.organization_id == auth.organization_id)
+        query = query.filter(
+            or_(
+                Handover.organization_id == auth.organization_id,
+                Handover.organization_id.is_(None),
+            )
+        )
     
     if shift_type:
         query = query.filter(Handover.shift_type == shift_type)
@@ -404,9 +437,15 @@ def delete_handover(handover_id: str, auth: OptionalAuth, request: Request, db: 
     """
     query = db.query(Handover).filter(Handover.id == handover_id)
     
-    # Filter by organization if available
+    # Filter by organization if available — also include handovers with no
+    # org_id so records created before multi-tenancy can still be deleted.
     if auth.is_authenticated and auth.organization_id:
-        query = query.filter(Handover.organization_id == auth.organization_id)
+        query = query.filter(
+            or_(
+                Handover.organization_id == auth.organization_id,
+                Handover.organization_id.is_(None),
+            )
+        )
     
     handover = query.first()
     if not handover:

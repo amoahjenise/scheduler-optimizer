@@ -415,7 +415,7 @@ export interface PatientCreate {
 export async function fetchPatientsAPI(params?: {
   active_only?: boolean;
   search?: string;
-}): Promise<{ patients: Patient[]; total: number }> {
+}, headers?: Record<string, string>): Promise<{ patients: Patient[]; total: number }> {
   const searchParams = new URLSearchParams();
   if (params?.active_only !== undefined) {
     searchParams.set("active_only", String(params.active_only));
@@ -424,7 +424,7 @@ export async function fetchPatientsAPI(params?: {
     searchParams.set("search", params.search);
   }
 
-  const res = await fetch(`${API_BASE}/patients/?${searchParams}`);
+  const res = await fetch(`${API_BASE}/patients/?${searchParams}`, { headers });
   if (!res.ok) {
     const err = await res.json().catch(() => null);
     throw new Error(err?.detail || "Failed to fetch patients");
@@ -1023,11 +1023,12 @@ export async function fetchHandoversAPI(params?: {
 
 export async function fetchTodaysHandoversAPI(
   shift_type?: ShiftType,
+  headers?: Record<string, string>,
 ): Promise<{ handovers: Handover[]; total: number }> {
   const searchParams = new URLSearchParams();
   if (shift_type) searchParams.set("shift_type", shift_type);
 
-  const res = await fetch(`${API_BASE}/handovers/today?${searchParams}`);
+  const res = await fetch(`${API_BASE}/handovers/today?${searchParams}`, { headers });
   if (!res.ok) {
     const err = await res.json().catch(() => null);
     throw new Error(err?.detail || "Failed to fetch today's handovers");
