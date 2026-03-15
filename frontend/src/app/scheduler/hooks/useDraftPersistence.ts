@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { updateDraftScheduleAPI } from "../../lib/api";
-import { Step, GridRow, ManualNurse } from "../types";
+import { Step, GridRow, ManualNurse, SHIFT_CODES } from "../types";
+import { deduplicateGridGhosts } from "./utils";
 import { useSchedulerStorage } from "./useSchedulerStorage";
 
 type RequiredStaff = Record<string, Record<string, number>>;
@@ -45,6 +46,40 @@ interface UseDraftPersistenceOptions {
   getToken: () => Promise<string | null>;
   state: DraftPersistenceState;
   setters: DraftPersistenceSetters;
+}
+
+/**
+ * Correct shift hours for all shifts in a grid based on the authoritative
+ * SHIFT_CODES table.  Previously, a substring-matching bug in parseShiftCode
+ * stored wrong hours (e.g. Z07 → 7.5h instead of 11.25h).  This function
+ * re-validates stored hours so that cached / persisted grids display correctly.
+ */
+function correctGridShiftHours(grid: any[]): any[] {
+  if (!Array.isArray(grid)) return grid;
+  return grid.map((row: any) => {
+    if (!row?.shifts || !Array.isArray(row.shifts)) return row;
+    return {
+      ...row,
+      shifts: row.shifts.map((shift: any) => {
+        if (!shift?.shift) return shift;
+        const code = String(shift.shift)
+          .replace(/\s*\*\s*$/, "")
+          .trim()
+          .toUpperCase();
+        const def = SHIFT_CODES.find((s) => s.code.toUpperCase() === code);
+        if (def && def.hours !== shift.hours) {
+          return {
+            ...shift,
+            hours: def.hours,
+            shiftType: def.type,
+            startTime: def.start,
+            endTime: def.end,
+          };
+        }
+        return shift;
+      }),
+    };
+  });
 }
 
 export function useDraftPersistence({
@@ -106,11 +141,15 @@ export function useDraftPersistence({
     if (Array.isArray(parsed.ocrDates))
       currentSetters.setOcrDates(parsed.ocrDates);
     if (Array.isArray(parsed.ocrGrid))
-      currentSetters.setOcrGrid(parsed.ocrGrid);
+      currentSetters.setOcrGrid(
+        deduplicateGridGhosts(correctGridShiftHours(parsed.ocrGrid)),
+      );
     if (parsed.autoComments)
       currentSetters.setAutoComments(parsed.autoComments);
     if (Array.isArray(parsed.optimizedGrid)) {
-      currentSetters.setOptimizedGrid(parsed.optimizedGrid);
+      currentSetters.setOptimizedGrid(
+        correctGridShiftHours(parsed.optimizedGrid),
+      );
     }
     if (parsed.requiredStaff && typeof parsed.requiredStaff === "object") {
       currentSetters.setRequiredStaff(parsed.requiredStaff);

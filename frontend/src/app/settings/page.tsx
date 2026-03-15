@@ -6,8 +6,6 @@ import { useRouter } from "next/navigation";
 import {
   Upload,
   RefreshCw,
-  Eye,
-  EyeOff,
   ArrowLeft,
   Copy,
   Check,
@@ -33,8 +31,24 @@ import {
   resetTeams,
   DEFAULT_TEAMS,
 } from "../lib/teamsConfig";
+import {
+  loadStaffingDefaults,
+  saveStaffingDefaults,
+  DEFAULT_STAFF_REQUIREMENTS,
+  DEFAULT_SHIFT_TYPES,
+} from "../components/StaffRequirementsEditor";
 
 const DEFAULT_LOGO = "/logo-placeholder.png";
+
+const SETTINGS_SECTIONS = [
+  { id: "logo-settings", label: "Logo" },
+  { id: "organization-settings", label: "Organization" },
+  { id: "staffing-defaults", label: "Staffing" },
+  { id: "teams-settings", label: "Teams" },
+  { id: "rooms-settings", label: "Rooms" },
+  { id: "data-management", label: "Data" },
+  { id: "account-info", label: "Account" },
+] as const;
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -46,11 +60,15 @@ export default function SettingsPage() {
     organizations,
     updateOrganizationLogo,
     updateOrganizationWeeklyTargets,
+    approveMember,
+    rejectMember,
+    leaveOrganization,
+    getAuthHeaders,
   } = useOrganization();
   const [logoUrl, setLogoUrl] = useState(DEFAULT_LOGO);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState("");
-  const [showUserId, setShowUserId] = useState(false);
+
   const [copiedCode, setCopiedCode] = useState(false);
   const [teams, setTeams] = useState<string[]>(DEFAULT_TEAMS);
   const [newTeam, setNewTeam] = useState("");
@@ -60,14 +78,90 @@ export default function SettingsPage() {
   const [roomsMessage, setRoomsMessage] = useState("");
   const [editingRoom, setEditingRoom] = useState<string | null>(null);
   const [editRoomValue, setEditRoomValue] = useState("");
-  const [cleanupDays, setCleanupDays] = useState(30);
+  const [cleanupDays, setCleanupDays] = useState(7);
   const [cleanupMessage, setCleanupMessage] = useState("");
   const [cleaningUp, setCleaningUp] = useState(false);
   const [showCleanupConfirm, setShowCleanupConfirm] = useState(false);
-  const [fullTimeWeeklyTarget, setFullTimeWeeklyTarget] = useState(37.5);
-  const [partTimeWeeklyTarget, setPartTimeWeeklyTarget] = useState(26.25);
+  const [fullTimeBiWeeklyTarget, setFullTimeBiWeeklyTarget] = useState(75);
+  const [partTimeBiWeeklyTarget, setPartTimeBiWeeklyTarget] = useState(63.75);
   const [savingWeeklyTargets, setSavingWeeklyTargets] = useState(false);
   const [weeklyTargetsMessage, setWeeklyTargetsMessage] = useState("");
+
+  // Staffing defaults
+  const [staffingDefaults, setStaffingDefaults] = useState<
+    Record<string, number>
+  >(() => loadStaffingDefaults());
+  const [staffingMessage, setStaffingMessage] = useState("");
+
+  // Pending members state (admin only)
+  interface PendingMember {
+    id: string;
+    user_email?: string;
+    user_name?: string;
+    is_approved: boolean;
+    joined_at: string;
+  }
+  const [pendingMembers, setPendingMembers] = useState<PendingMember[]>([]);
+  const [loadingMembers, setLoadingMembers] = useState(false);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+
+  // Fetch members for approval (admin only)
+  useEffect(() => {
+    if (!isAdmin || !currentOrganization) return;
+    let cancelled = false;
+
+    async function fetchMembers() {
+      setLoadingMembers(true);
+      try {
+        const headers = await getAuthHeaders();
+        const res = await fetch(
+          `${process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000"}/organizations/${currentOrganization!.id}/members`,
+          { headers },
+        );
+        if (res.ok) {
+          const members: PendingMember[] = await res.json();
+          if (!cancelled) {
+            setPendingMembers(members.filter((m) => !m.is_approved));
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch members:", err);
+      } finally {
+        if (!cancelled) setLoadingMembers(false);
+      }
+    }
+
+    fetchMembers();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin, currentOrganization, getAuthHeaders]);
+
+  const handleApproveMember = async (memberId: string) => {
+    if (!currentOrganization) return;
+    setApprovingId(memberId);
+    try {
+      await approveMember(currentOrganization.id, memberId);
+      setPendingMembers((prev) => prev.filter((m) => m.id !== memberId));
+    } catch (err) {
+      console.error("Failed to approve member:", err);
+    } finally {
+      setApprovingId(null);
+    }
+  };
+
+  const handleRejectMember = async (memberId: string) => {
+    if (!currentOrganization) return;
+    setApprovingId(memberId);
+    try {
+      await rejectMember(currentOrganization.id, memberId);
+      setPendingMembers((prev) => prev.filter((m) => m.id !== memberId));
+    } catch (err) {
+      console.error("Failed to reject member:", err);
+    } finally {
+      setApprovingId(null);
+    }
+  };
 
   // Sync logo from organization context
   useEffect(() => {
@@ -80,11 +174,11 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (currentOrganization) {
-      setFullTimeWeeklyTarget(
-        currentOrganization.full_time_weekly_target ?? 37.5,
+      setFullTimeBiWeeklyTarget(
+        currentOrganization.full_time_weekly_target ?? 75,
       );
-      setPartTimeWeeklyTarget(
-        currentOrganization.part_time_weekly_target ?? 26.25,
+      setPartTimeBiWeeklyTarget(
+        currentOrganization.part_time_weekly_target ?? 63.75,
       );
     }
   }, [
@@ -322,12 +416,12 @@ export default function SettingsPage() {
     }
 
     if (
-      fullTimeWeeklyTarget < 0 ||
-      fullTimeWeeklyTarget > 168 ||
-      partTimeWeeklyTarget < 0 ||
-      partTimeWeeklyTarget > 168
+      fullTimeBiWeeklyTarget < 0 ||
+      fullTimeBiWeeklyTarget > 336 ||
+      partTimeBiWeeklyTarget < 0 ||
+      partTimeBiWeeklyTarget > 336
     ) {
-      setWeeklyTargetsMessage("Weekly targets must be between 0 and 168");
+      setWeeklyTargetsMessage("Bi-weekly targets must be between 0 and 336");
       setTimeout(() => setWeeklyTargetsMessage(""), 3000);
       return;
     }
@@ -335,10 +429,10 @@ export default function SettingsPage() {
     setSavingWeeklyTargets(true);
     try {
       await updateOrganizationWeeklyTargets(
-        fullTimeWeeklyTarget,
-        partTimeWeeklyTarget,
+        fullTimeBiWeeklyTarget,
+        partTimeBiWeeklyTarget,
       );
-      setWeeklyTargetsMessage("Weekly targets saved successfully");
+      setWeeklyTargetsMessage("Bi-weekly targets saved successfully");
     } catch (error) {
       setWeeklyTargetsMessage(
         error instanceof Error
@@ -349,6 +443,12 @@ export default function SettingsPage() {
       setSavingWeeklyTargets(false);
       setTimeout(() => setWeeklyTargetsMessage(""), 4000);
     }
+  };
+
+  const scrollToSettingsSection = (sectionId: string) => {
+    const target = document.getElementById(sectionId);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   if (!isLoaded) {
@@ -377,8 +477,26 @@ export default function SettingsPage() {
             </p>
           </div>
 
+          <div className="sticky top-20 z-20 mb-6 rounded-lg border border-gray-200 bg-white/90 px-3 py-2 shadow-sm backdrop-blur-sm">
+            <div className="flex items-center gap-3 overflow-x-auto scrollbar-hide">
+              {SETTINGS_SECTIONS.map((section) => (
+                <button
+                  key={section.id}
+                  type="button"
+                  onClick={() => scrollToSettingsSection(section.id)}
+                  className="whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-blue-50 hover:text-blue-700"
+                >
+                  {section.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Logo Settings Card */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+          <div
+            id="logo-settings"
+            className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
+          >
             <h2 className="text-xl font-semibold text-gray-900 mb-4">
               Logo Settings
             </h2>
@@ -461,7 +579,10 @@ export default function SettingsPage() {
 
           {/* Organization Settings Card - Only show if user has an organization */}
           {currentOrganization && (
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+            <div
+              id="organization-settings"
+              className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
+            >
               <div className="flex items-center gap-3 mb-4">
                 <Building2 className="w-6 h-6 text-blue-600" />
                 <h2 className="text-xl font-semibold text-gray-900">
@@ -502,25 +623,26 @@ export default function SettingsPage() {
                 {isAdmin && (
                   <div className="pt-4 border-t border-gray-200">
                     <label className="block text-sm font-medium text-gray-600 mb-2">
-                      Weekly Hour Defaults
+                      Bi-weekly Hour Defaults
                     </label>
                     <p className="text-xs text-gray-500 mb-3">
                       Set organization defaults used when creating Full-Time and
-                      Part-Time staff entries.
+                      Part-Time staff entries. Values are per bi-weekly (2-week)
+                      period.
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
                       <div>
                         <label className="block text-xs font-medium text-gray-600 mb-1">
-                          Full-Time target (hours/week)
+                          Full-Time target (hours/bi-weekly)
                         </label>
                         <input
                           type="number"
                           min={0}
                           max={168}
                           step={0.5}
-                          value={fullTimeWeeklyTarget}
+                          value={fullTimeBiWeeklyTarget}
                           onChange={(e) =>
-                            setFullTimeWeeklyTarget(
+                            setFullTimeBiWeeklyTarget(
                               parseFloat(e.target.value) || 0,
                             )
                           }
@@ -529,16 +651,16 @@ export default function SettingsPage() {
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-gray-600 mb-1">
-                          Part-Time target (hours/week)
+                          Part-Time target (hours/bi-weekly)
                         </label>
                         <input
                           type="number"
                           min={0}
-                          max={168}
+                          max={336}
                           step={0.5}
-                          value={partTimeWeeklyTarget}
+                          value={partTimeBiWeeklyTarget}
                           onChange={(e) =>
-                            setPartTimeWeeklyTarget(
+                            setPartTimeBiWeeklyTarget(
                               parseFloat(e.target.value) || 0,
                             )
                           }
@@ -553,7 +675,7 @@ export default function SettingsPage() {
                     >
                       {savingWeeklyTargets
                         ? "Saving..."
-                        : "Save Weekly Targets"}
+                        : "Save Bi-weekly Targets"}
                     </button>
 
                     {weeklyTargetsMessage && (
@@ -609,6 +731,65 @@ export default function SettingsPage() {
                   </div>
                 )}
 
+                {/* Pending Member Approvals - Admin only */}
+                {isAdmin && pendingMembers.length > 0 && (
+                  <div className="pt-4 border-t border-gray-200">
+                    <label className="block text-sm font-medium text-gray-600 mb-2">
+                      <Users className="w-4 h-4 inline mr-1" />
+                      Pending Approvals
+                      <span className="ml-2 inline-flex items-center justify-center w-5 h-5 text-xs font-bold text-white bg-amber-500 rounded-full">
+                        {pendingMembers.length}
+                      </span>
+                    </label>
+                    <p className="text-xs text-gray-500 mb-3">
+                      These users used your invite code and are waiting for your
+                      approval before they can access the system.
+                    </p>
+                    <div className="space-y-2">
+                      {pendingMembers.map((member) => (
+                        <div
+                          key={member.id}
+                          className="flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-4 py-3"
+                        >
+                          <div>
+                            <p className="font-medium text-gray-900 text-sm">
+                              {member.user_name || "Unknown User"}
+                            </p>
+                            <p className="text-xs text-gray-500">
+                              {member.user_email || "No email"} · Requested{" "}
+                              {new Date(member.joined_at).toLocaleDateString()}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => handleApproveMember(member.id)}
+                              disabled={approvingId === member.id}
+                              className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
+                            >
+                              {approvingId === member.id ? "..." : "Approve"}
+                            </button>
+                            <button
+                              onClick={() => handleRejectMember(member.id)}
+                              disabled={approvingId === member.id}
+                              className="px-3 py-1.5 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50"
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {isAdmin && loadingMembers && (
+                  <div className="pt-4 border-t border-gray-200">
+                    <p className="text-sm text-gray-400">
+                      Checking for pending member requests...
+                    </p>
+                  </div>
+                )}
+
                 {/* Organizations count */}
                 {organizations.length > 1 && (
                   <div className="pt-4 border-t border-gray-200">
@@ -621,12 +802,121 @@ export default function SettingsPage() {
                     </p>
                   </div>
                 )}
+
+                {/* Leave Organization */}
+                <div className="pt-4 border-t border-gray-200">
+                  <label className="block text-sm font-medium text-red-600 mb-1">
+                    <DoorOpen className="w-4 h-4 inline mr-1" />
+                    Leave Organization
+                  </label>
+                  <p className="text-xs text-gray-500 mb-3">
+                    Remove yourself from{" "}
+                    <span className="font-medium">
+                      {currentOrganization.name}
+                    </span>
+                    . You will lose access to all data within this organization.
+                    {isAdmin &&
+                      " As an admin, you can only leave if there is at least one other admin."}
+                  </p>
+                  <button
+                    onClick={async () => {
+                      if (
+                        !confirm(
+                          `Are you sure you want to leave "${currentOrganization.name}"? You will lose access to all organization data.`,
+                        )
+                      )
+                        return;
+                      try {
+                        await leaveOrganization(currentOrganization.id);
+                        router.push("/dashboard");
+                      } catch (err: any) {
+                        alert(err.message || "Failed to leave organization");
+                      }
+                    }}
+                    className="px-4 py-2 text-sm font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors"
+                  >
+                    <DoorOpen className="w-4 h-4 inline mr-1" />
+                    Leave Organization
+                  </button>
+                </div>
               </div>
             </div>
           )}
 
+          {/* Staffing Defaults Card */}
+          <div
+            id="staffing-defaults"
+            className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
+          >
+            <div className="flex items-center gap-3 mb-4">
+              <Users className="w-6 h-6 text-emerald-600" />
+              <h2 className="text-xl font-semibold text-gray-900">
+                Staffing Requirements Defaults
+              </h2>
+            </div>
+            <p className="text-sm text-gray-600 mb-4">
+              Set the default minimum staff required per shift. These values
+              pre-fill the Staff Requirements table when creating a new
+              schedule.
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+              {DEFAULT_SHIFT_TYPES.map((shift) => (
+                <div key={shift}>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">
+                    {shift}
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={50}
+                    step={1}
+                    value={staffingDefaults[shift] ?? 0}
+                    onChange={(e) =>
+                      setStaffingDefaults((prev) => ({
+                        ...prev,
+                        [shift]: parseInt(e.target.value) || 0,
+                      }))
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  saveStaffingDefaults(staffingDefaults);
+                  setStaffingMessage("Staffing defaults saved");
+                  setTimeout(() => setStaffingMessage(""), 3000);
+                }}
+                className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors"
+              >
+                Save Defaults
+              </button>
+              <button
+                onClick={() => {
+                  setStaffingDefaults({ ...DEFAULT_STAFF_REQUIREMENTS });
+                  saveStaffingDefaults(DEFAULT_STAFF_REQUIREMENTS);
+                  setStaffingMessage("Reset to factory defaults");
+                  setTimeout(() => setStaffingMessage(""), 3000);
+                }}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+              >
+                Reset
+              </button>
+            </div>
+            {staffingMessage && (
+              <div className="mt-3 p-2 rounded-lg text-sm bg-green-50 text-green-800 border border-green-200">
+                {staffingMessage}
+              </div>
+            )}
+          </div>
+
           {/* Teams Management Card */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+          <div
+            id="teams-settings"
+            className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
+          >
             <div className="flex items-center gap-3 mb-4">
               <Users className="w-6 h-6 text-blue-600" />
               <h2 className="text-xl font-semibold text-gray-900">Teams</h2>
@@ -726,7 +1016,10 @@ export default function SettingsPage() {
 
           {/* Rooms Management Card (Admin Only) */}
           {isAdmin && (
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+            <div
+              id="rooms-settings"
+              className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
+            >
               <div className="flex items-center gap-3 mb-4">
                 <DoorOpen className="w-6 h-6 text-green-600" />
                 <h2 className="text-xl font-semibold text-gray-900">Rooms</h2>
@@ -902,7 +1195,10 @@ export default function SettingsPage() {
           )}
 
           {/* Data Management Card */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
+          <div
+            id="data-management"
+            className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
+          >
             <div className="flex items-center gap-3 mb-4">
               <Trash2 className="w-6 h-6 text-red-600" />
               <h2 className="text-xl font-semibold text-gray-900">
@@ -1006,7 +1302,10 @@ export default function SettingsPage() {
           </div>
 
           {/* User Info Card */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <div
+            id="account-info"
+            className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6"
+          >
             <h2 className="text-xl font-semibold text-gray-900 mb-4">
               Account Information
             </h2>
@@ -1024,33 +1323,6 @@ export default function SettingsPage() {
                   Name
                 </label>
                 <p className="text-gray-900">{user?.fullName || "N/A"}</p>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-600">
-                  User ID
-                </label>
-                <div className="flex items-center gap-2">
-                  <p className="text-gray-900 font-mono text-sm">
-                    {showUserId
-                      ? user?.id || "N/A"
-                      : user?.id
-                        ? `${user.id.substring(0, 8)}${"".padStart(user.id.length - 8, "•")}`
-                        : "N/A"}
-                  </p>
-                  {user?.id && (
-                    <button
-                      onClick={() => setShowUserId(!showUserId)}
-                      className="p-1 text-gray-400 hover:text-gray-600 transition-colors"
-                      title={showUserId ? "Hide User ID" : "Show User ID"}
-                    >
-                      {showUserId ? (
-                        <EyeOff className="w-4 h-4" />
-                      ) : (
-                        <Eye className="w-4 h-4" />
-                      )}
-                    </button>
-                  )}
-                </div>
               </div>
             </div>
           </div>

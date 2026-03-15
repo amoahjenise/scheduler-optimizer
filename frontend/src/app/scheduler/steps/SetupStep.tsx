@@ -1,40 +1,44 @@
 "use client";
 
-import React from "react";
+import React, { Dispatch, SetStateAction } from "react";
 import { motion } from "framer-motion";
-import {
-  ShiftCodesReference,
-  RulesEditorCard,
-  SchedulePeriodInput,
-} from "../components";
-import SystemPrompt from "../../components/SystemPrompt";
-import { SHIFT_CODES, TIME_SLOTS } from "../types";
+import { SchedulePeriodInput } from "../components";
+import UploadInput from "../../components/UploadInput";
+import { AlertTriangle } from "lucide-react";
 
 interface SetupStepProps {
   startDate: string;
   endDate: string;
-  rules: string;
-  shiftEntryMode?: "codes" | "slots";
   onStartDateChange: (date: string) => void;
   onEndDateChange: (date: string) => void;
-  onRulesChange: (rules: string) => void;
-  onShiftEntryModeChange?: (mode: "codes" | "slots") => void;
-  onContinue: () => void;
+  // Upload props
+  screenshots: File[];
+  setScreenshots: Dispatch<SetStateAction<File[]>>;
+  ocrLoading: boolean;
+  ocrError: string | null;
+  onExtract: () => void;
+  /** Number of nurses loaded from the database (for name matching) */
+  nursesLoadedCount?: number;
+  /** True while nurse list is being fetched from backend */
+  nursesLoading?: boolean;
 }
 
 export default function SetupStep({
   startDate,
   endDate,
-  rules,
-  shiftEntryMode = "codes",
   onStartDateChange,
   onEndDateChange,
-  onRulesChange,
-  onShiftEntryModeChange,
-  onContinue,
+  screenshots,
+  setScreenshots,
+  ocrLoading,
+  ocrError,
+  onExtract,
+  nursesLoadedCount = 0,
+  nursesLoading = false,
 }: SetupStepProps) {
   const isValid =
     startDate && endDate && new Date(startDate) <= new Date(endDate);
+  const nursesNotLoaded = !nursesLoading && nursesLoadedCount === 0;
 
   return (
     <motion.div
@@ -50,45 +54,74 @@ export default function SetupStep({
         onEndDateChange={onEndDateChange}
       />
 
-      {/* Shift Codes Reference */}
-      <ShiftCodesReference
-        shiftCodes={SHIFT_CODES}
-        timeSlots={TIME_SLOTS}
-        mode={shiftEntryMode}
-        onModeChange={onShiftEntryModeChange}
-      />
+      {/* Upload Schedule Images */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-2 flex items-center gap-2">
+          <span className="text-xl">📷</span> Upload Schedule Images
+        </h2>
+        <p className="text-gray-500 text-sm mb-4">
+          Upload screenshots or photos of your current schedule. We&apos;ll
+          extract the data using OCR.
+        </p>
 
-      {/* Custom Rules Editor */}
-      <RulesEditorCard rules={rules} onChange={onRulesChange} />
+        <UploadInput
+          screenshots={screenshots}
+          setScreenshots={setScreenshots}
+        />
 
-      {/* Advanced Settings - Collapsible */}
-      <details className="bg-white rounded-xl border border-gray-200">
-        <summary className="px-6 py-4 cursor-pointer select-none flex items-center justify-between hover:bg-gray-50 rounded-xl">
-          <div className="flex items-center gap-2">
-            <span className="text-gray-500">⚙️</span>
-            <span className="font-medium text-gray-700">Advanced Settings</span>
+        {screenshots.length > 0 && (
+          <div className="mt-3 flex items-center gap-2">
+            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+              {screenshots.length} file{screenshots.length !== 1 ? "s" : ""}{" "}
+              selected
+            </span>
           </div>
-          <span className="text-gray-400 text-sm">Click to expand</span>
-        </summary>
-        <div className="px-6 pb-6 border-t border-gray-100 pt-4">
-          <h3 className="text-sm font-semibold text-gray-900 mb-2">
-            System Prompt
-          </h3>
-          <p className="text-sm text-gray-500 mb-4">
-            Review and customize the AI system prompt. This controls how the
-            optimizer interprets your schedule data.
-          </p>
-          <SystemPrompt />
-        </div>
-      </details>
+        )}
 
+        {nursesLoading && screenshots.length > 0 && (
+          <div className="mt-4 p-3 bg-amber-50 border border-amber-200 text-amber-700 rounded-lg text-sm flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+            <span>
+              Loading nurse database... Wait a moment before extracting for best
+              name matching results.
+            </span>
+          </div>
+        )}
+
+        {nursesNotLoaded && screenshots.length > 0 && (
+          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 text-blue-700 rounded-lg text-sm flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+            <span>
+              Nurse database loaded with 0 records. You can still extract, but
+              OCR name matching suggestions may be limited.
+            </span>
+          </div>
+        )}
+
+        {ocrError && (
+          <div className="mt-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
+            {ocrError}
+          </div>
+        )}
+      </div>
+
+      {/* Action */}
       <div className="flex justify-end">
         <button
-          onClick={onContinue}
-          disabled={!isValid}
-          className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          onClick={onExtract}
+          disabled={
+            !isValid || screenshots.length === 0 || ocrLoading || nursesLoading
+          }
+          className="px-6 py-2.5 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
         >
-          Continue to Upload
+          {ocrLoading ? (
+            <>
+              <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
+              Processing…
+            </>
+          ) : (
+            "Extract & Continue →"
+          )}
         </button>
       </div>
     </motion.div>

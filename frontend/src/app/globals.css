@@ -60,6 +60,29 @@ body {
   line-height: 1.6;
 }
 
+/* --- HIPAA: Prevent print & screenshot capture of sensitive content --- */
+@media print {
+  body {
+    visibility: hidden !important;
+  }
+  body::after {
+    visibility: visible;
+    content: "Printing is disabled for patient safety. Use the in-app print/export feature.";
+    display: block;
+    text-align: center;
+    padding: 3rem;
+    font-size: 1.25rem;
+    color: #475569;
+  }
+}
+
+/* Prevent user-select on PHI areas */
+[data-phi],
+.phi-protected {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .page-frame {
   min-height: calc(100vh - 64px);
   background: linear-gradient(135deg, #f8fafc 0%, #eef4ff 55%, #f5f7fb 100%);
@@ -337,4 +360,19 @@ body {
   .bg-gray-50 {
     background-color: #fafafa !important;
   }
+}
+
+/* ===========================================
+   HIPAA DATA PROTECTION
+   =========================================== */
+/* Prevent text selection on elements marked as protected */
+.phi-protected {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Visual cue that data is protected */
+.phi-protected::before {
+  /* Subtle lock icon indicator via empty pseudo-element for screen readers */
+  content: "";
 }

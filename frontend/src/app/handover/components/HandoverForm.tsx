@@ -12,13 +12,14 @@ import {
   ShiftType,
   updateHandoverAPI,
   completeHandoverAPI,
-  updatePatientAPI,
-  PatientCreate,
 } from "../../lib/api";
 import SmartTextInput from "../../components/SmartTextInput";
+import LabTrendBanner from "./LabTrendBanner";
+import CarriedForwardBanner from "./CarriedForwardBanner";
 import { loadPatientConfig, PatientFieldConfig } from "../../lib/patientConfig";
 import { loadRooms } from "../../lib/roomsConfig";
 import { loadTeams, DEFAULT_TEAMS } from "../../lib/teamsConfig";
+import { loadDiagnoses, addDiagnosis } from "../../lib/diagnosesConfig";
 
 interface HandoverFormProps {
   handover: Handover;
@@ -28,6 +29,7 @@ interface HandoverFormProps {
   onPatientUpdate?: (patient: Patient) => void;
   onShiftChange?: (shiftType: "day" | "night") => void;
   readOnly?: boolean;
+  previousHandover?: Handover | null;
 }
 
 // Form sections for navigation
@@ -49,24 +51,80 @@ const FORM_SECTIONS = [
   { id: "todo", label: "To Do" },
 ];
 
-// Real room suggestions for HEMA-ONC unit (loaded from config)
+// Sections that contain carried-forward data (copied from previous shift).
+// These require nurse verification before completing a handover.
+const CARRIED_FORWARD_SECTIONS: Record<
+  string,
+  { label: string; fields: (keyof Handover)[] }
+> = {
+  "static-info": {
+    label: "Static Info",
+    fields: [
+      "diagnosis_details",
+      "summary_assessment",
+      "treatment_plan",
+      "allergies",
+      "chemotherapies",
+      "iv_infusions",
+      "prn_medications",
+      "code_status",
+    ],
+  },
+  iv: {
+    label: "IV Access",
+    fields: [
+      "iv_access_type",
+      "iv_access_location",
+      "iv_access_date",
+      "iv_access_status",
+    ],
+  },
+  nutrition: {
+    label: "Nutrition",
+    fields: ["diet", "npo_status"],
+  },
+  musculoskeletal: {
+    label: "MSK / Activity",
+    fields: [
+      "activity_level",
+      "fall_risk",
+      "fall_precautions",
+      "restraints",
+      "mobility_aids",
+    ],
+  },
+  skin: {
+    label: "Skin",
+    fields: ["skin_integrity", "wounds"],
+  },
+  discharge: {
+    label: "Discharge",
+    fields: [
+      "discharge_plan",
+      "discharge_date",
+      "social_work_needs",
+      "pt_ot_needs",
+      "consults",
+    ],
+  },
+};
 
-const DIAGNOSIS_SUGGESTIONS = [
-  "ALL",
-  "AML",
-  "Neuroblastoma",
-  "Hodgkin Lymphoma",
-  "Non-Hodgkin Lymphoma",
-  "Brain Tumor",
-  "Osteosarcoma",
-  "Ewing Sarcoma",
-  "Wilms Tumor",
-  "BMT - Auto",
-  "BMT - Allo",
-  "Sickle Cell",
-  "Aplastic Anemia",
-  "SCIDS",
-];
+/** Check whether a section has any non-empty carried-forward fields */
+function sectionHasCarriedData(
+  handover: Handover,
+  previous: Handover | null,
+  fields: (keyof Handover)[],
+): boolean {
+  if (!previous) return false;
+  return fields.some((f) => {
+    const val = handover[f];
+    const prevVal = previous[f];
+    // Field has a value AND matches the previous shift → was carried over
+    return val != null && val !== "" && val === prevVal;
+  });
+}
+
+// Real room suggestions for HEMA-ONC unit (loaded from config)
 
 // Shift codes for scheduling
 const SHIFT_CODES = [
@@ -263,7 +321,7 @@ function InfoTip({ tip, light = false }: { tip?: string; light?: boolean }) {
         ⓘ
       </span>
       <span
-        className="absolute z-50 bottom-full left-0 mb-1.5 w-64 bg-gray-900 text-white text-xs rounded-md px-2.5 py-2
+        className="absolute z-[120] bottom-full left-0 mb-1.5 w-64 bg-gray-900 text-white text-xs rounded-md px-2.5 py-2
                    opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity duration-150 shadow-xl whitespace-normal"
         style={{ minWidth: "14rem" }}
       >
@@ -281,25 +339,36 @@ function Section({
   infoTip,
   children,
   className = "",
-  allowOverflow = false,
+  highlight = false,
 }: {
   id?: string;
   title: string;
   infoTip?: string;
   children: React.ReactNode;
   className?: string;
-  allowOverflow?: boolean;
+  highlight?: boolean;
 }) {
   return (
     <div
       id={id}
-      className={`border border-gray-300 rounded-lg ${allowOverflow ? "overflow-visible" : "overflow-hidden"} ${className}`}
+      className={`relative border rounded-lg overflow-visible ${highlight ? "border-yellow-400 ring-1 ring-yellow-200" : "border-gray-300"} ${className}`}
     >
-      <div className="bg-blue-600 text-white px-3 py-1.5 font-semibold text-sm flex items-center gap-0.5">
+      <div
+        className={`${highlight ? "bg-yellow-500" : "bg-blue-600"} text-white px-3 py-1.5 font-semibold text-sm flex items-center gap-0.5 rounded-t-lg`}
+      >
         {title}
+        {highlight && (
+          <span className="ml-1 text-xs font-normal opacity-80">
+            (review needed)
+          </span>
+        )}
         {infoTip && <InfoTip tip={infoTip} light />}
       </div>
-      <div className="p-3 bg-white">{children}</div>
+      <div
+        className={`p-3 rounded-b-lg ${highlight ? "bg-yellow-50" : "bg-white"}`}
+      >
+        {children}
+      </div>
     </div>
   );
 }
@@ -514,6 +583,7 @@ export default function HandoverForm({
   onPatientUpdate,
   onShiftChange,
   readOnly = false,
+  previousHandover = null,
 }: HandoverFormProps) {
   const { user } = useUser();
   const isFormReadOnly = readOnly || handover.is_completed;
@@ -533,6 +603,33 @@ export default function HandoverForm({
   const [activeSection, setActiveSection] = useState<string>("patient-info");
   const initialDataRef = useRef<string>("");
 
+  // Carried-forward verification state — track which sections have been verified
+  const [verifiedSections, setVerifiedSections] = useState<Set<string>>(() => {
+    // If no previous handover, nothing to verify
+    if (!previousHandover)
+      return new Set(Object.keys(CARRIED_FORWARD_SECTIONS));
+    // Start with no sections verified; nurse must verify each one
+    const initialVerified = new Set<string>();
+    for (const [sectionId, def] of Object.entries(CARRIED_FORWARD_SECTIONS)) {
+      // Only require verification if the section actually has carried data
+      if (!sectionHasCarriedData(handover, previousHandover, def.fields)) {
+        initialVerified.add(sectionId);
+      }
+    }
+    return initialVerified;
+  });
+
+  const verifySectionHandler = useCallback((sectionId: string) => {
+    setVerifiedSections((prev) => new Set([...prev, sectionId]));
+  }, []);
+
+  const allSectionsVerified = Object.keys(CARRIED_FORWARD_SECTIONS).every(
+    (id) => verifiedSections.has(id),
+  );
+  const unverifiedCount = Object.keys(CARRIED_FORWARD_SECTIONS).filter(
+    (id) => !verifiedSections.has(id),
+  ).length;
+
   // Reload patient config when settings change
   useEffect(() => {
     const handleStorageChange = () => {
@@ -547,16 +644,16 @@ export default function HandoverForm({
     };
   }, []);
 
-  // Patient data (editable)
+  // Patient data (editable) — prefer embedded p_* fields from handover, fallback to patient prop
   const [patientData, setPatientData] = useState({
-    room_number: patient.room_number || "",
-    bed: patient.bed || "",
-    diagnosis: patient.diagnosis || "",
-    mrn: patient.mrn || "",
-    first_name: patient.first_name || "",
-    last_name: patient.last_name || "",
-    date_of_birth: patient.date_of_birth || "",
-    age: patient.age || "",
+    room_number: handover.p_room_number || patient.room_number || "",
+    bed: handover.p_bed || patient.bed || "",
+    diagnosis: handover.p_diagnosis || patient.diagnosis || "",
+    mrn: handover.p_mrn || patient.mrn || "",
+    first_name: handover.p_first_name || patient.first_name || "",
+    last_name: handover.p_last_name || patient.last_name || "",
+    date_of_birth: handover.p_date_of_birth || patient.date_of_birth || "",
+    age: handover.p_age || patient.age || "",
     team: loadTeams()[0] || DEFAULT_TEAMS[0],
   });
   const [teamOptions, setTeamOptions] = useState<string[]>(loadTeams());
@@ -565,6 +662,8 @@ export default function HandoverForm({
   const [showBowelDropdown, setShowBowelDropdown] = useState(false);
   const bowelDropdownRef = useRef<HTMLDivElement>(null);
   const [roomSuggestions, setRoomSuggestions] = useState<string[]>(loadRooms());
+  const [diagnosisSuggestions, setDiagnosisSuggestions] =
+    useState<string[]>(loadDiagnoses());
 
   // Load rooms from config and listen for changes
   useEffect(() => {
@@ -578,6 +677,15 @@ export default function HandoverForm({
     return () => {
       window.removeEventListener("roomsConfigChanged", handleRoomsChange);
     };
+  }, []);
+
+  // Load diagnoses from config and listen for changes
+  useEffect(() => {
+    setDiagnosisSuggestions(loadDiagnoses());
+    const handleDiagChange = () => setDiagnosisSuggestions(loadDiagnoses());
+    window.addEventListener("diagnosesConfigChanged", handleDiagChange);
+    return () =>
+      window.removeEventListener("diagnosesConfigChanged", handleDiagChange);
   }, []);
 
   useEffect(() => {
@@ -821,7 +929,7 @@ export default function HandoverForm({
     }
   };
 
-  // Update patient data
+  // Update patient data — saves to the handover's embedded patient fields
   const updatePatientField = async (
     field: keyof typeof patientData,
     value: string,
@@ -835,24 +943,36 @@ export default function HandoverForm({
     }
     setPatientData((prev) => ({ ...prev, [field]: newValue }));
 
-    // Auto-save patient changes
-    try {
-      const updateData: Partial<PatientCreate> = {};
-      if (field === "room_number") updateData.room_number = value;
-      if (field === "bed") updateData.bed = value;
-      if (field === "diagnosis") updateData.diagnosis = value;
-      if (field === "mrn") updateData.mrn = value;
-      if (field === "first_name") updateData.first_name = value;
-      if (field === "last_name") updateData.last_name = value;
-      if (field === "date_of_birth") updateData.date_of_birth = value;
-      if (field === "age") updateData.age = value;
+    // Map patient field names to handover embedded field names (p_*)
+    const fieldMap: Record<string, string> = {
+      room_number: "p_room_number",
+      bed: "p_bed",
+      diagnosis: "p_diagnosis",
+      mrn: "p_mrn",
+      first_name: "p_first_name",
+      last_name: "p_last_name",
+      date_of_birth: "p_date_of_birth",
+      age: "p_age",
+    };
 
-      if (Object.keys(updateData).length > 0) {
-        const updated = await updatePatientAPI(patient.id, updateData);
-        if (onPatientUpdate) onPatientUpdate(updated);
+    const handoverField = fieldMap[field];
+    if (handoverField) {
+      try {
+        const updateData: Record<string, string> = {
+          [handoverField]: newValue,
+        };
+        const updated = await updateHandoverAPI(handover.id, updateData as any);
+        onSave(updated);
+        // Also notify parent about the "patient" change for display purposes
+        if (onPatientUpdate) {
+          onPatientUpdate({
+            ...patient,
+            [field]: newValue,
+          });
+        }
+      } catch (err) {
+        console.error("Failed to update patient info on handover:", err);
       }
-    } catch (err) {
-      console.error("Failed to update patient:", err);
     }
   };
 
@@ -1024,9 +1144,7 @@ export default function HandoverForm({
             />
           </svg>
           <p className="text-sm text-amber-800">
-            {handover.is_completed
-              ? "This hand-off has been marked complete and is now read-only. You can view and print it, but cannot make changes."
-              : "This report is from a previous date and is read-only. You can view and print it, but cannot make changes."}
+            This report is from a previous date and is read-only.
           </p>
         </div>
       )}
@@ -1144,7 +1262,7 @@ export default function HandoverForm({
                 placeholder="B7.01"
               />
               {showRoomDropdown && (
-                <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded shadow-lg max-h-32 overflow-y-auto">
+                <div className="absolute z-[90] top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded shadow-lg max-h-32 overflow-y-auto">
                   {roomSuggestions
                     .filter((r) =>
                       r
@@ -1181,13 +1299,55 @@ export default function HandoverForm({
                       ? `Patient Name / ${patientConfig.team.label}`
                       : "Patient Name"}
               </div>
-              <div className="flex items-center gap-1">
-                <span className="font-semibold text-sm">
-                  {patient.last_name}, {patient.first_name}{" "}
-                  {patientConfig.date_of_birth.show && (
-                    <>/ {calculateAge(patient.date_of_birth)} </>
-                  )}
-                </span>
+              <div className="flex items-center gap-1 flex-wrap">
+                <input
+                  type="text"
+                  value={patientData.last_name}
+                  onChange={(e) =>
+                    setPatientData((p) => ({ ...p, last_name: e.target.value }))
+                  }
+                  onBlur={() =>
+                    updatePatientField("last_name", patientData.last_name)
+                  }
+                  className="font-semibold text-sm border-0 p-0 focus:ring-0 bg-transparent w-auto max-w-[120px]"
+                  placeholder="Last"
+                />
+                <span className="font-semibold text-sm">,</span>
+                <input
+                  type="text"
+                  value={patientData.first_name}
+                  onChange={(e) =>
+                    setPatientData((p) => ({
+                      ...p,
+                      first_name: e.target.value,
+                    }))
+                  }
+                  onBlur={() =>
+                    updatePatientField("first_name", patientData.first_name)
+                  }
+                  className="font-semibold text-sm border-0 p-0 focus:ring-0 bg-transparent w-auto max-w-[120px]"
+                  placeholder="First"
+                />
+                {patientConfig.date_of_birth.show && (
+                  <>
+                    <span className="font-semibold text-sm">/</span>
+                    <input
+                      type="text"
+                      value={
+                        patientData.age ||
+                        calculateAge(
+                          patientData.date_of_birth || patient.date_of_birth,
+                        )
+                      }
+                      onChange={(e) =>
+                        setPatientData((p) => ({ ...p, age: e.target.value }))
+                      }
+                      onBlur={() => updatePatientField("age", patientData.age)}
+                      className="font-semibold text-sm border-0 p-0 focus:ring-0 bg-transparent w-16"
+                      placeholder="Age"
+                    />
+                  </>
+                )}
                 {patientConfig.team.show && (
                   <>
                     <span className="font-semibold text-sm">/</span>
@@ -1279,31 +1439,66 @@ export default function HandoverForm({
                 className="w-full font-medium text-sm border-0 p-0 focus:ring-0 bg-transparent"
                 placeholder="e.g., ALL, AML, Neuroblastoma"
               />
-              {showDiagnosisDropdown && (
-                <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded shadow-lg max-h-32 overflow-y-auto">
-                  {DIAGNOSIS_SUGGESTIONS.filter((d) =>
-                    d
-                      .toLowerCase()
-                      .includes(patientData.diagnosis.toLowerCase()),
-                  )
-                    .slice(0, 6)
-                    .map((diag) => (
-                      <button
-                        key={diag}
-                        type="button"
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => {
-                          setPatientData((p) => ({ ...p, diagnosis: diag }));
-                          updatePatientField("diagnosis", diag);
-                          setShowDiagnosisDropdown(false);
-                        }}
-                        className="w-full text-left px-2 py-1 text-sm hover:bg-blue-50"
-                      >
-                        {diag}
-                      </button>
-                    ))}
-                </div>
-              )}
+              {showDiagnosisDropdown &&
+                (() => {
+                  const trimmed = patientData.diagnosis.trim();
+                  const filtered = diagnosisSuggestions
+                    .filter((d) =>
+                      d.toLowerCase().includes(trimmed.toLowerCase()),
+                    )
+                    .slice(0, 6);
+                  const exactMatch =
+                    trimmed.length > 0 &&
+                    diagnosisSuggestions.some(
+                      (d) => d.toLowerCase() === trimmed.toLowerCase(),
+                    );
+                  return (
+                    <div className="absolute z-[90] top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded shadow-lg max-h-40 overflow-y-auto">
+                      {filtered.map((diag) => (
+                        <button
+                          key={diag}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            setPatientData((p) => ({ ...p, diagnosis: diag }));
+                            updatePatientField("diagnosis", diag);
+                            setShowDiagnosisDropdown(false);
+                          }}
+                          className="w-full text-left px-2 py-1 text-sm hover:bg-blue-50"
+                        >
+                          {diag}
+                        </button>
+                      ))}
+                      {trimmed.length > 1 && !exactMatch && (
+                        <button
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            const updated = addDiagnosis(trimmed);
+                            setDiagnosisSuggestions(updated);
+                            setShowDiagnosisDropdown(false);
+                          }}
+                          className="w-full text-left px-2 py-1.5 text-sm text-green-700 bg-green-50 hover:bg-green-100 border-t border-gray-100 flex items-center gap-1.5"
+                        >
+                          <svg
+                            className="w-3.5 h-3.5"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M12 4v16m8-8H4"
+                            />
+                          </svg>
+                          Add &quot;{trimmed}&quot; to suggestions
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
             </div>
             <div className="border border-gray-300 rounded p-2">
               <div className="text-xs text-gray-500 mb-1">
@@ -1325,11 +1520,19 @@ export default function HandoverForm({
         {/* Static Info Section */}
         <div
           id="static-info"
-          className="bg-gray-50 border border-gray-300 rounded-lg p-4 mb-4"
+          className={`border rounded-lg p-4 mb-4 ${!verifiedSections.has("static-info") ? "bg-yellow-50 border-yellow-300" : "bg-gray-50 border-gray-300"}`}
         >
           <h3 className="text-sm font-semibold text-gray-700 mb-3">
             Static Information (carries over between shifts)
           </h3>
+          {!verifiedSections.has("static-info") && (
+            <CarriedForwardBanner
+              sectionLabel="Static Info"
+              verified={false}
+              onVerify={() => verifySectionHandler("static-info")}
+              readOnly={isFormReadOnly}
+            />
+          )}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {/* Admit Date - Date Picker */}
             <div>
@@ -1493,6 +1696,7 @@ export default function HandoverForm({
           infoTip="Epic: Results Review tab or Flowsheet. Check today's AM labs (CBC, BMP, etc.)"
           className="mb-4"
         >
+          <LabTrendBanner current={handover} previous={previousHandover} />
           <div className="grid grid-cols-5 gap-3">
             <SmallInput
               label="WBC"
@@ -1630,7 +1834,16 @@ export default function HandoverForm({
             id="iv"
             title="I.V."
             infoTip="Epic: MAR (Medication Administration Record) for IV infusions; I&O flowsheet for access details."
+            highlight={!verifiedSections.has("iv")}
           >
+            {!verifiedSections.has("iv") && (
+              <CarriedForwardBanner
+                sectionLabel="IV Access"
+                verified={false}
+                onVerify={() => verifySectionHandler("iv")}
+                readOnly={isFormReadOnly}
+              />
+            )}
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-2">
                 <div>
@@ -1740,24 +1953,10 @@ export default function HandoverForm({
 
               {/* Urine output with time intervals */}
               <div>
-                <div className="flex items-center justify-between mb-1.5">
+                <div className="mb-1.5">
                   <label className="text-xs font-medium text-gray-700">
                     Urine output (I/O)
                   </label>
-                  <div className="flex items-center gap-1 text-xs text-gray-500">
-                    <span className="w-[60px] text-center text-gray-400">
-                      ml
-                    </span>
-                    <span className="w-[60px] text-center text-gray-400">
-                      ml/kg/hr
-                    </span>
-                    <span className="w-[60px] text-center text-gray-400">
-                      ml
-                    </span>
-                    <span className="w-[60px] text-center text-gray-400">
-                      ml/kg/hr
-                    </span>
-                  </div>
                 </div>
                 {!formData.io_interval || formData.io_interval === "6h" ? (
                   // 6-hour intervals - 2x2 grid for compact horizontal layout
@@ -2384,7 +2583,6 @@ export default function HandoverForm({
             id="gi"
             title="G.I."
             infoTip="Epic: Nursing Assessment flowsheet → GI section. Last BM documented in I&O or Assessment."
-            allowOverflow={true}
           >
             <div className="space-y-2">
               <div className="flex flex-wrap gap-4">
@@ -2481,7 +2679,7 @@ export default function HandoverForm({
                       </button>
                       {showBowelDropdown && (
                         <div
-                          className="absolute right-0 top-full mt-1 w-56 bg-white border border-gray-300 rounded-lg shadow-lg z-50 max-h-80 overflow-y-auto"
+                          className="absolute right-0 top-full mt-1 w-56 bg-white border border-gray-300 rounded-lg shadow-lg z-[110] max-h-80 overflow-y-auto"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <div className="p-2 space-y-2">
@@ -2715,7 +2913,16 @@ export default function HandoverForm({
             id="nutrition"
             title="Nutrition"
             infoTip="Epic: Nutrition Orders tab for formula/TPN. I&O flowsheet for PO/tube feed volumes. Weight in Flowsheet."
+            highlight={!verifiedSections.has("nutrition")}
           >
+            {!verifiedSections.has("nutrition") && (
+              <CarriedForwardBanner
+                sectionLabel="Nutrition"
+                verified={false}
+                onVerify={() => verifySectionHandler("nutrition")}
+                readOnly={isFormReadOnly}
+              />
+            )}
             <div className="space-y-2">
               <SelectWithSuggestions
                 label="Diet"
@@ -2845,7 +3052,19 @@ export default function HandoverForm({
           </Section>
 
           {/* Musculoskeletal */}
-          <Section id="musculoskeletal" title="Musculoskeletal">
+          <Section
+            id="musculoskeletal"
+            title="Musculoskeletal"
+            highlight={!verifiedSections.has("musculoskeletal")}
+          >
+            {!verifiedSections.has("musculoskeletal") && (
+              <CarriedForwardBanner
+                sectionLabel="MSK / Activity"
+                verified={false}
+                onVerify={() => verifySectionHandler("musculoskeletal")}
+                readOnly={isFormReadOnly}
+              />
+            )}
             <div className="space-y-2">
               <SelectWithSuggestions
                 label="Activity Level"
@@ -2869,7 +3088,16 @@ export default function HandoverForm({
             id="skin"
             title="Skin"
             infoTip="Epic: Nursing Assessment flowsheet → Skin/Wound section. Braden Q calculated from assessment fields."
+            highlight={!verifiedSections.has("skin")}
           >
+            {!verifiedSections.has("skin") && (
+              <CarriedForwardBanner
+                sectionLabel="Skin"
+                verified={false}
+                onVerify={() => verifySectionHandler("skin")}
+                readOnly={isFormReadOnly}
+              />
+            )}
             <div className="space-y-2">
               <SmallInput
                 label="Braden Q Score"
@@ -2932,11 +3160,19 @@ export default function HandoverForm({
         {/* Page 2: Discharge Planning */}
         <div
           id="discharge"
-          className="bg-white border border-gray-300 rounded-lg p-4 mb-4"
+          className={`border rounded-lg p-4 mb-4 ${!verifiedSections.has("discharge") ? "bg-yellow-50 border-yellow-300" : "bg-white border-gray-300"}`}
         >
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">
+          <h3 className="text-lg font-semibold text-gray-900 mb-3">
             Discharge Planning
           </h3>
+          {!verifiedSections.has("discharge") && (
+            <CarriedForwardBanner
+              sectionLabel="Discharge"
+              verified={false}
+              onVerify={() => verifySectionHandler("discharge")}
+              readOnly={isFormReadOnly}
+            />
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-0.5">
@@ -3134,9 +3370,25 @@ export default function HandoverForm({
           )}
         </div>
         <div className="flex gap-3">
+          {!allSectionsVerified && !handover.is_completed && !readOnly && (
+            <span className="self-center text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 px-2 py-1 rounded">
+              {unverifiedCount} section{unverifiedCount > 1 ? "s" : ""} need
+              verification
+            </span>
+          )}
           <button
             onClick={handleMarkComplete}
-            disabled={readOnly || handover.is_completed || completing}
+            disabled={
+              readOnly ||
+              handover.is_completed ||
+              completing ||
+              !allSectionsVerified
+            }
+            title={
+              !allSectionsVerified
+                ? "Verify all carried-forward sections before completing"
+                : undefined
+            }
             className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-all ${
               handover.is_completed
                 ? "text-green-700 bg-green-100 cursor-not-allowed"

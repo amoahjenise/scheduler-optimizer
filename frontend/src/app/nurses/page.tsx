@@ -29,17 +29,17 @@ interface FormData {
 export default function NursesPage() {
   const { user } = useUser();
   const { currentOrganization } = useOrganization();
-  const fullTimeWeeklyTarget =
-    currentOrganization?.full_time_weekly_target ?? 37.5;
-  const partTimeWeeklyTarget =
-    currentOrganization?.part_time_weekly_target ?? 26.25;
+  const fullTimeBiWeeklyTarget =
+    currentOrganization?.full_time_weekly_target ?? 75;
+  const partTimeBiWeeklyTarget =
+    currentOrganization?.part_time_weekly_target ?? 63.75;
 
   const getDefaultFormData = (): FormData => ({
     name: "",
     employee_id: "",
     seniority: "",
     employment_type: "full-time",
-    max_weekly_hours: fullTimeWeeklyTarget,
+    max_weekly_hours: fullTimeBiWeeklyTarget,
     is_chemo_certified: false,
     is_transplant_certified: false,
     is_renal_certified: false,
@@ -123,14 +123,18 @@ export default function NursesPage() {
         other_certifications: formData.other_certifications || undefined,
       };
 
+      console.log("[Nurse Update] Submitting payload:", payload);
+
       if (editingNurse) {
-        await updateNurseAPI(editingNurse.id, user.id, payload);
+        const updated = await updateNurseAPI(editingNurse.id, user.id, payload);
+        console.log("[Nurse Update] Response:", updated);
       } else {
         await createNurseAPI(user.id, payload);
       }
       setShowModal(false);
       loadNurses();
     } catch (error: any) {
+      console.error("[Nurse Update] Error:", error);
       alert(error.message || "Failed to save nurse");
     } finally {
       setSaving(false);
@@ -338,7 +342,7 @@ export default function NursesPage() {
                               : "Part-Time"}
                           </span>
                           <span className="text-gray-600">
-                            {nurse.max_weekly_hours}h/week
+                            {nurse.max_weekly_hours}h/2wk
                           </span>
                         </div>
 
@@ -517,7 +521,7 @@ export default function NursesPage() {
                             setFormData({
                               ...formData,
                               employment_type: "full-time",
-                              max_weekly_hours: fullTimeWeeklyTarget,
+                              max_weekly_hours: fullTimeBiWeeklyTarget,
                             })
                           }
                           className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
@@ -534,7 +538,7 @@ export default function NursesPage() {
                             setFormData({
                               ...formData,
                               employment_type: "part-time",
-                              max_weekly_hours: partTimeWeeklyTarget,
+                              max_weekly_hours: partTimeBiWeeklyTarget,
                             })
                           }
                           className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
@@ -549,7 +553,7 @@ export default function NursesPage() {
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                        Max Hours/Week
+                        Hours / Bi-weekly
                       </label>
                       <input
                         type="number"

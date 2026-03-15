@@ -50,6 +50,11 @@ export default function ScheduleDetailsPage() {
       try {
         setLoading(true);
         const data = await fetchOptimizedScheduleByIdAPI(scheduleId);
+        // Block access to non-finalized schedules for non-admins
+        if (!data.is_finalized && !isAdmin) {
+          setError("This schedule has not been finalized yet.");
+          return;
+        }
         setSchedule(data);
       } catch (e) {
         console.error("Failed to load schedule details", e);
@@ -59,7 +64,7 @@ export default function ScheduleDetailsPage() {
       }
     }
     load();
-  }, [scheduleId]);
+  }, [scheduleId, isAdmin]);
 
   const parsed = useMemo(() => {
     if (!schedule) return { dates: [] as string[], rows: [] as GridRow[] };

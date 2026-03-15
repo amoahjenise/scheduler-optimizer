@@ -7,10 +7,13 @@ import { motion } from "framer-motion";
 import UploadInput from "../components/UploadInput";
 import EditableOCRGrid from "../components/EditableOCRGrid";
 import SchedulePreview from "../components/SchedulePreview";
-import StaffRequirementsEditor from "../components/StaffRequirementsEditor";
+import StaffRequirementsEditor, {
+  loadStaffingCategories,
+} from "../components/StaffRequirementsEditor";
 import SystemPrompt from "../components/SystemPrompt";
 import AutoCommentsBox from "../components/AutoCommentsBox";
 import ConstraintsConfirmation from "../components/ConstraintsConfirmation";
+import ShiftCodesPopover from "../components/ShiftCodesPopover";
 import { useOrganization } from "../context/OrganizationContext";
 import {
   optimizeScheduleAPI,
@@ -21,16 +24,17 @@ import {
   listNursesAPI,
   createNurseAPI,
   updateNurseAPI,
+  getLatestScheduleRuleAPI,
+  saveScheduleRuleAPI,
   Nurse,
   NurseCreate,
+  GapFillSuggestion,
 } from "../lib/api";
 import ExcelJS from "exceljs";
 import { saveAs } from "file-saver";
 
 // Import reusable scheduler components
 import {
-  ShiftCodesReference,
-  RulesEditorCard,
   ClearCacheButton,
   ProgressSteps,
   SchedulePeriodInput,
@@ -38,7 +42,7 @@ import {
 } from "./components";
 
 // Import step components
-import { SetupStep, UploadStep } from "./steps";
+import { SetupStep } from "./steps";
 
 // Import types and constants
 import {
@@ -49,6 +53,7 @@ import {
   OCRWarning,
   NewNurseCandidate,
   SHIFT_CODES,
+  TIME_SLOTS,
 } from "./types";
 
 // Import utility functions from hooks
@@ -62,6 +67,8 @@ import {
   normalizeNurseName,
   extractOffDatesFromComments,
   getDefaultDates,
+  deduplicateNightShifts,
+  deduplicateGridGhosts,
 } from "./hooks";
 
 const SCREENSHOT_DB_NAME = "scheduler_uploads_db";
@@ -147,16 +154,12 @@ export default function SchedulerPage() {
   // Step management
   const [currentStep, setCurrentStep] = useState<Step>("setup");
 
-  // Shift entry mode (toggle between actual codes and time slot categories)
-  const [shiftEntryMode, setShiftEntryMode] = useState<"codes" | "slots">(
-    "codes",
-  );
-
   // Step 1: Setup
   const { today, twoWeeksLater } = getDefaultDates();
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState(twoWeeksLater);
   const [rules, setRules] = useState("");
+  const [rulesLoaded, setRulesLoaded] = useState(false);
   const [marker, setMarker] = useState("");
 
   // Step 2: Upload & OCR
@@ -173,6 +176,8 @@ export default function SchedulerPage() {
   >([]);
   const [manualNurses, setManualNurses] = useState<ManualNurse[]>([]);
   const [organizationNurses, setOrganizationNurses] = useState<Nurse[]>([]);
+  const [organizationNursesLoading, setOrganizationNursesLoading] =
+    useState(false);
   const [showNurseModal, setShowNurseModal] = useState(false);
 
   // OCR name warnings - potential corrupted/incomplete names
@@ -252,15 +257,20 @@ export default function SchedulerPage() {
       description: string;
     }[];
     suggestions: { category: string; text: string }[];
+    gapFillSuggestions?: GapFillSuggestion[];
   } | null>(null);
   const [insightsLoading, setInsightsLoading] = useState(false);
+  const [selectedGapFills, setSelectedGapFills] = useState<Set<number>>(
+    new Set(),
+  );
 
   // Staff requirements
   const [requiredStaff, setRequiredStaff] = useState<
     Record<string, Record<string, number>>
   >({});
 
-  const shiftTypes = ["Morning", "Afternoon", "Evening"];
+  // Load configurable staffing categories (can be customized per org)
+  const shiftTypes = useMemo(() => loadStaffingCategories(), []);
 
   // Get organization context for org-scoped storage and access control
   const {
@@ -268,12 +278,12 @@ export default function SchedulerPage() {
     isAdmin,
     isLoading: orgLoading,
   } = useOrganization();
-  const fullTimeWeeklyTarget =
-    currentOrganization?.full_time_weekly_target ?? 37.5;
-  const partTimeWeeklyTarget =
-    currentOrganization?.part_time_weekly_target ?? 26.25;
-  const defaultFullTimeMaxWeeklyHours = 60;
-  const defaultPartTimeMaxWeeklyHours = 40;
+  const fullTimeBiWeeklyTarget =
+    currentOrganization?.full_time_weekly_target ?? 75;
+  const partTimeBiWeeklyTarget =
+    currentOrganization?.part_time_weekly_target ?? 63.75;
+  const defaultFullTimeMaxWeeklyHours = 120;
+  const defaultPartTimeMaxWeeklyHours = 80;
 
   const getDefaultMaxWeeklyHours = useCallback(
     (employmentType?: "FT" | "PT") =>
@@ -329,13 +339,29 @@ export default function SchedulerPage() {
     let cancelled = false;
 
     (async () => {
+      setOrganizationNursesLoading(true);
       try {
         const { nurses } = await listNursesAPI(userId, 1, 1000);
         if (!cancelled) {
           setOrganizationNurses(Array.isArray(nurses) ? nurses : []);
         }
       } catch (error) {
-        console.error("Failed to load organization nurses:", error);
+        const message = error instanceof Error ? error.message : String(error);
+        // Non-blocking on setup screen: allow user to continue even if nurse list call times out.
+        if (message.toLowerCase().includes("timed out")) {
+          console.warn(
+            "Organization nurses request timed out; continuing with empty nurse list.",
+          );
+        } else {
+          console.warn("Failed to load organization nurses:", error);
+        }
+        if (!cancelled) {
+          setOrganizationNurses([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setOrganizationNursesLoading(false);
+        }
       }
     })();
 
@@ -343,6 +369,60 @@ export default function SchedulerPage() {
       cancelled = true;
     };
   }, [userId]);
+
+  // Load saved scheduling rules from DB on mount
+  useEffect(() => {
+    if (rulesLoaded || !currentOrganization?.id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const saved = await getLatestScheduleRuleAPI(currentOrganization.id);
+        if (!cancelled && saved?.rules_text && !rules.trim()) {
+          setRules(saved.rules_text);
+        }
+      } catch {
+        // No saved rules yet — that's fine
+      } finally {
+        if (!cancelled) setRulesLoaded(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [rulesLoaded, currentOrganization?.id, rules]);
+
+  // Wrap setOcrGrid to detect nurse-name edits and sync manualNurses
+  const handleSetOcrGrid: React.Dispatch<React.SetStateAction<GridRow[]>> =
+    useCallback(
+      (action) => {
+        setOcrGrid((prev) => {
+          const next = typeof action === "function" ? action(prev) : action;
+
+          // Detect per-row nurse name renames
+          for (let i = 0; i < prev.length && i < next.length; i++) {
+            const oldName = prev[i].nurse;
+            const newName = next[i].nurse;
+            if (oldName && newName && oldName !== newName) {
+              const oldKey = normalizeNurseName(oldName);
+              const newKey = normalizeNurseName(newName);
+              if (oldKey !== newKey) {
+                // Rename or remove the stale manualNurses entry
+                setManualNurses((prevNurses) =>
+                  prevNurses.map((n) =>
+                    normalizeNurseName(n.name) === oldKey
+                      ? { ...n, name: newName }
+                      : n,
+                  ),
+                );
+              }
+            }
+          }
+
+          return next;
+        });
+      },
+      [setManualNurses],
+    );
 
   // Compute unique nurses (deduplicate OCR nurses and manual nurses by name)
   const uniqueNurses = useMemo(() => {
@@ -464,33 +544,122 @@ export default function SchedulerPage() {
 
   const nurseHoursStats = useMemo(() => {
     const totalDays = scheduleDatesForStats.length;
-    const numWeeks = totalDays / 7.0;
+    const numBiWeeks = totalDays / 14.0;
     const dateSet = new Set(scheduleDatesForStats);
+
+    // Pre-build a map of OCR off-day dates per nurse (from the original OCR
+    // grid).  Only genuine vacation/off codes (C, OFF) reduce the target.
+    //
+    // NOT counted as off days:
+    //  - "*" = comment marker (the actual off determination is in
+    //    autoComments / Employee Notes & Time-Off Requests).
+    //  - "CF-*" = paid continuing-education/formation. CF hours are already
+    //    included in the paid-hours total, so deducting them from the target
+    //    as well would double-penalise the nurse.
+    const ocrOffDatesByNurse = new Map<string, Set<string>>();
+    for (const ocrRow of ocrGrid) {
+      const normName = normalizeNurseName(ocrRow.nurse);
+      if (!ocrOffDatesByNurse.has(normName)) {
+        ocrOffDatesByNurse.set(normName, new Set<string>());
+      }
+      const offSet = ocrOffDatesByNurse.get(normName)!;
+      for (const shift of ocrRow.shifts) {
+        if (!shift?.shift || !shift.date || !dateSet.has(shift.date)) continue;
+        const code = shift.shift
+          .replace(/\s*\*\s*$/, "")
+          .trim()
+          .toUpperCase();
+        // Only C (congé/vacation) and OFF are genuine off days for target
+        // reduction.  Skip empty codes (bare "*" after stripping).
+        if (code && (code === "C" || code === "OFF")) {
+          offSet.add(shift.date);
+        }
+      }
+    }
+
+    // Pre-build a map of off-dates from autoComments (Employee Notes &
+    // Time-Off Requests).  These are pipe-delimited entries like
+    // "nurseName|date|OFF Time Off Request".  extractOffDatesFromComments
+    // already knows the keywords to look for.
+    const commentOffDatesByNurse = extractOffDatesFromComments(autoComments);
 
     return filteredOptimizedGrid
       .map((row) => {
-        // Calculate total hours from shifts
-        const totalHours = row.shifts.reduce(
+        // ── Step 1: Correct stored hours using SHIFT_CODES as authority ──
+        const correctedShifts = row.shifts.map((s) => {
+          if (!s.shift) return s;
+          const code = s.shift
+            .replace(/\s*\*\s*$/, "")
+            .trim()
+            .toUpperCase();
+          const def = SHIFT_CODES.find((sc) => sc.code.toUpperCase() === code);
+          if (def && def.hours !== s.hours) {
+            return { ...s, hours: def.hours, shiftType: def.type };
+          }
+          return s;
+        });
+
+        // ── Step 2: Deduplicate night-shift wrap-around tails ──
+        const deduplicatedShifts = deduplicateNightShifts(
+          [...correctedShifts].sort((a, b) => a.date.localeCompare(b.date)),
+        );
+
+        // ── Step 3: Compute total hours (sum of shift code values) ──
+        const totalHours = deduplicatedShifts.reduce(
           (sum, shift) => sum + (shift.hours || 0),
           0,
         );
 
-        // Count working days (shifts with hours > 0)
-        const workingDays = row.shifts.filter((s) => s.hours > 0).length;
+        // ── Step 4: Count shifts by type ──
+        // 12h shifts (Z-codes ≥ 11h) and 8h shifts (< 11h) are counted
+        // separately. CF-* (training/leave) excluded from worked shifts.
+        let count12h = 0;
+        let count8h = 0;
+        const workingShifts = deduplicatedShifts.filter((s) => {
+          if (s.hours <= 0) return false;
+          const code = (s.shift || "")
+            .replace(/\s*\*\s*$/, "")
+            .replace(/\s*↩\s*$/, "")
+            .trim()
+            .toUpperCase();
+          if (code.startsWith("CF")) return false;
+          return true;
+        });
+        for (const s of workingShifts) {
+          if (s.hours >= 11) count12h++;
+          else count8h++;
+        }
+        const workingDays = workingShifts.length;
 
-        // Get target hours from manual nurse data if available
+        // ── Step 5: Validate shift composition ──
+        // Total hours must equal (count12h × 11.25) + (count8h × 7.5)
+        // plus any CF/training hours.  Flag if it doesn't match.
+        const cfShifts = deduplicatedShifts.filter((s) => {
+          const code = (s.shift || "")
+            .replace(/\s*\*\s*$/, "")
+            .replace(/\s*↩\s*$/, "")
+            .trim()
+            .toUpperCase();
+          return s.hours > 0 && code.startsWith("CF");
+        });
+        const cfHours = cfShifts.reduce((sum, s) => sum + (s.hours || 0), 0);
+        const cfShiftCount = cfShifts.length;
+        const expectedHours = toQuarterHour(
+          count12h * 11.25 + count8h * 7.5 + cfHours,
+        );
+        const hoursValid = Math.abs(totalHours - expectedHours) < 0.1;
+
+        // ── Step 6: Contract-based target (no reconciliation inflation) ──
         const nurseMetadata = nurseMetadataByName.get(
           normalizeNurseName(row.nurse),
         );
-
-        // Calculate target hours based on schedule period
-        const weeklyHours =
+        const biWeeklyHours =
           typeof nurseMetadata?.targetWeeklyHours === "number" &&
           nurseMetadata.targetWeeklyHours > 0
             ? nurseMetadata.targetWeeklyHours
             : nurseMetadata?.employmentType === "PT"
-              ? partTimeWeeklyTarget
-              : fullTimeWeeklyTarget;
+              ? partTimeBiWeeklyTarget
+              : fullTimeBiWeeklyTarget;
 
         const requestedOffDaysInPeriod = Array.from(
           new Set(
@@ -499,63 +668,131 @@ export default function SchedulerPage() {
             ),
           ),
         ).length;
-        const availableDays = Math.max(0, totalDays - requestedOffDaysInPeriod);
-        const availabilityRatio = totalDays > 0 ? availableDays / totalDays : 1;
-        const baseTargetHours = weeklyHours * numWeeks;
-        const targetHours = toQuarterHour(baseTargetHours * availabilityRatio);
+
+        // Also count OCR-sourced OFF days (C, CF, *, OFF codes) from the
+        // ORIGINAL OCR grid.  The optimized grid may not carry these entries
+        // (e.g. a nurse on 10-day vacation simply has 2 shifts in the
+        // optimized grid with no OFF entries).  Going back to the OCR
+        // source ensures the target reduction is correct.
+        const normName = normalizeNurseName(row.nurse);
+        const ocrOffForNurse =
+          ocrOffDatesByNurse.get(normName) || new Set<string>();
+
+        // Optimized grid off codes (fallback for manually-set C/OFF in editor)
+        const optimizedOffDays = new Set(
+          deduplicatedShifts
+            .filter((s) => {
+              if (!dateSet.has(s.date)) return false;
+              const code = (s.shift || "")
+                .replace(/\s*\*\s*$/, "")
+                .trim()
+                .toUpperCase();
+              return code === "C" || code === "OFF";
+            })
+            .map((s) => s.date),
+        );
+
+        // Merge all off-day sources: metadata offRequests + OCR off codes
+        // + optimized off codes + autoComments (Employee Notes & Time-Off Requests)
+        //
+        // For autoComments, use fuzzy name matching (same logic as
+        // getMatchedCommentOffDates in optimizationPayload.ts) so that
+        // "Demitra" in comments matches "Demitra Sita" in the grid.
+        const commentOffDates: string[] = [];
+        const nurseLower = row.nurse.toLowerCase();
+        const nurseFirst = row.nurse.split(" ")[0].toLowerCase();
+        for (const [commentNurse, dates] of Object.entries(
+          commentOffDatesByNurse,
+        )) {
+          const commentLower = commentNurse.toLowerCase();
+          if (
+            commentLower.includes(nurseLower) ||
+            nurseLower.includes(commentLower) ||
+            commentNurse.split(" ")[0].toLowerCase() === nurseFirst
+          ) {
+            commentOffDates.push(...dates);
+          }
+        }
+
+        const allOffDates = new Set<string>([
+          ...(nurseMetadata?.offRequests || []).filter((d) => dateSet.has(d)),
+          ...Array.from(ocrOffForNurse).filter((d) => dateSet.has(d)),
+          ...Array.from(optimizedOffDays),
+          ...commentOffDates.filter((d) => dateSet.has(d)),
+        ]);
+
+        const totalOffDays = allOffDates.size;
+        // Use the "Vacation Offset" rule: each off day reduces the target
+        // by exactly 7.5h (one standard paid shift).  This is cleaner than
+        // the proportional ratio method and matches how payroll actually
+        // credits vacation days.
+        const baseTarget = toQuarterHour(biWeeklyHours * numBiWeeks);
+        const vacationCreditHours = totalOffDays * 7.5;
+        const contractTargetHours = toQuarterHour(
+          Math.max(0, baseTarget - vacationCreditHours),
+        );
+
+        // ── Step 7: Shift-count target (informational only) ──
         const targetShiftHours =
           typeof nurseMetadata?.preferredShiftLengthHours === "number" &&
           nurseMetadata.preferredShiftLengthHours > 0
             ? nurseMetadata.preferredShiftLengthHours
             : 11.25;
         const targetDaysExact =
-          targetShiftHours > 0 ? targetHours / targetShiftHours : 0;
+          targetShiftHours > 0 ? contractTargetHours / targetShiftHours : 0;
         const targetDaysMin = Math.floor(targetDaysExact);
         const targetDaysMax = Math.ceil(targetDaysExact);
         const roundedTargetDays = Math.round(targetDaysExact);
-        const targetDaysDisplay =
-          targetDaysMin === targetDaysMax
-            ? `${targetDaysMin}`
-            : `${targetDaysMin}-${targetDaysMax}`;
+        const targetDaysDisplay = `${roundedTargetDays}`;
 
-        // Calculate delta
-        const delta = toQuarterHour(totalHours - targetHours);
+        // ── Step 8: Delta = actual paid hours − contract target ──
+        // This is the ONLY delta.  No shift-based inflation.
+        const delta = toQuarterHour(totalHours - contractTargetHours);
         const dayDelta = workingDays - roundedTargetDays;
         const utilizationPct =
-          targetHours > 0 ? (totalHours / targetHours) * 100 : 0;
+          contractTargetHours > 0
+            ? (totalHours / contractTargetHours) * 100
+            : 0;
 
         return {
           name: row.nurse,
           totalHours: toQuarterHour(totalHours),
           workingDays,
-          targetHours,
+          count12h,
+          count8h,
+          cfHours: toQuarterHour(cfHours),
+          cfShiftCount,
+          hoursValid,
+          expectedHours,
+          targetHours: contractTargetHours,
+          contractTargetHours,
           targetDaysExact,
           targetDaysMin,
           targetDaysMax,
           targetDaysDisplay,
           delta,
           dayDelta,
-          weeklyHours: toQuarterHour(weeklyHours),
-          avgHoursPerShift:
-            workingDays > 0 ? toQuarterHour(totalHours / workingDays) : 0,
+          biWeeklyHours: toQuarterHour(biWeeklyHours),
           utilizationPct,
           employmentType: nurseMetadata?.employmentType || "FT",
-          requestedOffDaysInPeriod,
+          requestedOffDaysInPeriod: totalOffDays,
         };
       })
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [
     nurseMetadataByName,
     filteredOptimizedGrid,
+    ocrGrid,
+    autoComments,
     scheduleDatesForStats,
-    fullTimeWeeklyTarget,
-    partTimeWeeklyTarget,
+    fullTimeBiWeeklyTarget,
+    partTimeBiWeeklyTarget,
     toQuarterHour,
   ]);
 
   const operationalQualitySnapshot = useMemo(() => {
     const defaultDayMin = 5;
-    const defaultNightMin = 3;
+    const defaultNightMin = 4;
     const dateSet = new Set(scheduleDatesForStats);
     const coverageByDate = new Map<string, { day: number; night: number }>();
 
@@ -563,12 +800,20 @@ export default function SchedulerPage() {
       const entries = Object.entries(requiredStaff || {});
       const relevantEntries = entries.filter(([key]) => {
         const normalized = key.toLowerCase();
-        if (kind === "night") return normalized.includes("night");
+        if (kind === "night") {
+          return (
+            normalized.includes("night") ||
+            normalized.includes("23") ||
+            normalized.includes("19")
+          );
+        }
         return (
           normalized.includes("day") ||
           normalized.includes("morning") ||
           normalized.includes("afternoon") ||
-          normalized.includes("evening")
+          normalized.includes("evening") ||
+          normalized.includes("07") ||
+          normalized.includes("15")
         );
       });
 
@@ -576,16 +821,24 @@ export default function SchedulerPage() {
         return kind === "day" ? defaultDayMin : defaultNightMin;
       }
 
-      const value = relevantEntries.reduce((sum, [, byDate]) => {
+      // Use the MAX across matching categories, not the SUM.
+      // Categories like 07(G)=5 and 15(G)=5 represent overlapping time
+      // windows (a Z07 nurse covers both).  Summing them would produce
+      // an impossibly high requirement (10 day nurses) when the real
+      // need is "at least 5 day nurses on the floor at any given time".
+      let maxValue = 0;
+      for (const [, byDate] of relevantEntries) {
         const n = Number(byDate?.[date] ?? 0);
-        return sum + (Number.isFinite(n) && n > 0 ? n : 0);
-      }, 0);
+        if (Number.isFinite(n) && n > maxValue) {
+          maxValue = n;
+        }
+      }
 
-      if (value <= 0) {
+      if (maxValue <= 0) {
         return kind === "day" ? defaultDayMin : defaultNightMin;
       }
 
-      return value;
+      return maxValue;
     };
 
     for (const row of filteredOptimizedGrid) {
@@ -783,11 +1036,41 @@ export default function SchedulerPage() {
           if (shift?.date) byDate.set(shift.date, shift);
         }
 
-        const ocrShifts = assignments[ocrRow.nurse] || [];
+        const ocrShiftsRaw = assignments[ocrRow.nurse] || [];
+
+        // ── Ghost dedup: clean phantom Z23 tails before overlay ──
+        // Night-start codes whose next-day column is a visual artefact.
+        const NIGHT_STARTS = new Set(["Z19", "Z23", "Z23 B", "23"]);
+        const GHOST_TAILS = new Set(["Z23"]);
+        const ocrShifts = [...ocrShiftsRaw];
+        for (let i = 0; i < ocrShifts.length - 1; i++) {
+          const code = (ocrShifts[i] || "").trim().toUpperCase();
+          if (!code || !NIGHT_STARTS.has(code)) continue;
+          const next = (ocrShifts[i + 1] || "").trim().toUpperCase();
+          if (GHOST_TAILS.has(next)) {
+            ocrShifts[i + 1] = ""; // null out ghost tail
+          }
+        }
+
         for (let dayIdx = 0; dayIdx < ocrDates.length; dayIdx++) {
           const date = ocrDates[dayIdx];
           const raw = (ocrShifts[dayIdx] || "").trim();
           if (!raw || raw === "*") continue;
+
+          // Only fill in OCR data for days where the backend didn't
+          // already supply a non-empty shift.  The backend's
+          // apply_authoritative_ocr_overlay already merges OCR codes
+          // into the optimized result with correct hours & metadata.
+          // Re-parsing raw OCR codes via parseShiftCode would
+          // clobber hours (e.g. Z07→11.25h becomes 07→7.5h).
+          const existingBackend = byDate.get(date);
+          if (
+            existingBackend &&
+            existingBackend.shift &&
+            existingBackend.hours > 0
+          ) {
+            continue; // keep backend shift — it already has correct metadata
+          }
 
           byDate.set(date, parseShiftCode(raw, date));
         }
@@ -838,8 +1121,8 @@ export default function SchedulerPage() {
     savedScheduleId,
     nurseMetadataByName,
     getDefaultMaxWeeklyHours,
-    fullTimeWeeklyTarget,
-    partTimeWeeklyTarget,
+    fullTimeBiWeeklyTarget,
+    partTimeBiWeeklyTarget,
     requiredStaff,
     startDate,
     endDate,
@@ -862,6 +1145,101 @@ export default function SchedulerPage() {
       setOptimizedGrid([...gridWithIds, ...excludedRows]);
     },
     [excludedNurses], // Note: We intentionally exclude optimizedGrid to prevent loops
+  );
+
+  // Apply selected gap-fill suggestions to the optimized grid
+  const applySelectedGapFills = useCallback(() => {
+    if (!insightsData?.gapFillSuggestions || selectedGapFills.size === 0)
+      return;
+    const suggestions = insightsData.gapFillSuggestions.filter((_, idx) =>
+      selectedGapFills.has(idx),
+    );
+    if (suggestions.length === 0) return;
+
+    setOptimizedGrid((prev) => {
+      const updatedGrid = prev.map((row) => ({
+        ...row,
+        shifts: [...row.shifts],
+      }));
+      for (const gf of suggestions) {
+        let nurseRow = updatedGrid.find(
+          (r) => r.nurse.toLowerCase() === gf.nurse.toLowerCase(),
+        );
+        if (!nurseRow) {
+          nurseRow = {
+            id: `gapfill-${gf.nurse}`,
+            nurse: gf.nurse,
+            shifts: [],
+          };
+          updatedGrid.push(nurseRow);
+        }
+        // Check if the nurse already has a shift on this date
+        const existingIdx = nurseRow.shifts.findIndex(
+          (s) => s.date === gf.date,
+        );
+        const newShift: ShiftEntry = {
+          date: gf.date,
+          shift: gf.shiftCode,
+          shiftType: gf.shiftType,
+          hours: gf.shiftHours,
+          startTime: gf.shiftStart,
+          endTime: gf.shiftEnd,
+        };
+        if (existingIdx >= 0) {
+          nurseRow.shifts[existingIdx] = newShift;
+        } else {
+          nurseRow.shifts.push(newShift);
+        }
+      }
+      return updatedGrid;
+    });
+    setSelectedGapFills(new Set());
+    setShowInsightsPanel(false);
+  }, [insightsData, selectedGapFills]);
+
+  // Handler for when user enters "*" in a schedule cell
+  const handleAsteriskDetected = useCallback(
+    (nurse: string, date: string) => {
+      // Parse existing autoComments
+      const entries = autoComments
+        .split("\n")
+        .filter((line) => line.trim())
+        .map((line) => {
+          const [name = "", dateStr = "", comment = ""] = line.split("|");
+          return {
+            name: name.trim(),
+            date: dateStr.trim(),
+            comment: comment.trim(),
+          };
+        });
+
+      // Check if entry already exists for this nurse and date
+      const existingIndex = entries.findIndex(
+        (entry) => entry.name === nurse && entry.date === date,
+      );
+
+      if (existingIndex === -1) {
+        // Add new entry with OFF prefix
+        entries.push({
+          name: nurse,
+          date: date,
+          comment: "OFF Time Off Request",
+        });
+        // Sort entries by date then by name
+        entries.sort((a, b) => {
+          const dateCompare = a.date.localeCompare(b.date);
+          return dateCompare !== 0 ? dateCompare : a.name.localeCompare(b.name);
+        });
+      }
+
+      // Serialize back to string
+      const newAutoComments = entries
+        .map((entry) => `${entry.name}|${entry.date}|${entry.comment}`)
+        .join("\n");
+
+      setAutoComments(newAutoComments);
+    },
+    [autoComments],
   );
 
   // Redirect non-admins away from scheduler
@@ -952,7 +1330,7 @@ export default function SchedulerPage() {
       setMarker(nextMarker);
       setAutoComments(nextAutoComments);
       setOcrDates(nextOcrDates);
-      setOcrGrid(nextOcrGrid);
+      setOcrGrid(deduplicateGridGhosts(nextOcrGrid));
       setOptimizedGrid(nextOptimizedGrid);
       setRequiredStaff(nextRequiredStaff);
       setManualNurses(nextManualNurses);
@@ -1039,7 +1417,10 @@ export default function SchedulerPage() {
     startDate,
     endDate,
     userId,
+    organizationNurses,
     getDefaultMaxWeeklyHours,
+    fullTimeBiWeeklyTarget,
+    partTimeBiWeeklyTarget,
     setOcrLoading,
     setOcrError,
     setAutoComments,
@@ -1149,8 +1530,9 @@ export default function SchedulerPage() {
         refinement_request: refineRequest,
         dates: actualDates,
         nurseHoursStats: nurseHoursInfo,
-        fullTimeWeeklyTarget,
-        partTimeWeeklyTarget,
+        fullTimeBiWeeklyTarget,
+        partTimeBiWeeklyTarget,
+        rules: rules.trim() || undefined,
       });
 
       console.log("=== AI REFINEMENT RESPONSE ===");
@@ -1240,12 +1622,65 @@ export default function SchedulerPage() {
         ),
       ).sort();
 
+      // Build per-nurse staff notes: off-requests, CF/vacation codes, shift targets
+      const staffNotes: Record<string, string[]> = {};
+      for (const row of optimizedGrid) {
+        const notes: string[] = [];
+        const meta = nurseMetadataByName.get(normalizeNurseName(row.nurse));
+        const stat = nurseHoursStats.find((s) => s.name === row.nurse);
+
+        // Off-request dates within the schedule period
+        if (stat && stat.requestedOffDaysInPeriod > 0) {
+          const offDates = (meta?.offRequests || []).filter((d: string) =>
+            actualDates.includes(d),
+          );
+          notes.push(
+            `Has ${stat.requestedOffDaysInPeriod} approved off-request(s)` +
+              (offDates.length > 0 ? `: ${offDates.join(", ")}` : ""),
+          );
+        }
+
+        // Off/leave codes (C, OFF, CF, JF, FE, MA) from the actual shift grid
+        const cfShifts = row.shifts.filter(
+          (s) =>
+            s.shift &&
+            (s.shift.toUpperCase() === "C" ||
+              s.shift.toUpperCase() === "OFF" ||
+              s.shift.toUpperCase().startsWith("CF") ||
+              s.shift.toUpperCase().startsWith("JF") ||
+              s.shift.toUpperCase().startsWith("FE") ||
+              s.shift.toUpperCase().startsWith("MA")),
+        );
+        if (cfShifts.length > 0) {
+          const cfCodes = [...new Set(cfShifts.map((s) => s.shift))];
+          notes.push(
+            `${cfShifts.length} leave/vacation day(s): ${cfCodes.join(", ")}`,
+          );
+        }
+
+        // Wrap-around tail markers (deduped night shifts)
+        const tailShifts = row.shifts.filter(
+          (s) => s.shift && s.shift.includes("↩"),
+        );
+        if (tailShifts.length > 0) {
+          notes.push(
+            `${tailShifts.length} night-shift wrap-around tail(s) (0h — counted on start day)`,
+          );
+        }
+
+        if (notes.length > 0) {
+          staffNotes[row.nurse] = notes;
+        }
+      }
+
       const data = await analyzeScheduleInsightsAPI({
         schedule: scheduleDict,
         dates: actualDates.length > 0 ? actualDates : ocrDates,
         nurseHoursStats: nurseHoursStats as any[],
         coverageSnapshot: operationalQualitySnapshot,
         orgContext: currentOrganization?.name,
+        staffNotes: Object.keys(staffNotes).length > 0 ? staffNotes : undefined,
+        markerComments: autoComments || undefined,
       });
 
       setInsightsData(data);
@@ -1312,8 +1747,7 @@ export default function SchedulerPage() {
 
   // Step indicators
   const steps: { key: Step; label: string }[] = [
-    { key: "setup", label: "Setup" },
-    { key: "upload", label: "Upload" },
+    { key: "setup", label: "Setup & Upload" },
     { key: "review", label: "Review" },
     { key: "optimize", label: "Optimize" },
     { key: "result", label: "Result" },
@@ -1351,11 +1785,11 @@ export default function SchedulerPage() {
           employmentType === "part-time" &&
           Number.isFinite(candidate.maxHours) &&
           candidate.maxHours > 0 &&
-          candidate.maxHours <= 30
+          candidate.maxHours <= 60
             ? candidate.maxHours
             : employmentType === "part-time"
-              ? partTimeWeeklyTarget
-              : fullTimeWeeklyTarget;
+              ? partTimeBiWeeklyTarget
+              : fullTimeBiWeeklyTarget;
 
         const nurseData: NurseCreate = {
           name: candidate.name,
@@ -1381,11 +1815,11 @@ export default function SchedulerPage() {
           chargeCertified: candidate.isChargeCertified,
           maxHours: candidate.maxHours,
           targetWeeklyHours:
-            candidate.employmentType === "PT" && candidate.maxHours <= 30
+            candidate.employmentType === "PT" && candidate.maxHours <= 60
               ? candidate.maxHours
               : candidate.employmentType === "PT"
-                ? partTimeWeeklyTarget
-                : fullTimeWeeklyTarget,
+                ? partTimeBiWeeklyTarget
+                : fullTimeBiWeeklyTarget,
           preferredShiftLengthHours: 11.25,
           employmentType: candidate.employmentType,
         });
@@ -1783,17 +2217,7 @@ export default function SchedulerPage() {
                     : "bg-white text-blue-700 border border-blue-300 hover:bg-blue-100"
                 }`}
               >
-                1) Setup
-              </button>
-              <button
-                onClick={() => setCurrentStep("upload")}
-                className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                  currentStep === "upload"
-                    ? "bg-blue-600 text-white"
-                    : "bg-white text-blue-700 border border-blue-300 hover:bg-blue-100"
-                }`}
-              >
-                2) Upload
+                1) Setup &amp; Upload
               </button>
               <button
                 onClick={() => setCurrentStep("review")}
@@ -1804,7 +2228,7 @@ export default function SchedulerPage() {
                     : "bg-white text-blue-700 border border-blue-300 hover:bg-blue-100"
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
-                3) Review
+                2) Review
               </button>
               <button
                 onClick={() => setCurrentStep("optimize")}
@@ -1815,7 +2239,7 @@ export default function SchedulerPage() {
                     : "bg-white text-blue-700 border border-blue-300 hover:bg-blue-100"
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
-                4) Optimize
+                3) Optimize
               </button>
               <button
                 onClick={() => setCurrentStep("result")}
@@ -1826,40 +2250,30 @@ export default function SchedulerPage() {
                     : "bg-white text-blue-700 border border-blue-300 hover:bg-blue-100"
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
-                5) Result
+                4) Result
               </button>
             </div>
           </div>
         </div>
 
-        {/* Step 1: Setup - Using SetupStep component */}
+        {/* Step 1: Setup & Upload - Combined */}
         {currentStep === "setup" && (
           <SetupStep
             startDate={startDate}
             endDate={endDate}
-            rules={rules}
-            shiftEntryMode={shiftEntryMode}
             onStartDateChange={setStartDate}
             onEndDateChange={setEndDate}
-            onRulesChange={setRules}
-            onShiftEntryModeChange={setShiftEntryMode}
-            onContinue={() => setCurrentStep("upload")}
-          />
-        )}
-
-        {/* Step 2: Upload - Using UploadStep component */}
-        {currentStep === "upload" && (
-          <UploadStep
             screenshots={screenshots}
             setScreenshots={setScreenshots}
             ocrLoading={ocrLoading}
             ocrError={ocrError}
-            onBack={() => setCurrentStep("setup")}
             onExtract={runOCR}
+            nursesLoadedCount={organizationNurses.length}
+            nursesLoading={organizationNursesLoading}
           />
         )}
 
-        {/* Step 3: Review */}
+        {/* Step 2: Review */}
         {currentStep === "review" && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -1868,9 +2282,22 @@ export default function SchedulerPage() {
           >
             <div className="bg-white rounded-xl border border-gray-200 p-6">
               <div className="mb-4">
-                <h2 className="text-lg font-semibold text-gray-900">
-                  Review Extracted Data
-                </h2>
+                <div className="flex items-center justify-between">
+                  <h2 className="text-lg font-semibold text-gray-900">
+                    Review Extracted Data
+                  </h2>
+                  <ShiftCodesPopover
+                    shiftCodes={SHIFT_CODES}
+                    timeSlots={TIME_SLOTS.map((ts) => ({
+                      slot: ts.slot,
+                      category: ts.category,
+                      duration: ts.duration,
+                      label: ts.label,
+                      mapsTo: ts.mapsTo,
+                    }))}
+                    label="Shift Codes"
+                  />
+                </div>
                 <p className="text-gray-500 text-sm mt-1">
                   Review and edit the extracted schedule data. Click any cell to
                   modify.
@@ -1977,7 +2404,7 @@ export default function SchedulerPage() {
                 <EditableOCRGrid
                   ocrDates={ocrDates}
                   ocrGrid={ocrGrid}
-                  setOcrGrid={setOcrGrid}
+                  setOcrGrid={handleSetOcrGrid}
                   marker={marker}
                 />
               </div>
@@ -2006,7 +2433,7 @@ export default function SchedulerPage() {
 
             <div className="flex justify-between">
               <button
-                onClick={() => setCurrentStep("upload")}
+                onClick={() => setCurrentStep("setup")}
                 className="px-6 py-2 text-gray-600 font-medium hover:text-gray-900"
               >
                 ← Back
@@ -2061,17 +2488,17 @@ export default function SchedulerPage() {
                   </div>
                 </div>
                 <p className="text-sm text-gray-600">
-                  The scheduler will: honor OFF requests from comments, preserve
-                  existing shift codes from OCR, fill gaps to meet staffing
-                  requirements, balance hours fairly across nurses, and enforce
-                  consecutive work day limits.
+                  The scheduler will: honor Time Off Request from comments,
+                  preserve existing shift codes from OCR, fill gaps to meet
+                  staffing requirements, balance hours fairly across nurses, and
+                  enforce consecutive work day limits.
                 </p>
               </div>
             </div>
 
             <div className="bg-white rounded-xl border border-gray-200 p-6">
               <h3 className="font-semibold text-gray-900 mb-3">Summary</h3>
-              <div className="grid grid-cols-4 gap-4 text-sm mb-4">
+              <div className="grid grid-cols-3 gap-4 text-sm mb-4">
                 <div>
                   <span className="text-gray-500">Period:</span>
                   <p className="font-medium">
@@ -2079,13 +2506,9 @@ export default function SchedulerPage() {
                   </p>
                 </div>
                 <div>
-                  <span className="text-gray-500">OCR Nurses:</span>
-                  <p className="font-medium text-blue-600">{ocrGrid.length}</p>
-                </div>
-                <div>
-                  <span className="text-gray-500">Manual Nurses:</span>
-                  <p className="font-medium text-green-600">
-                    {manualNurses.length}
+                  <span className="text-gray-500">Total Nurses:</span>
+                  <p className="font-medium text-blue-600">
+                    {uniqueNurses.length}
                   </p>
                 </div>
                 <div>
@@ -2094,47 +2517,10 @@ export default function SchedulerPage() {
                 </div>
               </div>
 
-              {/* Staff Requirements Info/Warning */}
-              <div className="pt-4 border-t border-gray-100">
-                <div className="flex items-start gap-2">
-                  <div className="text-sm">
-                    <span className="font-medium text-gray-700">
-                      Staffing Settings:
-                    </span>
-                    <div className="mt-1 text-gray-600">
-                      {Object.keys(requiredStaff).length > 0 ? (
-                        <span>Using staff requirements from editor</span>
-                      ) : (
-                        <div className="flex items-center gap-2 text-amber-600">
-                          <svg
-                            className="w-4 h-4"
-                            fill="currentColor"
-                            viewBox="0 0 20 20"
-                          >
-                            <path
-                              fillRule="evenodd"
-                              d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
-                              clipRule="evenodd"
-                            />
-                          </svg>
-                          <span className="font-medium">
-                            Using default: 5 day / 3 night nurses per shift
-                          </span>
-                        </div>
-                      )}
-                      <div className="text-xs text-gray-500 mt-1">
-                        💡 Tip: Set staff requirements in Review step for
-                        accurate scheduling
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
               {/* Visual nurse list for debugging */}
               <div className="mt-4 p-4 bg-gray-50 rounded-lg">
                 <h4 className="text-sm font-semibold text-gray-700 mb-2">
-                  Total Nurses to be Scheduled: {uniqueNurses.length}
+                  Nurses to be Scheduled: {uniqueNurses.length}
                 </h4>
                 <div className="flex flex-wrap gap-2">
                   {/* Deduplicated nurse list */}
@@ -2295,7 +2681,9 @@ export default function SchedulerPage() {
                 <div className="bg-white p-3 rounded-lg border">
                   <span className="text-gray-500 text-xs">From OCR</span>
                   <p className="text-xl font-bold text-blue-600">
-                    {ocrGrid.length}
+                    {filteredOptimizedGrid.length +
+                      excludedNurses.size -
+                      manualNurses.length}
                   </p>
                 </div>
                 <div className="bg-white p-3 rounded-lg border">
@@ -2343,7 +2731,7 @@ export default function SchedulerPage() {
                   </p>
                 </div>
                 <div className="bg-white p-3 rounded-lg border">
-                  <p className="text-xs text-gray-500">Average |Hour Delta|</p>
+                  <p className="text-xs text-gray-500">Avg Hour Delta</p>
                   <p className="text-lg font-semibold text-purple-600">
                     {formatQuarterHours(
                       operationalQualitySnapshot.avgAbsoluteHourDelta,
@@ -2351,7 +2739,7 @@ export default function SchedulerPage() {
                     h
                   </p>
                   <p className="text-xs text-gray-500">
-                    Lower is better for fair workload balancing
+                    vs contract target · lower is better
                   </p>
                 </div>
               </div>
@@ -2369,13 +2757,13 @@ export default function SchedulerPage() {
                           Type
                         </th>
                         <th className="text-center p-2 border-b font-medium">
-                          Shifts Worked / Target
+                          Shifts
                         </th>
                         <th className="text-center p-2 border-b font-medium">
-                          Hours
+                          Paid Hours
                         </th>
                         <th className="text-center p-2 border-b font-medium">
-                          Target (period)
+                          Hour Target
                         </th>
                         <th className="text-center p-2 border-b font-medium">
                           Delta
@@ -2387,8 +2775,21 @@ export default function SchedulerPage() {
                     </thead>
                     <tbody>
                       {nurseHoursStats.map((nurse, idx) => (
-                        <tr key={idx} className="hover:bg-gray-50 border-b">
-                          <td className="p-2 font-medium">{nurse.name}</td>
+                        <tr
+                          key={idx}
+                          className={`hover:bg-gray-50 border-b ${!nurse.hoursValid ? "bg-red-50/40" : ""}`}
+                        >
+                          <td className="p-2 font-medium">
+                            {nurse.name}
+                            {!nurse.hoursValid && (
+                              <span
+                                className="ml-1 text-red-500 cursor-help"
+                                title={`Hour mismatch: ${formatQuarterHours(nurse.totalHours)}h actual vs ${formatQuarterHours(nurse.expectedHours)}h expected from ${nurse.count12h}×12h + ${nurse.count8h}×8h shifts`}
+                              >
+                                ⚠
+                              </span>
+                            )}
+                          </td>
                           <td className="p-2 text-center">
                             <span
                               className={`px-2 py-0.5 rounded text-xs ${
@@ -2402,45 +2803,84 @@ export default function SchedulerPage() {
                           </td>
                           <td className="p-2 text-center">
                             <div className="font-medium">
-                              {nurse.workingDays} / {nurse.targetDaysDisplay}
+                              {nurse.workingDays + (nurse.cfShiftCount || 0)}{" "}
+                              shift
+                              {nurse.workingDays + (nurse.cfShiftCount || 0) !==
+                              1
+                                ? "s"
+                                : ""}
                             </div>
                             <div className="text-xs text-gray-500">
-                              {nurse.dayDelta > 0 ? "+" : ""}
-                              {nurse.dayDelta} shift
-                              {Math.abs(nurse.dayDelta) === 1 ? "" : "s"}
-                              {nurse.requestedOffDaysInPeriod > 0
-                                ? ` • ${nurse.requestedOffDaysInPeriod} off request(s)`
-                                : ""}
+                              {nurse.count12h > 0 && (
+                                <span>{nurse.count12h}×12h</span>
+                              )}
+                              {nurse.count12h > 0 && nurse.count8h > 0 && (
+                                <span> + </span>
+                              )}
+                              {nurse.count8h > 0 && (
+                                <span>{nurse.count8h}×8h</span>
+                              )}
+                              {nurse.cfHours > 0 && (
+                                <span className="text-purple-500 ml-1">
+                                  +{formatQuarterHours(nurse.cfHours)}h CF
+                                </span>
+                              )}
+                              {nurse.requestedOffDaysInPeriod > 0 && (
+                                <span className="ml-1">
+                                  • {nurse.requestedOffDaysInPeriod} off
+                                </span>
+                              )}
                             </div>
                           </td>
                           <td className="p-2 text-center font-medium">
                             <div>{formatQuarterHours(nurse.totalHours)}h</div>
-                            <div className="text-xs text-gray-500 font-normal">
-                              avg {formatQuarterHours(nurse.avgHoursPerShift)}
-                              h/shift
-                            </div>
                           </td>
-                          <td className="p-2 text-center text-gray-500">
-                            <div>{formatQuarterHours(nurse.targetHours)}h</div>
-                            <div className="text-xs text-gray-500">
-                              {formatQuarterHours(nurse.weeklyHours)}h/week
+                          <td className="p-2 text-center text-gray-600">
+                            <div>
+                              {formatQuarterHours(nurse.contractTargetHours)}h
                             </div>
+                            {(() => {
+                              const numBiWeeks =
+                                scheduleDatesForStats.length / 14.0;
+                              // If exactly 2 weeks (1 bi-weekly period), show simplified text
+                              if (Math.abs(numBiWeeks - 1) < 0.01) {
+                                return null; // Don't show redundant "75h/2wk" when target is already 75h
+                              }
+                              return (
+                                <div className="text-xs text-gray-400">
+                                  {formatQuarterHours(nurse.biWeeklyHours)}h/2wk
+                                </div>
+                              );
+                            })()}
                           </td>
                           <td className="p-2 text-center">
                             <span
                               className={`font-medium ${
-                                nurse.delta > 0
-                                  ? "text-red-600"
-                                  : nurse.delta < 0
+                                Math.abs(nurse.delta) <= 0.5
+                                  ? "text-green-600"
+                                  : Math.abs(nurse.delta) <=
+                                      nurse.contractTargetHours * 0.05
                                     ? "text-amber-600"
-                                    : "text-green-600"
+                                    : "text-red-600"
                               }`}
                             >
                               {nurse.delta > 0 ? "+" : ""}
                               {formatQuarterHours(nurse.delta)}h
                             </span>
-                            <div className="text-xs text-gray-500">
-                              {formatPercent(nurse.utilizationPct)} of target
+                            <div className="mt-0.5">
+                              {nurse.utilizationPct >= 110 ? (
+                                <span className="inline-block px-1.5 py-0.5 text-[10px] font-medium rounded bg-red-100 text-red-700">
+                                  OT {formatPercent(nurse.utilizationPct)}
+                                </span>
+                              ) : nurse.utilizationPct <= 55 ? (
+                                <span className="inline-block px-1.5 py-0.5 text-[10px] font-medium rounded bg-amber-100 text-amber-700">
+                                  Under {formatPercent(nurse.utilizationPct)}
+                                </span>
+                              ) : (
+                                <span className="text-xs text-gray-500">
+                                  {formatPercent(nurse.utilizationPct)}
+                                </span>
+                              )}
                             </div>
                           </td>
                           <td className="p-2 text-center">
@@ -2464,26 +2904,27 @@ export default function SchedulerPage() {
                       <tr className="bg-gray-100 font-medium">
                         <td className="p-2">
                           Total ({nurseHoursStats.length} nurses)
+                          {nurseHoursStats.filter((n) => !n.hoursValid).length >
+                            0 && (
+                            <span className="text-red-500 font-normal text-xs ml-1">
+                              ⚠{" "}
+                              {
+                                nurseHoursStats.filter((n) => !n.hoursValid)
+                                  .length
+                              }{" "}
+                              with hour mismatches
+                            </span>
+                          )}
                         </td>
                         <td className="p-2"></td>
                         <td className="p-2 text-center">
                           <div className="font-medium">
                             {nurseHoursStats.reduce(
-                              (sum, n) => sum + n.workingDays,
+                              (sum, n) =>
+                                sum + n.workingDays + (n.cfShiftCount || 0),
                               0,
                             )}{" "}
-                            /{" "}
-                            {(() => {
-                              const min = nurseHoursStats.reduce(
-                                (sum, n) => sum + n.targetDaysMin,
-                                0,
-                              );
-                              const max = nurseHoursStats.reduce(
-                                (sum, n) => sum + n.targetDaysMax,
-                                0,
-                              );
-                              return min === max ? `${min}` : `${min}-${max}`;
-                            })()}
+                            shifts
                           </div>
                         </td>
                         <td className="p-2 text-center">
@@ -2498,47 +2939,82 @@ export default function SchedulerPage() {
                         <td className="p-2 text-center text-gray-500">
                           {formatQuarterHours(
                             nurseHoursStats.reduce(
-                              (sum, n) => sum + n.targetHours,
+                              (sum, n) => sum + n.contractTargetHours,
                               0,
                             ),
                           )}
                           h
                         </td>
                         <td className="p-2 text-center">
-                          <span
-                            className={`${
-                              nurseHoursStats.reduce(
-                                (sum, n) => sum + n.delta,
-                                0,
-                              ) > 0
-                                ? "text-red-600"
-                                : nurseHoursStats.reduce(
-                                      (sum, n) => sum + n.delta,
-                                      0,
-                                    ) < 0
-                                  ? "text-amber-600"
-                                  : "text-green-600"
-                            }`}
-                          >
-                            {nurseHoursStats.reduce(
+                          {(() => {
+                            const totalDelta = nurseHoursStats.reduce(
                               (sum, n) => sum + n.delta,
                               0,
-                            ) > 0
-                              ? "+"
-                              : ""}
-                            {formatQuarterHours(
-                              nurseHoursStats.reduce(
-                                (sum, n) => sum + n.delta,
-                                0,
-                              ),
-                            )}
-                            h
-                          </span>
+                            );
+                            const overCount = nurseHoursStats.filter(
+                              (n) => n.utilizationPct >= 110,
+                            ).length;
+                            const underCount = nurseHoursStats.filter(
+                              (n) => n.utilizationPct <= 55,
+                            ).length;
+                            return (
+                              <div>
+                                <span
+                                  className={`font-medium ${
+                                    Math.abs(totalDelta) <=
+                                    nurseHoursStats.length
+                                      ? "text-green-600"
+                                      : totalDelta > 0
+                                        ? "text-red-600"
+                                        : "text-amber-600"
+                                  }`}
+                                >
+                                  {totalDelta > 0 ? "+" : ""}
+                                  {formatQuarterHours(totalDelta)}h
+                                </span>
+                                {(overCount > 0 || underCount > 0) && (
+                                  <div className="text-[10px] mt-0.5 text-gray-500">
+                                    {overCount > 0 && (
+                                      <span className="text-red-600">
+                                        {overCount} OT
+                                      </span>
+                                    )}
+                                    {overCount > 0 && underCount > 0 && " · "}
+                                    {underCount > 0 && (
+                                      <span className="text-amber-600">
+                                        {underCount} under-FTE
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="p-2"></td>
                       </tr>
                     </tfoot>
                   </table>
+                  <div className="mt-2 p-2.5 bg-blue-50 border border-blue-100 rounded-lg">
+                    <p className="text-xs text-blue-700">
+                      <span className="font-medium">📋 How to read</span>:{" "}
+                      <strong>Paid Hours</strong> = sum of each shift&apos;s
+                      fixed value (12h codes = 11.25h, 8h codes = 7.5h).{" "}
+                      <strong>Hour Target</strong> = bi-weekly contract hours ×
+                      number of bi-weekly periods, adjusted for approved
+                      off-requests. <strong>Delta</strong> = Paid Hours − Hour
+                      Target. Positive = overtime to balance in next period,
+                      negative = under-hours.{" "}
+                      <span className="inline-block px-1 py-0 text-[10px] font-medium rounded bg-red-100 text-red-700">
+                        OT
+                      </span>{" "}
+                      = over 110% utilization (union flag),{" "}
+                      <span className="inline-block px-1 py-0 text-[10px] font-medium rounded bg-amber-100 text-amber-700">
+                        Under
+                      </span>{" "}
+                      = below 55% (FTE shortfall). ⚠ flags invalid hour math.
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -2628,13 +3104,75 @@ export default function SchedulerPage() {
               <h2 className="text-lg font-semibold text-gray-900 mb-4">
                 Optimized Schedule
               </h2>
-              <SchedulePreview
-                key={`schedule-${filteredOptimizedGrid.length}-${ocrDates.length}`}
-                ocrGrid={filteredOptimizedGrid}
-                ocrDates={ocrDates}
-                nurseMetadata={manualNurses}
-                onChange={handleSchedulePreviewChange}
-              />
+              {/* Inject OFF entries from Employee Notes & Time-Off Requests
+                  into the grid so they appear in the Schedule Calendar */}
+              {(() => {
+                const commentOffs = extractOffDatesFromComments(autoComments);
+                // Build a grid with comment OFF entries merged in
+                const gridWithOffs = filteredOptimizedGrid.map((row) => {
+                  const nurseLower = row.nurse.toLowerCase();
+                  const nurseFirst = row.nurse.split(" ")[0].toLowerCase();
+                  // Find matching comment off dates for this nurse (fuzzy)
+                  const offDates: string[] = [];
+                  for (const [commentNurse, dates] of Object.entries(
+                    commentOffs,
+                  )) {
+                    const commentLower = commentNurse.toLowerCase();
+                    if (
+                      commentLower.includes(nurseLower) ||
+                      nurseLower.includes(commentLower) ||
+                      commentNurse.split(" ")[0].toLowerCase() === nurseFirst
+                    ) {
+                      offDates.push(...dates);
+                    }
+                  }
+                  if (offDates.length === 0) return row;
+                  // Merge OFF entries from comments into the grid.
+                  // The backend may already have blank off-entries (shift:"")
+                  // for off-request dates. Those are hidden by the calendar
+                  // filter, so we need to upgrade them to code "OFF".
+                  const offDateSet = new Set(offDates);
+                  const upgradedShifts = row.shifts.map((s) => {
+                    if (
+                      offDateSet.has(s.date) &&
+                      s.hours === 0 &&
+                      (!s.shift || s.shift.trim() === "")
+                    ) {
+                      // Upgrade blank off → visible "OFF"
+                      return { ...s, shift: "OFF", shiftType: "off" as const };
+                    }
+                    return s;
+                  });
+                  // For any off dates that had NO entry at all, add new ones
+                  const existingDates = new Set(
+                    upgradedShifts.map((s) => s.date),
+                  );
+                  const newOffShifts: ShiftEntry[] = offDates
+                    .filter((d) => !existingDates.has(d))
+                    .map((d) => ({
+                      date: d,
+                      shift: "OFF",
+                      shiftType: "off" as const,
+                      hours: 0,
+                      startTime: "",
+                      endTime: "",
+                    }));
+                  return {
+                    ...row,
+                    shifts: [...upgradedShifts, ...newOffShifts],
+                  };
+                });
+                return (
+                  <SchedulePreview
+                    key={`schedule-${filteredOptimizedGrid.length}-${ocrDates.length}-${autoComments.length}`}
+                    ocrGrid={gridWithOffs}
+                    ocrDates={ocrDates}
+                    nurseMetadata={manualNurses}
+                    onChange={handleSchedulePreviewChange}
+                    onAsteriskDetected={handleAsteriskDetected}
+                  />
+                );
+              })()}
             </div>
 
             <div className="flex justify-between">
@@ -3266,7 +3804,7 @@ export default function SchedulerPage() {
                                       : "Part-Time"}
                                   </span>
                                   <span>
-                                    {match.dbNurse.max_weekly_hours}h/wk
+                                    {match.dbNurse.max_weekly_hours}h/2wk
                                   </span>
                                   {match.dbNurse.is_chemo_certified && (
                                     <span>💉</span>
@@ -3377,8 +3915,7 @@ export default function SchedulerPage() {
                                       ? {
                                           ...c,
                                           employmentType: "FT",
-                                          maxHours:
-                                            getDefaultMaxWeeklyHours("FT"),
+                                          maxHours: fullTimeBiWeeklyTarget,
                                         }
                                       : c,
                                   ),
@@ -3400,8 +3937,7 @@ export default function SchedulerPage() {
                                       ? {
                                           ...c,
                                           employmentType: "PT",
-                                          maxHours:
-                                            getDefaultMaxWeeklyHours("PT"),
+                                          maxHours: partTimeBiWeeklyTarget,
                                         }
                                       : c,
                                   ),
@@ -3429,9 +3965,9 @@ export default function SchedulerPage() {
                                           ...c,
                                           maxHours:
                                             parseFloat(e.target.value) ||
-                                            getDefaultMaxWeeklyHours(
-                                              c.employmentType,
-                                            ),
+                                            (c.employmentType === "PT"
+                                              ? partTimeBiWeeklyTarget
+                                              : fullTimeBiWeeklyTarget),
                                         }
                                       : c,
                                   ),
@@ -3439,7 +3975,7 @@ export default function SchedulerPage() {
                               }
                               className="w-14 px-2 py-1 text-sm border border-gray-200 rounded text-center focus:outline-none focus:border-blue-400"
                             />
-                            <span className="text-gray-500">h/wk</span>
+                            <span className="text-gray-500">h/2wk</span>
                           </div>
                         </div>
 
@@ -3663,11 +4199,19 @@ export default function SchedulerPage() {
       {showConstraintsModal && parsedConstraints && (
         <ConstraintsConfirmation
           constraints={parsedConstraints}
-          onConfirm={optimizeWithConfirmedConstraints}
+          onConfirm={async (edited) => {
+            try {
+              await optimizeWithConfirmedConstraints(edited);
+            } finally {
+              // Ensure UI advances even if hook fallback handled the result.
+              setCurrentStep("result");
+              setShowConstraintsModal(false);
+            }
+          }}
           onCancel={() => setShowConstraintsModal(false)}
           onEdit={() => {}}
-          fullTimeWeeklyTarget={fullTimeWeeklyTarget}
-          partTimeWeeklyTarget={partTimeWeeklyTarget}
+          fullTimeBiWeeklyTarget={fullTimeBiWeeklyTarget}
+          partTimeBiWeeklyTarget={partTimeBiWeeklyTarget}
         />
       )}
 
@@ -3883,6 +4427,189 @@ export default function SchedulerPage() {
                       </div>
                     )}
 
+                  {/* Gap-Fill Suggestions */}
+                  {insightsData.gapFillSuggestions &&
+                    insightsData.gapFillSuggestions.length > 0 && (
+                      <div>
+                        <h4 className="font-semibold text-gray-900 mb-2 flex items-center gap-2">
+                          <svg
+                            className="w-4 h-4 text-blue-600"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M12 6v6m0 0v6m0-6h6m-6 0H6"
+                            />
+                          </svg>
+                          Gap-Fill Recommendations (
+                          {insightsData.gapFillSuggestions.length})
+                        </h4>
+                        <p className="text-xs text-gray-500 mb-2">
+                          These dates are understaffed. Suggested nurses have
+                          capacity below their target hours.
+                        </p>
+
+                        {/* Select all / Apply controls */}
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="flex items-center gap-2 text-xs text-gray-600 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={
+                                selectedGapFills.size ===
+                                insightsData.gapFillSuggestions.length
+                              }
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setSelectedGapFills(
+                                    new Set(
+                                      insightsData.gapFillSuggestions!.map(
+                                        (_, i) => i,
+                                      ),
+                                    ),
+                                  );
+                                } else {
+                                  setSelectedGapFills(new Set());
+                                }
+                              }}
+                              className="rounded border-gray-300"
+                            />
+                            Select All
+                          </label>
+                          {selectedGapFills.size > 0 && (
+                            <button
+                              onClick={applySelectedGapFills}
+                              className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg flex items-center gap-1.5 transition-colors"
+                            >
+                              <svg
+                                className="w-3.5 h-3.5"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M5 13l4 4L19 7"
+                                />
+                              </svg>
+                              Apply {selectedGapFills.size} to Calendar
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="space-y-2">
+                          {insightsData.gapFillSuggestions.map((gf, idx) => (
+                            <div
+                              key={idx}
+                              className={`rounded-lg border p-3 cursor-pointer transition-all ${
+                                selectedGapFills.has(idx)
+                                  ? "ring-2 ring-blue-400 bg-blue-50 border-blue-300"
+                                  : gf.priority === "high"
+                                    ? "bg-red-50 border-red-200"
+                                    : "bg-amber-50 border-amber-200"
+                              }`}
+                              onClick={() => {
+                                setSelectedGapFills((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(idx)) next.delete(idx);
+                                  else next.add(idx);
+                                  return next;
+                                });
+                              }}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="flex items-start gap-2 flex-1 min-w-0">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedGapFills.has(idx)}
+                                    onChange={() => {
+                                      setSelectedGapFills((prev) => {
+                                        const next = new Set(prev);
+                                        if (next.has(idx)) next.delete(idx);
+                                        else next.add(idx);
+                                        return next;
+                                      });
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="mt-1 rounded border-gray-300 flex-shrink-0"
+                                  />
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span
+                                        className={`inline-flex items-center px-1.5 py-0.5 text-[10px] font-bold rounded uppercase tracking-wide ${
+                                          gf.priority === "high"
+                                            ? "bg-red-200 text-red-800"
+                                            : "bg-amber-200 text-amber-800"
+                                        }`}
+                                      >
+                                        {gf.priority}
+                                      </span>
+                                      <span className="text-sm font-semibold text-gray-900">
+                                        {new Date(
+                                          gf.date + "T12:00:00",
+                                        ).toLocaleDateString("en-US", {
+                                          weekday: "short",
+                                          month: "short",
+                                          day: "numeric",
+                                        })}
+                                      </span>
+                                      <span className="text-xs text-gray-500">
+                                        ({gf.currentHeadcount} staff vs{" "}
+                                        {gf.averageHeadcount} avg)
+                                      </span>
+                                    </div>
+                                    <div className="mt-1.5 flex items-center gap-2 text-sm">
+                                      <span className="font-medium text-gray-800">
+                                        {gf.nurse}
+                                      </span>
+                                      <span className="text-gray-400">→</span>
+                                      <span
+                                        className={`font-mono font-bold px-1.5 py-0.5 rounded text-xs ${
+                                          gf.shiftType === "day"
+                                            ? "bg-amber-100 text-amber-800 border border-amber-200"
+                                            : "bg-indigo-100 text-indigo-800 border border-indigo-200"
+                                        }`}
+                                      >
+                                        {gf.shiftCode}
+                                      </span>
+                                      <span className="text-xs text-gray-500">
+                                        {gf.shiftStart}–{gf.shiftEnd} (
+                                        {gf.shiftHours}h)
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="flex-shrink-0 text-right">
+                                  <div
+                                    className={`text-sm font-bold ${
+                                      gf.nurseDelta < -5
+                                        ? "text-red-600"
+                                        : "text-amber-600"
+                                    }`}
+                                  >
+                                    {gf.nurseDelta > 0 ? "+" : ""}
+                                    {gf.nurseDelta}h
+                                  </div>
+                                  <div className="text-[10px] text-gray-500">
+                                    {gf.nurseCurrentHours}/{gf.nurseTargetHours}
+                                    h
+                                  </div>
+                                  <div className="text-[10px] text-gray-400">
+                                    {gf.nurseEmploymentType}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                   {/* Refresh button */}
                   <div className="flex justify-end pt-2">
                     <button
@@ -4070,21 +4797,209 @@ export default function SchedulerPage() {
       {/* Refine Modal */}
       {showRefineModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-6">
-            <h3 className="text-xl font-bold text-gray-900 mb-4">
-              Refine Schedule with AI
-            </h3>
-            <p className="text-gray-600 mb-4">
-              Describe what you'd like to improve. For example: "Ensure more
-              weekend coverage" or "Give Nurse Jane fewer night shifts"
-            </p>
-            <textarea
-              value={refineRequest}
-              onChange={(e) => setRefineRequest(e.target.value)}
-              placeholder="Enter your refinement request..."
-              className="w-full h-32 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-            />
-            <div className="flex justify-end gap-3 mt-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div className="flex items-center gap-3">
+                <h3 className="text-xl font-bold text-gray-900">
+                  Refine Schedule with AI
+                </h3>
+                <ShiftCodesPopover
+                  shiftCodes={SHIFT_CODES}
+                  timeSlots={TIME_SLOTS.map((ts) => ({
+                    slot: ts.slot,
+                    category: ts.category,
+                    duration: ts.duration,
+                    label: ts.label,
+                    mapsTo: ts.mapsTo,
+                  }))}
+                  label="Shift Codes"
+                />
+              </div>
+              <button
+                onClick={() => {
+                  setShowRefineModal(false);
+                  setRefineRequest("");
+                }}
+                className="p-1.5 hover:bg-gray-100 rounded-lg text-gray-400 hover:text-gray-600"
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+
+            {/* Scrollable body */}
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+              {/* Section 1: Refinement Request */}
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-1">
+                  Refinement Request
+                </label>
+                <p className="text-xs text-gray-500 mb-2">
+                  Describe what you'd like to improve. e.g. &quot;Ensure more
+                  weekend coverage&quot; or &quot;Give Nurse Jane fewer night
+                  shifts&quot;
+                </p>
+                <textarea
+                  value={refineRequest}
+                  onChange={(e) => setRefineRequest(e.target.value)}
+                  placeholder="Enter your refinement request..."
+                  className="w-full h-28 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+                />
+              </div>
+
+              {/* Section 2: Scheduling Rules */}
+              <details className="group border border-gray-200 rounded-lg">
+                <summary className="flex items-center justify-between px-4 py-3 cursor-pointer select-none hover:bg-gray-50 rounded-lg">
+                  <div className="flex items-center gap-2">
+                    <svg
+                      className="w-4 h-4 text-blue-600"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+                      />
+                    </svg>
+                    <span className="text-sm font-semibold text-gray-700">
+                      Scheduling Rules
+                    </span>
+                    {rules.trim() && (
+                      <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-medium">
+                        Active
+                      </span>
+                    )}
+                  </div>
+                  <svg
+                    className="w-4 h-4 text-gray-400 transition-transform group-open:rotate-180"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M19 9l-7 7-7-7"
+                    />
+                  </svg>
+                </summary>
+                <div className="px-4 pb-4 pt-1 space-y-2">
+                  <p className="text-xs text-gray-500">
+                    These rules guide the AI optimizer. One rule per line. They
+                    are saved to your organization for reuse.
+                  </p>
+                  <textarea
+                    value={rules}
+                    onChange={(e) => setRules(e.target.value)}
+                    rows={5}
+                    placeholder={
+                      "1. No more than 5 consecutive working days\n2. Balance workload across all nurses\n3. Senior nurses get shift preference"
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 font-mono resize-y"
+                  />
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await saveScheduleRuleAPI({
+                            name: "default",
+                            rules_text: rules,
+                          });
+                        } catch {
+                          /* silent */
+                        }
+                      }}
+                      disabled={!rules.trim()}
+                      className="text-xs px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-40 font-medium"
+                    >
+                      Save Rules
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const saved = await getLatestScheduleRuleAPI(
+                            currentOrganization?.id,
+                          );
+                          if (saved?.rules_text) setRules(saved.rules_text);
+                        } catch {
+                          /* silent */
+                        }
+                      }}
+                      className="text-xs px-3 py-1 border border-gray-300 text-gray-600 rounded-md hover:bg-gray-50 font-medium"
+                    >
+                      Load Last Saved
+                    </button>
+                  </div>
+                </div>
+              </details>
+
+              {/* Section 3: System Prompt (Advanced) */}
+              <details className="group border border-gray-200 rounded-lg">
+                <summary className="flex items-center justify-between px-4 py-3 cursor-pointer select-none hover:bg-gray-50 rounded-lg">
+                  <div className="flex items-center gap-2">
+                    <svg
+                      className="w-4 h-4 text-purple-600"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                      />
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                      />
+                    </svg>
+                    <span className="text-sm font-semibold text-gray-700">
+                      Advanced: System Prompt
+                    </span>
+                  </div>
+                  <svg
+                    className="w-4 h-4 text-gray-400 transition-transform group-open:rotate-180"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M19 9l-7 7-7-7"
+                    />
+                  </svg>
+                </summary>
+                <div className="px-4 pb-4 pt-1">
+                  <SystemPrompt />
+                </div>
+              </details>
+            </div>
+
+            {/* Footer */}
+            <div className="border-t border-gray-200 px-6 py-4 flex justify-end gap-3">
               <button
                 onClick={() => {
                   setShowRefineModal(false);

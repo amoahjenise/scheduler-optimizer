@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import { useOrganization } from "../context/OrganizationContext";
 import type { Patient } from "../lib/api";
+import { FEATURES } from "../lib/featureFlags";
 
 interface ScheduleShift {
   nurse: string;
@@ -103,6 +104,7 @@ export default function Dashboard() {
   const [stats, setStats] = useState({
     activePatients: 0,
     completedHandovers: 0,
+    totalHandovers: 0,
     schedulesCreated: 0,
     finalizedSchedules: 0,
     loading: true,
@@ -128,42 +130,37 @@ export default function Dashboard() {
       try {
         const authHeaders = await getAuthHeaders();
 
-        const [
-          patientsRes,
-          dayHandovers,
-          nightHandovers,
-          schedulesList,
-          deletionActivities,
-        ]: [any, any, any, OptimizedSchedule[], DeletionActivity[]] =
-          await Promise.all([
-            fetchPatientsAPI({ active_only: true }),
-            fetchTodaysHandoversAPI("day"),
-            fetchTodaysHandoversAPI("night"),
+        // Fetch independently so one group failing doesn't zero-out the other
+        const [patientsRes, dayHandovers, nightHandovers] = await Promise.all([
+          fetchPatientsAPI({ active_only: true }),
+          fetchTodaysHandoversAPI("day"),
+          fetchTodaysHandoversAPI("night"),
+        ]);
+
+        let schedulesList: OptimizedSchedule[] = [];
+        let deletionActivities: DeletionActivity[] = [];
+        try {
+          [schedulesList, deletionActivities] = await Promise.all([
             fetchOptimizedSchedulesAPI(authHeaders),
             fetchDeletionActivitiesAPI(authHeaders, 25),
           ]);
+        } catch (authErr) {
+          console.warn("Failed to load schedule/deletion data:", authErr);
+        }
 
-        // Get active patient IDs to filter handoffs
-        const activePatientIds = new Set(
-          (patientsRes.patients || []).map((p: Patient) => p.id),
-        );
-
-        // Filter handoffs to only include those for active patients
-        const activeHandoversDay = (dayHandovers.handovers || []).filter(
-          (h: Handover) => activePatientIds.has(h.patient_id),
-        );
-        const activeHandoversNight = (nightHandovers.handovers || []).filter(
-          (h: Handover) => activePatientIds.has(h.patient_id),
-        );
+        // Include ALL handovers: both linked (patient_id) and embedded (p_first_name)
+        const allHandoversDay = dayHandovers.handovers || [];
+        const allHandoversNight = nightHandovers.handovers || [];
 
         // Combine and dedupe by patient + shift (defensive guard)
-        const allHandoversRaw = [
-          ...activeHandoversDay,
-          ...activeHandoversNight,
-        ];
+        const allHandoversRaw = [...allHandoversDay, ...allHandoversNight];
         const dedupedMap = new Map<string, Handover>();
         allHandoversRaw.forEach((handover) => {
-          const key = `${handover.patient_id}-${handover.shift_type}`;
+          // Build dedup key: use patient_id when available, fallback to embedded name+room
+          const patientKey =
+            handover.patient_id ||
+            `embedded-${handover.p_first_name}-${handover.p_last_name}-${handover.p_room_number}`;
+          const key = `${patientKey}-${handover.shift_type}`;
           const existing = dedupedMap.get(key);
           if (!existing) {
             dedupedMap.set(key, handover);
@@ -182,12 +179,22 @@ export default function Dashboard() {
         });
 
         const allHandovers = Array.from(dedupedMap.values());
-        const completedPatientIds = new Set(
-          allHandovers.filter((h) => h.is_completed).map((h) => h.patient_id),
+
+        // Determine current shift based on time of day (7am-7pm = day, otherwise = night)
+        const currentHour = new Date().getHours();
+        const currentShift =
+          currentHour >= 7 && currentHour < 19 ? "day" : "night";
+
+        // Filter to current shift only for dashboard display
+        const currentShiftHandovers = allHandovers.filter(
+          (h) => h.shift_type === currentShift,
         );
-        const completedHandovers = (patientsRes.patients || []).filter(
-          (p: Patient) => completedPatientIds.has(p.id),
+
+        // Count completed for the current shift
+        const completedHandovers = currentShiftHandovers.filter(
+          (h) => h.is_completed,
         ).length;
+        const totalHandovers = currentShiftHandovers.length;
 
         const handoverActivities: RecentActivityItem[] = allHandovers.map(
           (handover) => ({
@@ -289,7 +296,7 @@ export default function Dashboard() {
         }));
 
         const mergedRecentActivities = [
-          ...patientActivities,
+          ...(FEATURES.PATIENT_MANAGEMENT ? patientActivities : []),
           ...handoverActivities,
           ...scheduleActivities,
           ...deletionRecentActivities,
@@ -302,6 +309,7 @@ export default function Dashboard() {
         setStats({
           activePatients: patientsRes.patients?.length || 0,
           completedHandovers,
+          totalHandovers,
           schedulesCreated: Array.isArray(schedulesList)
             ? schedulesList.length
             : 0,
@@ -547,39 +555,43 @@ export default function Dashboard() {
           </div>
 
           {/* Stats Cards Row */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div
+            className={`grid grid-cols-1 ${FEATURES.PATIENT_MANAGEMENT ? "md:grid-cols-3" : "md:grid-cols-2"} gap-4 mb-6`}
+          >
             {/* Active Patients Card - Clickable */}
-            <Link
-              href="/patients"
-              className="bg-gradient-to-br from-blue-50 to-white rounded-2xl p-4 border border-blue-100 text-left hover:shadow-lg hover:-translate-y-0.5 transition-all cursor-pointer block"
-            >
-              <div className="flex items-center justify-between mb-3">
-                <div className="w-10 h-10 rounded-xl bg-[#1A5CFF]/10 flex items-center justify-center">
-                  <Activity className="w-5 h-5 text-[#1A5CFF]" />
+            {FEATURES.PATIENT_MANAGEMENT && (
+              <Link
+                href="/patients"
+                className="bg-gradient-to-br from-blue-50 to-white rounded-2xl p-4 border border-blue-100 text-left hover:shadow-lg hover:-translate-y-0.5 transition-all cursor-pointer block"
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#1A5CFF]/10 flex items-center justify-center">
+                    <Activity className="w-5 h-5 text-[#1A5CFF]" />
+                  </div>
+                  <span className="text-xs font-medium text-[#1A5CFF] flex items-center gap-1">
+                    View details <ChevronRight className="w-3 h-3" />
+                  </span>
                 </div>
-                <span className="text-xs font-medium text-[#1A5CFF] flex items-center gap-1">
-                  View details <ChevronRight className="w-3 h-3" />
-                </span>
-              </div>
-              <div className="flex items-end justify-between">
-                <div>
-                  <p className="text-3xl font-bold text-gray-900">
-                    {stats.loading ? "–" : stats.activePatients}
-                  </p>
-                  <p className="text-sm text-gray-500 mt-1">Patients</p>
+                <div className="flex items-end justify-between">
+                  <div>
+                    <p className="text-3xl font-bold text-gray-900">
+                      {stats.loading ? "–" : stats.activePatients}
+                    </p>
+                    <p className="text-sm text-gray-500 mt-1">Patients</p>
+                  </div>
+                  {/* Mini bar chart */}
+                  <div className="flex items-end gap-1 h-12">
+                    {[40, 65, 45, 80, 55, 70, 90].map((h, i) => (
+                      <div
+                        key={i}
+                        className="w-2 bg-[#1A5CFF]/20 rounded-full"
+                        style={{ height: `${h}%` }}
+                      />
+                    ))}
+                  </div>
                 </div>
-                {/* Mini bar chart */}
-                <div className="flex items-end gap-1 h-12">
-                  {[40, 65, 45, 80, 55, 70, 90].map((h, i) => (
-                    <div
-                      key={i}
-                      className="w-2 bg-[#1A5CFF]/20 rounded-full"
-                      style={{ height: `${h}%` }}
-                    />
-                  ))}
-                </div>
-              </div>
-            </Link>
+              </Link>
+            )}
 
             {/* Today's Hand-offs Card - Clickable */}
             <Link
@@ -599,7 +611,7 @@ export default function Dashboard() {
                   <p className="text-3xl font-bold text-gray-900">
                     {stats.loading
                       ? "–"
-                      : `${stats.completedHandovers}/${stats.activePatients}`}
+                      : `${stats.completedHandovers}/${stats.totalHandovers}`}
                   </p>
                   <p className="text-sm text-gray-500 mt-1">
                     Hand-Offs Completed
@@ -664,9 +676,11 @@ export default function Dashboard() {
                 Most-used tasks for shift workflow
               </span>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div
+              className={`grid grid-cols-1 ${FEATURES.PATIENT_MANAGEMENT ? "sm:grid-cols-3" : "sm:grid-cols-2"} gap-3`}
+            >
               <Link
-                href="/handover"
+                href="/handover?new=true"
                 className="flex items-center gap-3 rounded-xl border border-blue-200 bg-white px-4 py-3 hover:bg-blue-50 hover:shadow-sm transition-all"
               >
                 <div className="w-9 h-9 rounded-lg bg-blue-100 flex items-center justify-center">
@@ -674,28 +688,32 @@ export default function Dashboard() {
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-gray-900">
-                    Hand-Off
+                    New Hand-Off
                   </p>
                   <p className="text-xs text-gray-500">
-                    Create or update reports
+                    Create a new hand-off report
                   </p>
                 </div>
               </Link>
 
-              <Link
-                href="/patients"
-                className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-white px-4 py-3 hover:bg-emerald-50 hover:shadow-sm transition-all"
-              >
-                <div className="w-9 h-9 rounded-lg bg-emerald-100 flex items-center justify-center">
-                  <Users className="w-4 h-4 text-emerald-700" />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-gray-900">
-                    Patients
-                  </p>
-                  <p className="text-xs text-gray-500">Add/edit patient info</p>
-                </div>
-              </Link>
+              {FEATURES.PATIENT_MANAGEMENT && (
+                <Link
+                  href="/patients"
+                  className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-white px-4 py-3 hover:bg-emerald-50 hover:shadow-sm transition-all"
+                >
+                  <div className="w-9 h-9 rounded-lg bg-emerald-100 flex items-center justify-center">
+                    <Users className="w-4 h-4 text-emerald-700" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900">
+                      Patients
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      Add/edit patient info
+                    </p>
+                  </div>
+                </Link>
+              )}
 
               <Link
                 href={isAdmin ? "/scheduler" : "/schedules"}
@@ -723,31 +741,41 @@ export default function Dashboard() {
             {/* Left Column - Stats & Quick Access */}
             <div className="xl:col-span-8 space-y-4">
               {/* Shift Overview - Most Important */}
-              <div className="bg-gradient-to-br from-blue-50 to-white rounded-2xl p-5 border border-blue-100 shadow-sm">
-                <div className="flex items-center gap-3 mb-3">
-                  <div className="w-10 h-10 rounded-xl bg-[#1A5CFF]/10 flex items-center justify-center">
-                    <Activity className="w-5 h-5 text-[#1A5CFF]" />
+              <div
+                className={`bg-gradient-to-br ${isDayShiftActive ? "from-amber-50 to-white rounded-2xl p-5 border border-amber-100" : "from-indigo-50 to-white rounded-2xl p-5 border border-indigo-100"} shadow-sm`}
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    <div
+                      className={`w-10 h-10 rounded-xl ${isDayShiftActive ? "bg-amber-100" : "bg-indigo-100"} flex items-center justify-center`}
+                    >
+                      <Activity
+                        className={`w-5 h-5 ${isDayShiftActive ? "text-amber-600" : "text-indigo-600"}`}
+                      />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-gray-900">
+                        Current Shift
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {isDayShiftActive
+                          ? "Day Shift (7AM - 7PM)"
+                          : "Night Shift (7PM - 7AM)"}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="font-semibold text-gray-900">Current Shift</p>
-                    <p className="text-xs text-gray-500">
-                      {isDayShiftActive
-                        ? "Day Shift (7AM - 7PM)"
-                        : "Night Shift (7PM - 7AM)"}
-                    </p>
-                  </div>
-                </div>
 
-                {todaySchedule ? (
-                  <div className="space-y-3">
-                    <div className="inline-flex rounded-xl border border-blue-200 bg-white p-1">
+                  {todaySchedule && (
+                    <div
+                      className={`inline-flex rounded-xl border ${isDayShiftActive ? "border-amber-200" : "border-indigo-200"} bg-white p-1`}
+                    >
                       <button
                         type="button"
                         onClick={() => setActiveShiftTab("day")}
                         className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
                           activeShiftTab === "day"
-                            ? "bg-blue-600 text-white"
-                            : "text-gray-600 hover:bg-blue-50"
+                            ? "bg-amber-500 text-white"
+                            : "text-gray-600 hover:bg-amber-50"
                         }`}
                       >
                         ☀️ Day ({todaySchedule.dayStaff.length})
@@ -764,7 +792,11 @@ export default function Dashboard() {
                         🌙 Night ({todaySchedule.nightStaff.length})
                       </button>
                     </div>
+                  )}
+                </div>
 
+                {todaySchedule ? (
+                  <div className="space-y-3">
                     {(() => {
                       const activeStaff =
                         activeShiftTab === "day"
@@ -785,7 +817,7 @@ export default function Dashboard() {
                       }
 
                       return (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
                           {activeStaff.map((shift, idx) => (
                             <div
                               key={`${activeShiftTab}-${idx}-${shift.nurse}`}
@@ -823,12 +855,15 @@ export default function Dashboard() {
             {/* Right Column - Week Calendar */}
             <div className="xl:col-span-4 space-y-4">
               {/* Week Calendar */}
-              <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
-                <div className="flex items-center justify-between mb-3">
+              <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                <div className="mb-4 flex items-center justify-between">
                   <h3 className="font-semibold text-gray-900">This Week</h3>
-                  <Clock className="w-4 h-4 text-gray-400" />
+                  <div className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-gray-50 px-2 py-1 text-[10px] font-medium text-gray-600">
+                    <Clock className="h-3 w-3" />
+                    Live
+                  </div>
                 </div>
-                <div className="flex justify-between relative">
+                <div className="grid grid-cols-7 gap-1.5">
                   {weekDays.map((day, index) => {
                     const dayDate = new Date(currentTime);
                     dayDate.setDate(currentTime.getDate() - today + index);
@@ -842,35 +877,42 @@ export default function Dashboard() {
                     return (
                       <div
                         key={index}
-                        className="relative"
+                        className="relative w-full"
+                        style={{ paddingBottom: "100%" }}
                         onMouseEnter={() => setHoveredDay(index)}
                         onMouseLeave={() => setHoveredDay(null)}
                       >
                         <div
-                          className={`flex flex-col items-center py-2 px-2 rounded-xl transition-colors cursor-pointer ${
+                          className={`absolute inset-0 p-2.5 flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 transition-all ${
                             index === today
-                              ? "bg-[#1A5CFF] text-white"
+                              ? "border-blue-500 bg-blue-500 text-white shadow-md"
                               : hasSchedule
-                                ? "text-gray-700 hover:bg-blue-50 bg-white border border-blue-200"
-                                : "text-gray-500 hover:bg-gray-100"
+                                ? "border-blue-100 bg-blue-50 hover:border-blue-200 hover:bg-blue-100"
+                                : "border-gray-200 bg-gray-50 hover:border-gray-300"
                           }`}
                         >
-                          <span className="text-xs font-medium mb-1">
+                          <span
+                            className={`text-[8px] font-semibold uppercase tracking-wide mb-0.5 ${
+                              index === today
+                                ? "text-blue-100"
+                                : "text-gray-500"
+                            }`}
+                          >
                             {day}
                           </span>
                           <span
-                            className={`text-sm font-semibold ${index === today ? "text-white" : "text-gray-900"}`}
+                            className={`text-base font-bold ${index === today ? "text-white" : hasSchedule ? "text-blue-600" : "text-gray-400"}`}
                           >
                             {weekDates[index]}
                           </span>
                           {hasSchedule && index !== today && (
-                            <div className="w-1 h-1 rounded-full bg-[#1A5CFF] mt-1"></div>
+                            <div className="mt-0.5 h-1 w-1 rounded-full bg-blue-500"></div>
                           )}
                         </div>
 
                         {/* Hover Tooltip */}
                         {hoveredDay === index && daySchedule && hasSchedule && (
-                          <div className="absolute z-50 top-full mt-2 left-1/2 -translate-x-1/2 w-64 bg-white rounded-xl shadow-xl border border-gray-200 p-3">
+                          <div className="absolute left-1/2 top-full z-[60] mt-2 w-64 -translate-x-1/2 rounded-xl border border-gray-200 bg-white p-3 shadow-xl">
                             <div className="text-xs font-semibold text-gray-900 mb-2">
                               {dayDate.toLocaleDateString("en-US", {
                                 weekday: "short",

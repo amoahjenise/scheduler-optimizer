@@ -1,6 +1,6 @@
 """Pydantic schemas for Handover API - Pediatric Oncology Template."""
-from pydantic import BaseModel, Field
-from typing import Optional, List
+from pydantic import BaseModel, Field, model_validator, field_validator
+from typing import Optional, List, Any
 from datetime import datetime
 from enum import Enum
 
@@ -38,12 +38,31 @@ class ShiftTypeEnum(str, Enum):
 
 class HandoverBase(BaseModel):
     """Base handover schema matching pediatric oncology template."""
-    patient_id: str
+    patient_id: Optional[str] = None  # Nullable: new handovers embed patient info directly
     shift_date: datetime
     shift_type: ShiftTypeEnum
     outgoing_nurse: Optional[str] = Field(None, max_length=100)
     incoming_nurse: Optional[str] = Field(None, max_length=100)
     
+    # Embedded patient demographics (stored on the handover itself)
+    p_first_name: Optional[str] = Field(None, max_length=100)
+    p_last_name: Optional[str] = Field(None, max_length=100)
+    p_room_number: Optional[str] = Field(None, max_length=20)
+    p_bed: Optional[str] = Field(None, max_length=10)
+    p_mrn: Optional[str] = Field(None, max_length=50)
+    p_diagnosis: Optional[str] = Field(None, max_length=255)
+    p_date_of_birth: Optional[datetime] = None
+    p_age: Optional[str] = Field(None, max_length=50)
+    p_attending_physician: Optional[str] = Field(None, max_length=100)
+
+    @field_validator("p_date_of_birth", mode="before")
+    @classmethod
+    def coerce_empty_dob(cls, v):
+        """Convert empty strings to None so Pydantic doesn't try to parse '' as datetime."""
+        if v == "" or v is None:
+            return None
+        return v
+
     # Patient status
     status: PatientStatusEnum = PatientStatusEnum.STABLE
     acuity: AcuityLevelEnum = AcuityLevelEnum.MODERATE
@@ -227,6 +246,25 @@ class HandoverCreate(HandoverBase):
 class HandoverUpdate(BaseModel):
     """Schema for updating a handover (all fields optional)."""
     incoming_nurse: Optional[str] = Field(None, max_length=100)
+    
+    # Embedded patient demographics (editable on the handover)
+    p_first_name: Optional[str] = Field(None, max_length=100)
+    p_last_name: Optional[str] = Field(None, max_length=100)
+    p_room_number: Optional[str] = Field(None, max_length=20)
+    p_bed: Optional[str] = Field(None, max_length=10)
+    p_mrn: Optional[str] = Field(None, max_length=50)
+    p_diagnosis: Optional[str] = Field(None, max_length=255)
+    p_date_of_birth: Optional[datetime] = None
+    p_age: Optional[str] = Field(None, max_length=50)
+    p_attending_physician: Optional[str] = Field(None, max_length=100)
+
+    @field_validator("p_date_of_birth", mode="before")
+    @classmethod
+    def coerce_empty_dob(cls, v):
+        if v == "" or v is None:
+            return None
+        return v
+
     status: Optional[PatientStatusEnum] = None
     acuity: Optional[AcuityLevelEnum] = None
     isolation: Optional[IsolationTypeEnum] = None
@@ -394,6 +432,15 @@ class PatientSummary(BaseModel):
     room_number: str
     bed: Optional[str] = None
     diagnosis: Optional[str] = None
+    age: Optional[str] = None
+    date_of_birth: Optional[datetime] = None
+
+    @field_validator("date_of_birth", mode="before")
+    @classmethod
+    def _coerce_empty_dob(cls, v):
+        if v == "" or v is None:
+            return None
+        return v
 
     class Config:
         from_attributes = True
@@ -402,7 +449,7 @@ class PatientSummary(BaseModel):
 class HandoverResponse(BaseModel):
     """Schema for handover response."""
     id: str
-    patient_id: str
+    patient_id: Optional[str] = None
     shift_date: datetime
     shift_type: str
     outgoing_nurse: str
@@ -555,6 +602,24 @@ class HandoverResponse(BaseModel):
     additional_notes: Optional[str] = None
     voice_transcription: Optional[str] = None
     
+    # Embedded patient demographics
+    p_first_name: Optional[str] = None
+    p_last_name: Optional[str] = None
+    p_room_number: Optional[str] = None
+    p_bed: Optional[str] = None
+    p_mrn: Optional[str] = None
+    p_diagnosis: Optional[str] = None
+    p_date_of_birth: Optional[datetime] = None
+    p_age: Optional[str] = None
+    p_attending_physician: Optional[str] = None
+
+    @field_validator("p_date_of_birth", mode="before")
+    @classmethod
+    def _coerce_empty_p_dob(cls, v):
+        if v == "" or v is None:
+            return None
+        return v
+    
     is_draft: bool
     is_completed: bool
     created_at: datetime
@@ -564,6 +629,25 @@ class HandoverResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _ensure_patient_summary(cls, data: Any, handler):
+        """Construct patient summary from embedded fields when no linked patient."""
+        instance = handler(data)
+        if instance.patient is None and instance.p_first_name:
+            instance.patient = PatientSummary(
+                id=instance.id,
+                mrn=instance.p_mrn,
+                first_name=instance.p_first_name or "",
+                last_name=instance.p_last_name or "",
+                room_number=instance.p_room_number or "",
+                bed=instance.p_bed,
+                diagnosis=instance.p_diagnosis,
+                age=instance.p_age,
+                date_of_birth=instance.p_date_of_birth,
+            )
+        return instance
 
 
 class HandoverListResponse(BaseModel):

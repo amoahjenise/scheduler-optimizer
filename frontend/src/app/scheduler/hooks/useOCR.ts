@@ -8,6 +8,7 @@ import {
   normalizeNurseName,
   extractEmployeeId,
   detectOCRIssues,
+  deduplicateNightShifts,
 } from "./utils";
 import { parseImageWithFastAPI, listNursesAPI } from "../../lib/api";
 
@@ -171,11 +172,9 @@ export function useOCR({
 
       const sortedDates = Array.from(allDates).sort();
       const gridRows: GridRow[] = Object.entries(combinedGrid).map(
-        ([, data], idx) => ({
-          id: String(idx),
-          nurse: data.displayName,
-          employeeId: data.employeeId,
-          shifts: sortedDates.map(
+        ([, data], idx) => {
+          // Build the raw shifts array for this nurse
+          const rawShifts = sortedDates.map(
             (date) =>
               data.shifts[date] || {
                 date,
@@ -185,8 +184,20 @@ export function useOCR({
                 startTime: "",
                 endTime: "",
               },
-          ),
-        }),
+          );
+
+          // Deduplicate wrap-around night shifts — only plain Z23 after a
+          // night code is a ghost tail.  Z23 B is always a real shift.
+          // Example: Z19, Z23 B, Z23 B, Z23 → 3 shifts + 1 ghost (last Z23).
+          const dedupedShifts = deduplicateNightShifts(rawShifts);
+
+          return {
+            id: String(idx),
+            nurse: data.displayName,
+            employeeId: data.employeeId,
+            shifts: dedupedShifts,
+          };
+        },
       );
 
       // Sort by nurse name for consistent ordering
@@ -238,7 +249,7 @@ export function useOCR({
                 isTransplantCertified: false,
                 isRenalCertified: false,
                 isChargeCertified: false,
-                maxHours: 37.5, // Weekly default target/cap for FT nurses
+                maxHours: 75, // Bi-weekly default target/cap for FT nurses
               })),
             );
           }

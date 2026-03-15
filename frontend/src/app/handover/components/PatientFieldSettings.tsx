@@ -7,6 +7,11 @@ import {
   PATIENT_CONFIG_DEFAULTS,
   savePatientConfig,
 } from "../../lib/patientConfig";
+import {
+  loadDiagnoses,
+  saveDiagnoses,
+  DEFAULT_DIAGNOSES,
+} from "../../lib/diagnosesConfig";
 
 interface PatientFieldSettingsProps {
   config: PatientFieldConfig;
@@ -79,6 +84,8 @@ export default function PatientFieldSettings({
   const [draft, setDraft] = useState<PatientFieldConfig>(() =>
     JSON.parse(JSON.stringify(config)),
   );
+  const [diagDraft, setDiagDraft] = useState<string[]>(() => loadDiagnoses());
+  const [newDiag, setNewDiag] = useState("");
 
   const update = (
     key: keyof PatientFieldConfig,
@@ -95,6 +102,7 @@ export default function PatientFieldSettings({
 
   const handleSave = () => {
     savePatientConfig(draft);
+    saveDiagnoses(diagDraft);
     // Dispatch custom event for same-window updates
     window.dispatchEvent(new Event("patientConfigChanged"));
     onSave(draft);
@@ -103,6 +111,7 @@ export default function PatientFieldSettings({
 
   const handleReset = () => {
     setDraft(JSON.parse(JSON.stringify(PATIENT_CONFIG_DEFAULTS)));
+    setDiagDraft([...DEFAULT_DIAGNOSES]);
   };
 
   return (
@@ -132,7 +141,7 @@ export default function PatientFieldSettings({
               />
             </svg>
             <span className="font-semibold text-base">
-              Patient Form — Field Settings
+              Hand-Off Report — Field Settings
             </span>
           </div>
           <button
@@ -157,17 +166,6 @@ export default function PatientFieldSettings({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-4 min-h-0">
-          {/* Patient Form Fields Section */}
-          <div className="mb-6">
-            <h3 className="text-sm font-semibold text-gray-800 mb-2">
-              Patient Form — Field Settings
-            </h3>
-            <p className="text-xs text-gray-600 leading-relaxed">
-              Configure which fields appear in the &quot;Add Patient&quot; form,
-              whether they are required, and their display labels.
-            </p>
-          </div>
-
           {/* Hand-off Report Settings Section */}
           <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 mb-4">
             <h3 className="text-sm font-semibold text-gray-800 mb-1">
@@ -350,6 +348,101 @@ export default function PatientFieldSettings({
               </div>
             );
           })}
+
+          {/* Diagnosis Suggestions Section */}
+          <div className="mt-6 bg-purple-50 border border-purple-200 rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-gray-800 mb-1">
+              Diagnosis Suggestions
+            </h3>
+            <p className="text-xs text-gray-500 mb-3">
+              Manage the diagnoses that appear in autocomplete dropdowns. Nurses
+              can also add new diagnoses on the fly when creating a report.
+            </p>
+
+            {/* Add new diagnosis */}
+            <div className="flex gap-2 mb-3">
+              <input
+                type="text"
+                value={newDiag}
+                onChange={(e) => setNewDiag(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newDiag.trim()) {
+                    e.preventDefault();
+                    const trimmed = newDiag.trim();
+                    if (
+                      !diagDraft.some(
+                        (d) => d.toLowerCase() === trimmed.toLowerCase(),
+                      )
+                    ) {
+                      setDiagDraft((prev) => [...prev, trimmed]);
+                    }
+                    setNewDiag("");
+                  }
+                }}
+                placeholder="Add a diagnosis…"
+                className="flex-1 text-sm border border-gray-300 rounded px-2 py-1.5 focus:ring-1 focus:ring-purple-500 focus:border-purple-500"
+              />
+              <button
+                type="button"
+                disabled={!newDiag.trim()}
+                onClick={() => {
+                  const trimmed = newDiag.trim();
+                  if (
+                    trimmed &&
+                    !diagDraft.some(
+                      (d) => d.toLowerCase() === trimmed.toLowerCase(),
+                    )
+                  ) {
+                    setDiagDraft((prev) => [...prev, trimmed]);
+                  }
+                  setNewDiag("");
+                }}
+                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 text-white text-sm font-medium rounded transition-colors"
+              >
+                Add
+              </button>
+            </div>
+
+            {/* Current list */}
+            <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto">
+              {diagDraft.map((diag) => (
+                <span
+                  key={diag}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-white border border-purple-200 rounded-full text-xs text-gray-700"
+                >
+                  {diag}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setDiagDraft((prev) => prev.filter((d) => d !== diag))
+                    }
+                    className="ml-0.5 text-gray-400 hover:text-red-500 transition-colors"
+                    title="Remove"
+                  >
+                    <svg
+                      className="w-3 h-3"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M6 18L18 6M6 6l12 12"
+                      />
+                    </svg>
+                  </button>
+                </span>
+              ))}
+            </div>
+
+            {diagDraft.length === 0 && (
+              <p className="text-xs text-gray-400 italic mt-1">
+                No diagnoses configured. Defaults will be used.
+              </p>
+            )}
+          </div>
         </div>
 
         {/* Footer */}

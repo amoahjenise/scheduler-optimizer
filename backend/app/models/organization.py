@@ -31,8 +31,8 @@ class Organization(Base):
     # Settings
     timezone = Column(String(50), default="America/Montreal")
     is_active = Column(Boolean, default=True)
-    full_time_weekly_target = Column(Float, nullable=False, default=37.5)
-    part_time_weekly_target = Column(Float, nullable=False, default=26.25)
+    full_time_weekly_target = Column(Float, nullable=False, default=75.0)
+    part_time_weekly_target = Column(Float, nullable=False, default=63.75)
     
     # Branding
     logo_url = Column(Text, nullable=True)  # Base64 data URL or external URL
@@ -73,6 +73,7 @@ class OrganizationMember(Base):
     
     # Status
     is_active = Column(Boolean, default=True)
+    is_approved = Column(Boolean, default=False, nullable=False)  # Admin must approve new members
     
     # Timestamps
     joined_at = Column(DateTime(timezone=True), server_default=func.now())

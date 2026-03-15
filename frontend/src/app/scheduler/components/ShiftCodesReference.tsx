@@ -1,16 +1,7 @@
 "use client";
 
 import React from "react";
-import { TimeSlot } from "../types";
-
-export interface ShiftCode {
-  code: string;
-  start: string;
-  end: string;
-  hours: number;
-  type: "day" | "night" | "combined";
-  label: string;
-}
+import { TimeSlot, ShiftCode } from "../types";
 
 interface ShiftCodesReferenceProps {
   shiftCodes: ShiftCode[];
@@ -105,14 +96,24 @@ export default function ShiftCodesReference({
                     ? "bg-amber-50 border-amber-200"
                     : shift.type === "night"
                       ? "bg-indigo-50 border-indigo-200"
-                      : "bg-purple-50 border-purple-200"
+                      : shift.type === "off"
+                        ? "bg-gray-50 border-gray-300"
+                        : "bg-purple-50 border-purple-200"
                 }`}
               >
                 <div className="font-mono font-bold text-sm">{shift.code}</div>
-                <div className="text-[10px] text-gray-600">
-                  {shift.start}–{shift.end}
-                </div>
-                <div className="text-[10px] text-gray-500">{shift.hours}h</div>
+                {shift.type === "off" ? (
+                  <div className="text-[10px] text-gray-600">{shift.label}</div>
+                ) : (
+                  <>
+                    <div className="text-[10px] text-gray-600">
+                      {shift.start}–{shift.end}
+                    </div>
+                    <div className="text-[10px] text-gray-500">
+                      {shift.hours}h
+                    </div>
+                  </>
+                )}
               </div>
             ))}
       </div>
@@ -131,6 +132,8 @@ export default function ShiftCodesReference({
           <>
             <span className="inline-block w-3 h-3 rounded bg-purple-100 border border-purple-200 ml-3 mr-1"></span>{" "}
             Combined
+            <span className="inline-block w-3 h-3 rounded bg-gray-100 border border-gray-300 ml-3 mr-1"></span>{" "}
+            Off/Holiday
           </>
         )}
       </p>

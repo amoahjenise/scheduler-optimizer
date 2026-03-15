@@ -7,6 +7,11 @@ import { OrganizationProvider } from "./context/OrganizationContext";
 import { AppHeader } from "./components/AppHeader";
 import { OnboardingModalWrapper } from "./components/OnboardingModalWrapper";
 import { CookieConsentBanner } from "./components/CookieConsentBanner";
+import { PageLoadingIndicator } from "./components/PageLoadingIndicator";
+import InactivityGuard from "./components/InactivityGuard";
+import ComplianceBanner from "./components/ComplianceBanner";
+import DataProtectionGuard from "./components/DataProtectionGuard";
+import PendingApprovalBanner from "./components/PendingApprovalBanner";
 
 export default function RootLayout({
   children,
@@ -29,6 +34,7 @@ export default function RootLayout({
           />
         </head>
         <body className="font-inter antialiased">
+          <PageLoadingIndicator />
           <OrganizationProvider>
             <AppHeader />
             {children}
@@ -36,6 +42,14 @@ export default function RootLayout({
             <OnboardingModalWrapper />
             {/* Cookie consent banner */}
             <CookieConsentBanner />
+            {/* HIPAA: auto-logout after 5 min inactivity */}
+            <InactivityGuard />
+            {/* HIPAA: compliance reminder footer */}
+            <ComplianceBanner />
+            {/* HIPAA: prevent casual data exfiltration */}
+            <DataProtectionGuard />
+            {/* Org security: block access until admin approves membership */}
+            <PendingApprovalBanner />
           </OrganizationProvider>
         </body>
       </html>

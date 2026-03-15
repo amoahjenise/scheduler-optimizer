@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   fetchPatientsAPI,
   createPatientAPI,
@@ -31,8 +32,17 @@ import {
   FieldConfig,
 } from "../lib/patientConfig";
 import { useOrganization } from "../context/OrganizationContext";
+import { FEATURES } from "../lib/featureFlags";
 
 export default function PatientsPage() {
+  const router = useRouter();
+
+  // Redirect when patient management is disabled
+  if (!FEATURES.PATIENT_MANAGEMENT) {
+    router.replace("/handover");
+    return null;
+  }
+
   const { getAuthHeaders } = useOrganization();
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
@@ -278,6 +288,29 @@ export default function PatientsPage() {
     );
   });
 
+  // Group patients by room number
+  const patientsByRoom = filteredPatients.reduce(
+    (acc, patient) => {
+      const roomKey = patient.room_number || "Unassigned";
+      if (!acc[roomKey]) {
+        acc[roomKey] = [];
+      }
+      acc[roomKey].push(patient);
+      return acc;
+    },
+    {} as Record<string, Patient[]>,
+  );
+
+  // Sort rooms numerically/alphabetically
+  const sortedRoomKeys = Object.keys(patientsByRoom).sort((a, b) => {
+    if (a === "Unassigned") return 1;
+    if (b === "Unassigned") return -1;
+    const numA = parseInt(a);
+    const numB = parseInt(b);
+    if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+    return a.localeCompare(b);
+  });
+
   return (
     <div className="page-frame">
       {/* Header */}
@@ -386,115 +419,161 @@ export default function PatientsPage() {
                   </p>
                 </div>
               ) : (
-                <div className="divide-y divide-gray-100">
-                  {filteredPatients.map((patient) => (
-                    <div
-                      key={patient.id}
-                      className={`p-4 hover:bg-gray-50 transition-colors ${
-                        editingPatient?.id === patient.id ? "bg-blue-50" : ""
-                      }`}
-                    >
-                      <div className="flex items-start gap-4">
-                        <div className="w-10 h-10 rounded-full bg-[#1A5CFF]/10 flex items-center justify-center flex-shrink-0">
-                          <User className="w-5 h-5 text-[#1A5CFF]" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <h3 className="font-semibold text-gray-900">
-                              {patient.last_name}, {patient.first_name}
+                <div className="divide-y divide-gray-200">
+                  {sortedRoomKeys.map((roomNumber) => {
+                    const roomPatients = patientsByRoom[roomNumber];
+                    return (
+                      <div key={roomNumber} className="bg-white">
+                        {/* Room Header */}
+                        <div className="bg-gradient-to-r from-blue-50 to-gray-50 px-4 py-3 border-b border-blue-100">
+                          <div className="flex items-center gap-2">
+                            <Bed className="w-4 h-4 text-blue-600" />
+                            <h3 className="text-sm font-bold text-gray-900">
+                              {roomNumber === "Unassigned"
+                                ? "Unassigned Room"
+                                : `Room ${roomNumber}`}
                             </h3>
-                            <span
-                              className={`px-2 py-0.5 text-xs font-medium rounded-full ${
-                                patient.is_active
-                                  ? "bg-emerald-100 text-emerald-700"
-                                  : "bg-gray-100 text-gray-600"
-                              }`}
-                            >
-                              {patient.is_active ? "Active" : "Inactive"}
+                            <span className="ml-2 text-xs text-gray-500 bg-white px-2 py-0.5 rounded-full">
+                              {roomPatients.length} patient
+                              {roomPatients.length !== 1 ? "s" : ""}
                             </span>
                           </div>
-                          <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500">
-                            {patient.room_number && (
-                              <span className="flex items-center gap-1">
-                                <Bed className="w-3.5 h-3.5" />
-                                Room {patient.room_number}
-                                {patient.bed && ` / ${patient.bed}`}
-                              </span>
-                            )}
-                            {patient.mrn && (
-                              <span className="flex items-center gap-1">
-                                <FileText className="w-3.5 h-3.5" />
-                                MRN: {patient.mrn}
-                              </span>
-                            )}
-                            {(patient.age || patient.date_of_birth) && (
-                              <span className="flex items-center gap-1">
-                                <Calendar className="w-3.5 h-3.5" />
-                                {patient.age || patient.date_of_birth}
-                              </span>
-                            )}
-                          </div>
-                          {patient.diagnosis && (
-                            <p className="text-sm text-gray-600 mt-1 truncate">
-                              {patient.diagnosis}
-                            </p>
-                          )}
                         </div>
-                        <div className="flex items-center gap-2 flex-shrink-0">
-                          <button
-                            onClick={() => startEditing(patient)}
-                            className="p-2 text-gray-400 hover:text-[#1A5CFF] hover:bg-blue-50 rounded-lg transition-colors"
-                            title="Edit patient"
-                          >
-                            <Edit2 className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleToggleActive(patient)}
-                            className={`p-2 rounded-lg transition-colors ${
-                              patient.is_active
-                                ? "text-gray-400 hover:text-orange-600 hover:bg-orange-50"
-                                : "text-gray-400 hover:text-emerald-600 hover:bg-emerald-50"
-                            }`}
-                            title={
-                              patient.is_active
-                                ? "Deactivate patient"
-                                : "Activate patient"
-                            }
-                          >
-                            {patient.is_active ? (
-                              <X className="w-4 h-4" />
-                            ) : (
-                              <Check className="w-4 h-4" />
-                            )}
-                          </button>
-                          {deleteConfirm === patient.id ? (
-                            <div className="flex items-center gap-1">
-                              <button
-                                onClick={() => handleDeletePatient(patient.id)}
-                                className="px-2 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 rounded transition-colors"
-                              >
-                                Delete
-                              </button>
-                              <button
-                                onClick={() => setDeleteConfirm(null)}
-                                className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded transition-colors"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              onClick={() => setDeleteConfirm(patient.id)}
-                              className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                              title="Delete patient"
+
+                        {/* Patients in this room */}
+                        <div className="divide-y divide-gray-100">
+                          {roomPatients.map((patient) => (
+                            <div
+                              key={patient.id}
+                              className={`p-4 hover:bg-gray-50 transition-colors ${
+                                editingPatient?.id === patient.id
+                                  ? "bg-blue-50"
+                                  : ""
+                              }`}
                             >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          )}
+                              <div className="flex items-start gap-4">
+                                <div className="w-10 h-10 rounded-full bg-[#1A5CFF]/10 flex items-center justify-center flex-shrink-0">
+                                  <User className="w-5 h-5 text-[#1A5CFF]" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <h3 className="font-semibold text-gray-900">
+                                      {patient.last_name}, {patient.first_name}
+                                    </h3>
+                                    <span
+                                      className={`px-2 py-0.5 text-xs font-medium rounded-full ${
+                                        patient.is_active
+                                          ? "bg-emerald-100 text-emerald-700"
+                                          : "bg-gray-100 text-gray-600"
+                                      }`}
+                                    >
+                                      {patient.is_active
+                                        ? "Active"
+                                        : "Inactive"}
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500">
+                                    {patient.room_number && (
+                                      <span className="flex items-center gap-1">
+                                        <Bed className="w-3.5 h-3.5" />
+                                        Room {patient.room_number}
+                                        {patient.bed && ` / ${patient.bed}`}
+                                      </span>
+                                    )}
+                                    {patient.mrn && (
+                                      <span className="flex items-center gap-1">
+                                        <FileText className="w-3.5 h-3.5" />
+                                        MRN: {patient.mrn}
+                                      </span>
+                                    )}
+                                    {(patient.age || patient.date_of_birth) && (
+                                      <span className="flex items-center gap-1">
+                                        <Calendar className="w-3.5 h-3.5" />
+                                        {patient.age || patient.date_of_birth}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {patient.diagnosis && (
+                                    <p className="text-sm text-gray-600 mt-1 truncate">
+                                      {patient.diagnosis}
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2 flex-shrink-0">
+                                  <button
+                                    onClick={() => startEditing(patient)}
+                                    className="p-2 text-gray-400 hover:text-[#1A5CFF] hover:bg-blue-50 rounded-lg transition-colors"
+                                    title="Edit patient"
+                                  >
+                                    <Edit2 className="w-4 h-4" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleToggleActive(patient)}
+                                    className={`p-2 rounded-lg transition-colors ${
+                                      patient.is_active
+                                        ? "text-gray-400 hover:text-orange-600 hover:bg-orange-50"
+                                        : "text-gray-400 hover:text-emerald-600 hover:bg-emerald-50"
+                                    }`}
+                                    title={
+                                      patient.is_active
+                                        ? "Deactivate patient (remove from active list)"
+                                        : "Activate patient"
+                                    }
+                                    aria-label={
+                                      patient.is_active
+                                        ? "Deactivate patient"
+                                        : "Activate patient"
+                                    }
+                                  >
+                                    {patient.is_active ? (
+                                      <X className="w-4 h-4" />
+                                    ) : (
+                                      <Check className="w-4 h-4" />
+                                    )}
+                                  </button>
+                                  {deleteConfirm === patient.id ? (
+                                    <div className="flex items-center gap-2">
+                                      <div className="text-xs text-gray-700 max-w-xs">
+                                        Permanently delete this patient and all
+                                        associated handovers? This action cannot
+                                        be undone.
+                                      </div>
+                                      <button
+                                        onClick={() =>
+                                          handleDeletePatient(patient.id)
+                                        }
+                                        className="px-2 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 rounded transition-colors"
+                                        title="Permanently delete patient"
+                                      >
+                                        Delete permanently
+                                      </button>
+                                      <button
+                                        onClick={() => setDeleteConfirm(null)}
+                                        className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded transition-colors"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      onClick={() =>
+                                        setDeleteConfirm(patient.id)
+                                      }
+                                      className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                      title="Delete patient (permanent)"
+                                      aria-label="Delete patient permanently"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>

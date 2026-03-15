@@ -2,7 +2,7 @@
 
 export const dynamic = "force-dynamic";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
 import Link from "next/link";
@@ -14,10 +14,13 @@ import {
   fetchTodaysHandoversAPI,
   createHandoverAPI,
   deletePatientAPI,
+  deleteHandoverAPI,
   fetchLatestHandoverForPatientAPI,
+  fetchHandoverHistoryForPatientAPI,
 } from "../lib/api";
 import HandoverForm from "./components/HandoverForm";
-import AddPatientModal from "./components/AddPatientModal";
+import NewHandoffReportModal from "./components/NewHandoffReportModal";
+import CriticalAlerts from "./components/CriticalAlerts";
 import UploadHandoverDoc from "./components/UploadHandoverDoc";
 import PatientFieldSettings from "./components/PatientFieldSettings";
 import {
@@ -57,19 +60,21 @@ function mergePatientWithHandoverPatient(
   patient: Patient,
   handover: Handover | null | undefined,
 ): Patient {
-  const handoverPatient = handover?.patient;
-  if (!handoverPatient) {
-    return patient;
-  }
+  if (!handover) return patient;
 
+  // Prefer embedded p_* fields directly from handover, fallback to nested patient, then to patient prop
+  const hp = handover.patient;
   return {
     ...patient,
-    first_name: handoverPatient.first_name || patient.first_name,
-    last_name: handoverPatient.last_name || patient.last_name,
-    room_number: handoverPatient.room_number || patient.room_number,
-    bed: handoverPatient.bed ?? patient.bed,
-    mrn: handoverPatient.mrn ?? patient.mrn,
-    diagnosis: handoverPatient.diagnosis ?? patient.diagnosis,
+    first_name: handover.p_first_name || hp?.first_name || patient.first_name,
+    last_name: handover.p_last_name || hp?.last_name || patient.last_name,
+    room_number:
+      handover.p_room_number || hp?.room_number || patient.room_number,
+    bed: handover.p_bed ?? hp?.bed ?? patient.bed,
+    mrn: handover.p_mrn ?? hp?.mrn ?? patient.mrn,
+    diagnosis: handover.p_diagnosis ?? hp?.diagnosis ?? patient.diagnosis,
+    date_of_birth: handover.p_date_of_birth || patient.date_of_birth,
+    age: handover.p_age || patient.age,
   };
 }
 
@@ -93,7 +98,7 @@ export default function HandoverPage() {
   );
 
   // Modal state
-  const [showAddPatient, setShowAddPatient] = useState(false);
+  const [showNewReport, setShowNewReport] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [showFieldSettings, setShowFieldSettings] = useState(false);
@@ -101,6 +106,11 @@ export default function HandoverPage() {
     loadPatientConfig(),
   );
   const [searchQuery, setSearchQuery] = useState("");
+
+  // History modal state
+  const [historyPatient, setHistoryPatient] = useState<Patient | null>(null);
+  const [historyHandovers, setHistoryHandovers] = useState<Handover[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -139,10 +149,21 @@ export default function HandoverPage() {
       ]);
       setPatients(patientsRes.patients);
       // Combine both shift handovers
-      setHandovers([...dayHandovers.handovers, ...nightHandovers.handovers]);
+      const allHandovers = [
+        ...dayHandovers.handovers,
+        ...nightHandovers.handovers,
+      ];
+      // Auto-mark past-date handovers as completed (locally) so they appear
+      // as finished in the UI without requiring manual action.
+      const marked = allHandovers.map((h) =>
+        !h.is_completed && isPastDate(h.shift_date)
+          ? { ...h, is_completed: true }
+          : h,
+      );
+      setHandovers(marked);
       return {
         patients: patientsRes.patients,
-        handovers: [...dayHandovers.handovers, ...nightHandovers.handovers],
+        handovers: marked,
       };
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load data");
@@ -158,16 +179,13 @@ export default function HandoverPage() {
     patient: Patient,
   ): Promise<Handover | null> {
     // Prefer handover for current shift type
-    const existing = handovers.find(
-      (h) => h.patient_id === patient.id && h.shift_type === shiftType,
-    );
+    const existing = findHandoverForPatient(patient, shiftType);
     if (existing) return existing;
 
     // Fallback: if any handover already exists for today for this patient,
     // open that instead of creating a new one (prevents count inflation on view).
-    const existingForPatient = handovers
-      .filter((h) => h.patient_id === patient.id)
-      .sort((a, b) => {
+    const existingForPatient = findAllHandoversForPatient(patient).sort(
+      (a, b) => {
         const aTime = new Date(
           a.updated_at || a.created_at || a.shift_date,
         ).getTime();
@@ -175,7 +193,8 @@ export default function HandoverPage() {
           b.updated_at || b.created_at || b.shift_date,
         ).getTime();
         return bTime - aTime;
-      });
+      },
+    );
 
     if (existingForPatient.length > 0) {
       const mostRecent = existingForPatient[0];
@@ -187,18 +206,21 @@ export default function HandoverPage() {
 
     // Final fallback: open most recent historical handover in read-only mode.
     // This lets users review yesterday's report without forcing a duplicate.
-    try {
-      const latestHistorical = await fetchLatestHandoverForPatientAPI(
-        patient.id,
-      );
-      if (latestHistorical) {
-        if (latestHistorical.shift_type !== shiftType) {
-          setShiftType(latestHistorical.shift_type);
+    // Only call the API for real patient IDs (not virtual/embedded)
+    if (!patient.id.startsWith("embedded-")) {
+      try {
+        const latestHistorical = await fetchLatestHandoverForPatientAPI(
+          patient.id,
+        );
+        if (latestHistorical) {
+          if (latestHistorical.shift_type !== shiftType) {
+            setShiftType(latestHistorical.shift_type);
+          }
+          return latestHistorical;
         }
-        return latestHistorical;
+      } catch (err) {
+        console.error("Failed to fetch latest historical handover:", err);
       }
-    } catch (err) {
-      console.error("Failed to fetch latest historical handover:", err);
     }
 
     setError(
@@ -221,6 +243,50 @@ export default function HandoverPage() {
     }
   }
 
+  // Open history modal for a patient
+  async function openHandoverHistory(patient: Patient) {
+    // Only fetch history for real patients (not virtual/embedded)
+    const patientId = patient.id.startsWith("embedded-") ? null : patient.id;
+
+    if (!patientId) {
+      // For embedded patients, show only local handovers we have
+      const localHistory = findAllHandoversForPatient(patient).sort((a, b) => {
+        const aTime = new Date(
+          a.updated_at || a.created_at || a.shift_date,
+        ).getTime();
+        const bTime = new Date(
+          b.updated_at || b.created_at || b.shift_date,
+        ).getTime();
+        return bTime - aTime;
+      });
+      setHistoryPatient(patient);
+      setHistoryHandovers(localHistory);
+      return;
+    }
+
+    setHistoryPatient(patient);
+    setHistoryLoading(true);
+    try {
+      const result = await fetchHandoverHistoryForPatientAPI(patientId);
+      setHistoryHandovers(result.handovers);
+    } catch (err) {
+      console.error("Failed to fetch handover history:", err);
+      // Fallback to local handovers
+      const localHistory = findAllHandoversForPatient(patient).sort((a, b) => {
+        const aTime = new Date(
+          a.updated_at || a.created_at || a.shift_date,
+        ).getTime();
+        const bTime = new Date(
+          b.updated_at || b.created_at || b.shift_date,
+        ).getTime();
+        return bTime - aTime;
+      });
+      setHistoryHandovers(localHistory);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
   // Handle URL parameters to open a specific patient's handover directly
   useEffect(() => {
     if (hasHandledUrlParams.current || loading || !urlParams) return;
@@ -236,15 +302,55 @@ export default function HandoverPage() {
         openPatientHandover(patient);
       }
     }
+
+    // Open "New Hand-Off Report" modal when ?new=true is in URL
+    const newParam = urlParams.get("new");
+    if (newParam === "true") {
+      hasHandledUrlParams.current = true;
+      setShowNewReport(true);
+      // Clean URL without reloading
+      window.history.replaceState({}, "", window.location.pathname);
+    }
   }, [loading, patients, urlParams]);
 
-  // Delete patient
+  // Delete patient and ALL associated handovers
   async function handleDeletePatient(patientId: string) {
     try {
       const authHeaders = await getAuthHeaders();
-      await deletePatientAPI(patientId, authHeaders);
+
+      // Find all handovers belonging to this patient (linked or embedded)
+      const patient = allDisplayPatients.find((p) => p.id === patientId);
+      const relatedHandovers = patient
+        ? handovers.filter((h) => matchesPatient(h, patient))
+        : patientId.startsWith("embedded-")
+          ? handovers.filter(
+              (h) =>
+                `embedded-${h.id}` === patientId || h.patient_id === patientId,
+            )
+          : handovers.filter((h) => h.patient_id === patientId);
+
+      // Delete each handover from the DB
+      for (const h of relatedHandovers) {
+        try {
+          await deleteHandoverAPI(h.id, authHeaders);
+        } catch (e) {
+          console.warn(`Failed to delete handover ${h.id}:`, e);
+        }
+      }
+
+      // Delete the patient record itself (only for real patients)
+      if (!patientId.startsWith("embedded-")) {
+        try {
+          await deletePatientAPI(patientId, authHeaders);
+        } catch (e) {
+          console.warn(`Failed to delete patient ${patientId}:`, e);
+        }
+      }
+
+      // Remove from local state
+      const removedHandoverIds = new Set(relatedHandovers.map((h) => h.id));
       setPatients((prev) => prev.filter((p) => p.id !== patientId));
-      setHandovers((prev) => prev.filter((h) => h.patient_id !== patientId));
+      setHandovers((prev) => prev.filter((h) => !removedHandoverIds.has(h.id)));
       setDeleteConfirm(null);
     } catch {
       setError("Failed to delete patient");
@@ -264,18 +370,48 @@ export default function HandoverPage() {
     if (!selectedPatient || !selectedHandover) return;
 
     const currentData = selectedHandover;
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    // Helper to check if a handover is from today
+    const isFromToday = (h: Handover): boolean => {
+      if (!h.shift_date) return false;
+      const hDate = new Date(h.shift_date);
+      hDate.setHours(0, 0, 0, 0);
+      return hDate.getTime() === todayStart.getTime();
+    };
 
     // Helper function to create handover with carryover data
     const createHandoverForShift = async (targetShift: ShiftType) => {
-      // Check if already exists
+      // Check if TODAY's handover already exists for this shift
       const existing = handovers.find(
         (h) =>
-          h.patient_id === selectedPatient.id && h.shift_type === targetShift,
+          matchesPatient(h, selectedPatient) &&
+          h.shift_type === targetShift &&
+          isFromToday(h),
       );
       if (existing) return existing;
 
       return await createHandoverAPI({
-        patient_id: selectedPatient.id,
+        // Only pass a real patient_id (not virtual/embedded IDs)
+        patient_id: selectedPatient.id.startsWith("embedded-")
+          ? undefined
+          : selectedPatient.id,
+        // Embed patient info directly on the handover
+        p_first_name:
+          currentData.p_first_name || selectedPatient.first_name || "",
+        p_last_name: currentData.p_last_name || selectedPatient.last_name || "",
+        p_room_number:
+          currentData.p_room_number || selectedPatient.room_number || "",
+        p_bed: currentData.p_bed || selectedPatient.bed || "",
+        p_mrn: currentData.p_mrn || selectedPatient.mrn || "",
+        p_diagnosis: currentData.p_diagnosis || selectedPatient.diagnosis || "",
+        p_date_of_birth:
+          currentData.p_date_of_birth ||
+          selectedPatient.date_of_birth ||
+          undefined,
+        p_age: currentData.p_age || selectedPatient.age || "",
+        p_attending_physician: currentData.p_attending_physician || "",
         shift_date: new Date().toISOString(),
         shift_type: targetShift,
         outgoing_nurse: currentData.outgoing_nurse || "",
@@ -334,14 +470,163 @@ export default function HandoverPage() {
       // Switch to day shift by default after copy
       setShiftType("day");
       setSelectedHandover(dayHandover);
-    } catch {
-      setError("Failed to create new handovers");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to create new handovers",
+      );
     }
   }
 
+  // --- Helpers to match handovers for both linked (patient_id) and embedded patients ---
+  const matchesPatient = useCallback(
+    (h: Handover, patient: Patient): boolean => {
+      // Direct patient_id link
+      if (h.patient_id && h.patient_id === patient.id) return true;
+      // Embedded match: name + room (normalized)
+      const norm = (s: string | null | undefined) =>
+        (s || "").trim().toLowerCase().replace(/\s+/g, " ");
+      if (
+        !h.patient_id &&
+        (h.p_room_number || "").trim() === (patient.room_number || "").trim() &&
+        norm(h.p_first_name) === norm(patient.first_name) &&
+        norm(h.p_last_name) === norm(patient.last_name)
+      )
+        return true;
+      // Virtual-patient id match (embedded-{handoverId})
+      if (
+        patient.id.startsWith("embedded-") &&
+        patient.id === `embedded-${h.id}`
+      )
+        return true;
+      // For virtual patients, also match embedded handovers with same name + room
+      // (catches day/night pair for the same virtual patient)
+      if (
+        patient.id.startsWith("embedded-") &&
+        !h.patient_id &&
+        (h.p_room_number || "").trim() &&
+        (h.p_room_number || "").trim() === (patient.room_number || "").trim() &&
+        norm(h.p_first_name) === norm(patient.first_name) &&
+        norm(h.p_last_name) === norm(patient.last_name)
+      )
+        return true;
+      return false;
+    },
+    [],
+  );
+
+  const findHandoverForPatient = useCallback(
+    (patient: Patient, shift: ShiftType): Handover | undefined =>
+      handovers.find(
+        (h) => matchesPatient(h, patient) && h.shift_type === shift,
+      ),
+    [handovers, matchesPatient],
+  );
+
+  const findAllHandoversForPatient = useCallback(
+    (patient: Patient): Handover[] =>
+      handovers.filter((h) => matchesPatient(h, patient)),
+    [handovers, matchesPatient],
+  );
+
+  // Merge real patients with "virtual" patients synthesized from orphan handovers
+  // (embedded handovers whose patient_id is null or doesn't match any loaded patient)
+  const allDisplayPatients = useMemo(() => {
+    const patientIdSet = new Set(patients.map((p) => p.id));
+
+    // Normalize helper: lowercase, trim, collapse whitespace
+    const norm = (s: string | null | undefined) =>
+      (s || "").trim().toLowerCase().replace(/\s+/g, " ");
+
+    const patientKeys = new Set(
+      patients.map(
+        (p) =>
+          `${norm(p.first_name)}|${norm(p.last_name)}|${(p.room_number || "").trim()}`,
+      ),
+    );
+
+    const orphanHandovers = handovers.filter((h) => {
+      if (h.patient_id && patientIdSet.has(h.patient_id)) return false;
+      const key = `${norm(h.p_first_name)}|${norm(h.p_last_name)}|${(h.p_room_number || "").trim()}`;
+      return !patientKeys.has(key);
+    });
+
+    // Deduplicate by embedded identity (same patient may have day+night handovers)
+    // Keep the most recently updated handover per patient identity
+    const virtualMap = new Map<string, Handover>();
+    // Sort newest first so the first entry per key is the most recent
+    const sortedOrphans = [...orphanHandovers].sort((a, b) => {
+      const aTime = new Date(
+        a.updated_at || a.created_at || a.shift_date,
+      ).getTime();
+      const bTime = new Date(
+        b.updated_at || b.created_at || b.shift_date,
+      ).getTime();
+      return bTime - aTime;
+    });
+    for (const h of sortedOrphans) {
+      // Use room as primary key - same room means same patient
+      const room = (h.p_room_number || "").trim();
+      const key = room
+        ? `${norm(h.p_first_name)}|${norm(h.p_last_name)}|${room}`
+        : `${norm(h.p_first_name)}|${norm(h.p_last_name)}|${h.id}`;
+      if (!virtualMap.has(key)) virtualMap.set(key, h);
+    }
+
+    const virtualPatients: Patient[] = Array.from(virtualMap.values()).map(
+      (h) => ({
+        id: `embedded-${h.id}`,
+        first_name: h.p_first_name || "",
+        last_name: h.p_last_name || "",
+        room_number: h.p_room_number || "Unassigned",
+        bed: h.p_bed || "",
+        mrn: h.p_mrn || "",
+        diagnosis: h.p_diagnosis || "",
+        is_active: true,
+        created_at: h.created_at,
+        updated_at: h.updated_at,
+      }),
+    );
+
+    // Final dedup: collapse entries with the same normalized name + room.
+    // Keep the entry with the most recent handover.  This prevents seeing
+    // multiple cards for the same physical patient when there are several
+    // DB records (real patient + virtual, or slight OCR name variations).
+    const combined = [...patients, ...virtualPatients];
+    const dedupMap = new Map<string, Patient>();
+    for (const p of combined) {
+      const key = `${norm(p.first_name)}|${norm(p.last_name)}|${(p.room_number || "").trim()}`;
+      const existing = dedupMap.get(key);
+      if (!existing) {
+        dedupMap.set(key, p);
+      } else {
+        // Prefer real patient over virtual
+        const existingIsVirtual = existing.id.startsWith("embedded-");
+        const currentIsVirtual = p.id.startsWith("embedded-");
+        if (existingIsVirtual && !currentIsVirtual) {
+          dedupMap.set(key, p);
+        } else if (!existingIsVirtual && currentIsVirtual) {
+          // keep existing real patient
+        } else {
+          // Both same type — keep the one with the more recent handover
+          const existingTime = new Date(
+            existing.updated_at || existing.created_at || "1970-01-01",
+          ).getTime();
+          const currentTime = new Date(
+            p.updated_at || p.created_at || "1970-01-01",
+          ).getTime();
+          if (currentTime > existingTime) {
+            dedupMap.set(key, p);
+          }
+        }
+      }
+    }
+
+    return Array.from(dedupMap.values());
+  }, [patients, handovers]);
+
   // Filter patients by search query
   const filteredPatients = searchQuery.trim()
-    ? patients.filter((p) => {
+    ? allDisplayPatients.filter((p) => {
         const q = searchQuery.toLowerCase();
         return (
           p.first_name.toLowerCase().includes(q) ||
@@ -351,7 +636,7 @@ export default function HandoverPage() {
           (p.diagnosis && p.diagnosis.toLowerCase().includes(q))
         );
       })
-    : patients;
+    : allDisplayPatients;
 
   // Group patients by room
   const patientsByRoom = filteredPatients.reduce(
@@ -370,21 +655,23 @@ export default function HandoverPage() {
     return numA - numB;
   });
 
-  // Count completed patients (at least one completed hand-off for today)
-  const completedPatientIds = new Set(
-    handovers.filter((h) => h.is_completed).map((h) => h.patient_id),
-  );
-  const completedCount = patients.filter((p) =>
-    completedPatientIds.has(p.id),
+  // Count completed hand-offs
+  // In daily mode, count all handovers; in shift mode, count only current shift
+  const countableHandovers =
+    patientConfig.reportMode === "daily"
+      ? handovers
+      : handovers.filter((h) => h.shift_type === shiftType);
+  const completedCount = countableHandovers.filter(
+    (h) => h.is_completed,
   ).length;
-  const totalCount = patients.length;
+  const totalCount = countableHandovers.length;
 
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-3" />
-          <p className="text-gray-600">Loading patients...</p>
+          <p className="text-gray-600">Loading hand-off reports...</p>
         </div>
       </div>
     );
@@ -392,13 +679,25 @@ export default function HandoverPage() {
 
   // Patient Detail View
   if (viewMode === "patient" && selectedPatient && selectedHandover) {
+    // Find previous shift handover for lab trend comparison
+    const oppositeShift =
+      selectedHandover.shift_type === "day" ? "night" : "day";
+    const previousHandover =
+      handovers.find(
+        (h) =>
+          h.patient_id === selectedHandover.patient_id &&
+          h.shift_type === oppositeShift &&
+          h.id !== selectedHandover.id,
+      ) ?? null;
+
     // Function to switch to a different shift's document
     const switchShiftDocument = async (newShift: ShiftType) => {
       if (newShift === shiftType) return;
 
       // Find an existing handover for the new shift (do not create here)
-      const existingHandover = handovers.find(
-        (h) => h.patient_id === selectedPatient.id && h.shift_type === newShift,
+      const existingHandover = findHandoverForPatient(
+        selectedPatient,
+        newShift,
       );
 
       if (existingHandover) {
@@ -416,67 +715,8 @@ export default function HandoverPage() {
 
     return (
       <div className="min-h-screen bg-gray-50">
-        {/* Past Date Warning Banner */}
-        {isFromPastDate && (
-          <div className="bg-amber-50 border-b border-amber-200 sticky top-16 z-50">
-            <div className="page-container py-3">
-              <div className="flex items-center gap-3">
-                <svg
-                  className="w-5 h-5 text-amber-600 flex-shrink-0"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                  />
-                </svg>
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-amber-800">
-                    This hand-off report is from a previous date (
-                    {formatShiftDate(selectedHandover.shift_date)})
-                  </p>
-                  <p className="text-xs text-amber-700 mt-0.5">
-                    Past reports are read-only. To create a new report for
-                    today, go back to the patient list and select the patient
-                    again.
-                  </p>
-                </div>
-                <button
-                  onClick={() => {
-                    setViewMode("list");
-                    // Trigger loading fresh data
-                    loadData();
-                  }}
-                  className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
-                >
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M12 6v6m0 0v6m0-6h6m-6 0H6"
-                    />
-                  </svg>
-                  Start Today&apos;s Report
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* Header */}
-        <div
-          className={`bg-white border-b border-gray-200 sticky ${isFromPastDate ? "top-[calc(4rem+4rem)]" : "top-16"} z-40`}
-        >
+        <div className="bg-white border-b border-gray-200 sticky top-16 z-40">
           <div className="page-container py-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
@@ -517,19 +757,41 @@ export default function HandoverPage() {
                 </div>
               </div>
 
-              {/* Daily report - no shift toggle needed */}
+              {/* Start Today's Report — only when viewing a past-date handover */}
+              {isFromPastDate && (
+                <button
+                  onClick={copyToNewDay}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+                >
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M12 4v16m8-8H4"
+                    />
+                  </svg>
+                  Start Today&apos;s Report
+                </button>
+              )}
             </div>
           </div>
         </div>
 
         {/* Handover Form */}
-        <div className="py-6 px-4">
+        <div className="py-6 px-4" data-phi="true">
           <HandoverForm
             key={selectedHandover.id} // Force remount on handover change
             handover={selectedHandover}
             patient={selectedPatient}
             onSave={handleHandoverSave}
             readOnly={isFromPastDate}
+            previousHandover={previousHandover}
             onPatientUpdate={(updated) => {
               setPatients((prev) =>
                 prev.map((p) => (p.id === updated.id ? updated : p)),
@@ -626,14 +888,24 @@ export default function HandoverPage() {
 
             {/* Right side - Actions */}
             <div className="flex items-center gap-3">
-              <span className="text-sm text-gray-500">
-                {completedCount}/{totalCount} completed
+              <span
+                className="text-sm text-gray-500"
+                title={
+                  patientConfig.reportMode === "daily"
+                    ? "All reports"
+                    : `${shiftType.charAt(0).toUpperCase() + shiftType.slice(1)} shift reports only`
+                }
+              >
+                {completedCount}/{totalCount}{" "}
+                {patientConfig.reportMode === "daily"
+                  ? "reports"
+                  : `${shiftType} reports`}
               </span>
 
               <button
                 onClick={() => setShowFieldSettings(true)}
                 className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-                title="Patient form settings"
+                title="Hand-off report field settings"
               >
                 <svg
                   className="w-4 h-4"
@@ -656,7 +928,7 @@ export default function HandoverPage() {
                 </svg>
               </button>
               <button
-                onClick={() => setShowAddPatient(true)}
+                onClick={() => setShowNewReport(true)}
                 className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
               >
                 <svg
@@ -672,7 +944,7 @@ export default function HandoverPage() {
                     d="M12 6v6m0 0v6m0-6h6m-6 0H6"
                   />
                 </svg>
-                Add Patient
+                New Hand-Off Report
               </button>
             </div>
           </div>
@@ -696,7 +968,7 @@ export default function HandoverPage() {
 
       {/* Patient List */}
       <div className="page-container py-6">
-        {patients.length === 0 ? (
+        {allDisplayPatients.length === 0 ? (
           <div className="text-center py-16 bg-white rounded-xl border border-gray-200">
             <svg
               className="w-16 h-16 text-gray-300 mx-auto mb-4"
@@ -708,18 +980,22 @@ export default function HandoverPage() {
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 strokeWidth={1.5}
-                d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
+                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
               />
             </svg>
             <h3 className="text-lg font-medium text-gray-900 mb-2">
-              No patients yet
+              No hand-off reports yet
             </h3>
+            <p className="text-sm text-gray-500 mb-4 max-w-sm mx-auto">
+              Create your first hand-off report to get started. Patient details
+              are captured directly in the report.
+            </p>
             <div className="flex justify-center gap-3">
               <button
-                onClick={() => setShowAddPatient(true)}
+                onClick={() => setShowNewReport(true)}
                 className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
               >
-                Add Patient
+                New Hand-Off Report
               </button>
             </div>
           </div>
@@ -730,19 +1006,20 @@ export default function HandoverPage() {
                 key={room}
                 className="bg-white rounded-xl border border-gray-200 overflow-hidden"
               >
-                <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                <div className="bg-gray-50 px-4 py-2 border-b border-gray-200 flex items-center justify-between">
                   <h3 className="font-semibold text-gray-700">Room {room}</h3>
+                  <span className="text-xs text-gray-400">
+                    {patientsByRoom[room].length} patient
+                    {patientsByRoom[room].length !== 1 ? "s" : ""}
+                  </span>
                 </div>
                 <div className="divide-y divide-gray-100">
                   {patientsByRoom[room].map((patient) => {
-                    // Find handovers for this patient
-                    const dayHandover = handovers.find(
-                      (h) =>
-                        h.patient_id === patient.id && h.shift_type === "day",
-                    );
-                    const nightHandover = handovers.find(
-                      (h) =>
-                        h.patient_id === patient.id && h.shift_type === "night",
+                    // Find handovers for this patient (works for both linked and embedded)
+                    const dayHandover = findHandoverForPatient(patient, "day");
+                    const nightHandover = findHandoverForPatient(
+                      patient,
+                      "night",
                     );
                     const currentHandover =
                       shiftType === "day" ? dayHandover : nightHandover;
@@ -817,6 +1094,8 @@ export default function HandoverPage() {
                                   {displayPatient.diagnosis ||
                                     "No diagnosis specified"}
                                 </p>
+                                {/* Critical clinical alerts */}
+                                <CriticalAlerts handover={currentHandover} />
                                 {currentHandover?.updated_at && (
                                   <span className="text-xs text-gray-400 shrink-0">
                                     Last updated{" "}
@@ -897,6 +1176,28 @@ export default function HandoverPage() {
                                 />
                               </svg>
                             </button>
+                            {/* View History button */}
+                            <button
+                              onClick={() =>
+                                openHandoverHistory(displayPatient)
+                              }
+                              className="p-2 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"
+                              title="View handover history"
+                            >
+                              <svg
+                                className="w-4 h-4"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                                />
+                              </svg>
+                            </button>
                             {/* Create from last report */}
                             <button
                               onClick={async () => {
@@ -907,17 +1208,17 @@ export default function HandoverPage() {
                                 // Check if a handover already exists for today for the TARGET shift
                                 const today = new Date();
                                 today.setHours(0, 0, 0, 0);
-                                const todayTargetShiftExists = handovers.some(
-                                  (h) => {
-                                    const hDate = new Date(h.shift_date);
-                                    hDate.setHours(0, 0, 0, 0);
-                                    return (
-                                      h.patient_id === patient.id &&
-                                      h.shift_type === targetShift &&
-                                      hDate.getTime() === today.getTime()
-                                    );
-                                  },
-                                );
+                                const todayTargetShiftExists =
+                                  findAllHandoversForPatient(patient).some(
+                                    (h) => {
+                                      const hDate = new Date(h.shift_date);
+                                      hDate.setHours(0, 0, 0, 0);
+                                      return (
+                                        h.shift_type === targetShift &&
+                                        hDate.getTime() === today.getTime()
+                                      );
+                                    },
+                                  );
 
                                 if (todayTargetShiftExists) {
                                   alert(
@@ -930,25 +1231,24 @@ export default function HandoverPage() {
                                 // including prior days (for example yesterday's hand-off).
                                 let latestForPatient: Handover | null = null;
 
-                                try {
-                                  latestForPatient =
-                                    await fetchLatestHandoverForPatientAPI(
-                                      patient.id,
+                                if (!patient.id.startsWith("embedded-")) {
+                                  try {
+                                    latestForPatient =
+                                      await fetchLatestHandoverForPatientAPI(
+                                        patient.id,
+                                      );
+                                  } catch (lookupError) {
+                                    console.error(
+                                      "Failed to fetch latest handover for duplication:",
+                                      lookupError,
                                     );
-                                } catch (lookupError) {
-                                  console.error(
-                                    "Failed to fetch latest handover for duplication:",
-                                    lookupError,
-                                  );
+                                  }
                                 }
 
                                 if (!latestForPatient) {
                                   latestForPatient =
-                                    handovers
-                                      .filter(
-                                        (h) => h.patient_id === patient.id,
-                                      )
-                                      .sort((a, b) => {
+                                    findAllHandoversForPatient(patient).sort(
+                                      (a, b) => {
                                         const aTime = new Date(
                                           a.updated_at ||
                                             a.created_at ||
@@ -960,14 +1260,55 @@ export default function HandoverPage() {
                                             b.shift_date,
                                         ).getTime();
                                         return bTime - aTime;
-                                      })[0] || null;
+                                      },
+                                    )[0] || null;
                                 }
 
                                 if (latestForPatient) {
                                   try {
                                     const newHandover = await createHandoverAPI(
                                       {
-                                        patient_id: patient.id,
+                                        patient_id: patient.id.startsWith(
+                                          "embedded-",
+                                        )
+                                          ? undefined
+                                          : patient.id,
+                                        // Embed patient info directly
+                                        p_first_name:
+                                          latestForPatient.p_first_name ||
+                                          patient.first_name ||
+                                          "",
+                                        p_last_name:
+                                          latestForPatient.p_last_name ||
+                                          patient.last_name ||
+                                          "",
+                                        p_room_number:
+                                          latestForPatient.p_room_number ||
+                                          patient.room_number ||
+                                          "",
+                                        p_bed:
+                                          latestForPatient.p_bed ||
+                                          patient.bed ||
+                                          "",
+                                        p_mrn:
+                                          latestForPatient.p_mrn ||
+                                          patient.mrn ||
+                                          "",
+                                        p_diagnosis:
+                                          latestForPatient.p_diagnosis ||
+                                          patient.diagnosis ||
+                                          "",
+                                        p_date_of_birth:
+                                          latestForPatient.p_date_of_birth ||
+                                          patient.date_of_birth ||
+                                          undefined,
+                                        p_age:
+                                          latestForPatient.p_age ||
+                                          patient.age ||
+                                          "",
+                                        p_attending_physician:
+                                          latestForPatient.p_attending_physician ||
+                                          "",
                                         shift_date: new Date().toISOString(),
                                         shift_type: targetShift,
                                         outgoing_nurse:
@@ -1030,8 +1371,12 @@ export default function HandoverPage() {
                                     setSelectedPatient(patient);
                                     setSelectedHandover(newHandover);
                                     setViewMode("patient");
-                                  } catch {
-                                    setError("Failed to create new handover");
+                                  } catch (err) {
+                                    setError(
+                                      err instanceof Error
+                                        ? err.message
+                                        : "Failed to create new handover",
+                                    );
                                   }
                                 } else {
                                   setError(
@@ -1108,29 +1453,39 @@ export default function HandoverPage() {
       </div>
 
       {/* Modals */}
-      {showAddPatient && (
-        <AddPatientModal
-          onClose={() => setShowAddPatient(false)}
-          onPatientAdded={async (patient: Patient) => {
-            setPatients((prev) => [...prev, patient]);
-            setShowAddPatient(false);
-
-            // Adding a patient is an explicit create action.
-            try {
-              const newHandover = await createHandoverAPI({
-                patient_id: patient.id,
-                shift_date: new Date().toISOString(),
-                shift_type: shiftType,
-                outgoing_nurse: user?.fullName || user?.firstName || "Nurse",
-              });
-              setHandovers((prev) => [...prev, newHandover]);
-            } catch {
-              setError(
-                "Patient added, but failed to create initial hand-off report.",
-              );
-            }
+      {showNewReport && (
+        <NewHandoffReportModal
+          onClose={() => setShowNewReport(false)}
+          onHandoverCreated={(handover: Handover) => {
+            setHandovers((prev) => [...prev, handover]);
+            // Construct a Patient-like object from the handover's embedded fields
+            // so the rest of the page can work with it
+            const embeddedPatient: Patient = {
+              id: handover.patient?.id || handover.id,
+              first_name:
+                handover.p_first_name || handover.patient?.first_name || "",
+              last_name:
+                handover.p_last_name || handover.patient?.last_name || "",
+              room_number:
+                handover.p_room_number || handover.patient?.room_number || "",
+              bed: handover.p_bed || handover.patient?.bed || "",
+              mrn: handover.p_mrn || handover.patient?.mrn || "",
+              diagnosis:
+                handover.p_diagnosis || handover.patient?.diagnosis || "",
+              is_active: true,
+              created_at: handover.created_at,
+              updated_at: handover.updated_at,
+            };
+            setPatients((prev) => [...prev, embeddedPatient]);
+            setShowNewReport(false);
+            // Open the newly created handover
+            setSelectedPatient(embeddedPatient);
+            setSelectedHandover(handover);
+            setViewMode("patient");
           }}
           config={patientConfig}
+          shiftType={shiftType}
+          outgoingNurse={user?.fullName || user?.firstName || "Nurse"}
         />
       )}
 
@@ -1154,6 +1509,202 @@ export default function HandoverPage() {
           }}
           onClose={() => setShowUpload(false)}
         />
+      )}
+
+      {/* Handover History Modal */}
+      {historyPatient && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col mx-4">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">
+                  Handover History
+                </h2>
+                <p className="text-sm text-gray-500">
+                  {historyPatient.last_name}, {historyPatient.first_name} — Room{" "}
+                  {historyPatient.room_number || "N/A"}
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setHistoryPatient(null);
+                  setHistoryHandovers([]);
+                }}
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              {historyLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" />
+                  <span className="ml-3 text-gray-500">Loading history…</span>
+                </div>
+              ) : historyHandovers.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  No handover history found for this patient.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {historyHandovers.map((h, idx) => {
+                    const dateStr = h.shift_date
+                      ? new Date(h.shift_date).toLocaleDateString("en-US", {
+                          weekday: "short",
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })
+                      : "Unknown date";
+                    const timeStr = h.updated_at
+                      ? new Date(h.updated_at).toLocaleTimeString(undefined, {
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })
+                      : "";
+                    const isLatest = idx === 0;
+
+                    return (
+                      <button
+                        key={h.id}
+                        onClick={() => {
+                          // Open this handover
+                          const merged = mergePatientWithHandoverPatient(
+                            historyPatient,
+                            h,
+                          );
+                          setSelectedPatient(merged);
+                          setSelectedHandover(h);
+                          setShiftType(h.shift_type || shiftType);
+                          setViewMode("patient");
+                          setHistoryPatient(null);
+                          setHistoryHandovers([]);
+                        }}
+                        className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
+                          isLatest
+                            ? "border-blue-200 bg-blue-50 hover:bg-blue-100"
+                            : "border-gray-200 bg-white hover:bg-gray-50"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            {patientConfig.reportMode === "shift" && (
+                              <div
+                                className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold ${
+                                  h.shift_type === "day"
+                                    ? "bg-amber-100 text-amber-700"
+                                    : "bg-indigo-100 text-indigo-700"
+                                }`}
+                              >
+                                {h.shift_type === "day" ? "D" : "N"}
+                              </div>
+                            )}
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-gray-900 text-sm">
+                                  {dateStr}
+                                </span>
+                                {patientConfig.reportMode === "shift" && (
+                                  <span className="text-xs text-gray-500 capitalize">
+                                    {h.shift_type} shift
+                                  </span>
+                                )}
+                                {isLatest && (
+                                  <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-blue-100 text-blue-700">
+                                    LATEST
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 mt-0.5">
+                                {h.outgoing_nurse && (
+                                  <span className="text-xs text-gray-500">
+                                    By {h.outgoing_nurse}
+                                  </span>
+                                )}
+                                {timeStr && (
+                                  <span className="text-xs text-gray-400">
+                                    at {timeStr}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {h.is_completed && (
+                              <span className="text-green-600">
+                                <svg
+                                  className="w-4 h-4"
+                                  fill="currentColor"
+                                  viewBox="0 0 20 20"
+                                >
+                                  <path
+                                    fillRule="evenodd"
+                                    d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                                    clipRule="evenodd"
+                                  />
+                                </svg>
+                              </span>
+                            )}
+                            <span
+                              className={`px-2 py-0.5 text-xs font-medium rounded-full ${
+                                h.status === "stable"
+                                  ? "bg-green-100 text-green-700"
+                                  : h.status === "improved"
+                                    ? "bg-blue-100 text-blue-700"
+                                    : h.status === "worsening"
+                                      ? "bg-orange-100 text-orange-700"
+                                      : h.status === "critical"
+                                        ? "bg-red-100 text-red-700"
+                                        : "bg-gray-100 text-gray-700"
+                              }`}
+                            >
+                              {h.status}
+                            </span>
+                            <svg
+                              className="w-4 h-4 text-gray-400"
+                              fill="none"
+                              stroke="currentColor"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M9 5l7 7-7 7"
+                              />
+                            </svg>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-3 border-t border-gray-200 bg-gray-50 rounded-b-xl">
+              <p className="text-xs text-gray-400 text-center">
+                Click any entry to view or edit that handover report
+              </p>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

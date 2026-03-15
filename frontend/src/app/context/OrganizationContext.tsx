@@ -20,8 +20,8 @@ export interface Organization {
   slug: string;
   description?: string;
   timezone: string;
-  full_time_weekly_target?: number;
-  part_time_weekly_target?: number;
+  full_time_weekly_target?: number; // bi-weekly hours (default 75)
+  part_time_weekly_target?: number; // bi-weekly hours (default 63.75)
   is_active: boolean;
   invite_code?: string;
   logo_url?: string;
@@ -37,6 +37,7 @@ export interface OrganizationMembership {
   user_name?: string;
   role: "admin" | "manager" | "nurse";
   is_active: boolean;
+  is_approved: boolean;
   joined_at: string;
   updated_at: string;
   organization: Organization;
@@ -62,6 +63,7 @@ interface OrganizationContextType {
 
   // Role helpers
   isAdmin: boolean;
+  isPendingApproval: boolean;
 
   // Actions
   setCurrentOrganization: (orgId: string) => void;
@@ -70,11 +72,14 @@ interface OrganizationContextType {
     description?: string,
   ) => Promise<Organization>;
   joinOrganization: (inviteCode: string) => Promise<OrganizationMembership>;
+  approveMember: (orgId: string, memberId: string) => Promise<void>;
+  rejectMember: (orgId: string, memberId: string) => Promise<void>;
+  leaveOrganization: (orgId: string) => Promise<void>;
   refreshOrganizations: () => Promise<void>;
   updateOrganizationLogo: (logoUrl: string) => Promise<void>;
   updateOrganizationWeeklyTargets: (
-    fullTimeWeeklyTarget: number,
-    partTimeWeeklyTarget: number,
+    fullTimeBiWeeklyTarget: number,
+    partTimeBiWeeklyTarget: number,
   ) => Promise<void>;
 
   // Helper to get auth headers for API calls
@@ -384,8 +389,8 @@ export function OrganizationProvider({
   // Update organization weekly hour defaults
   const updateOrganizationWeeklyTargets = useCallback(
     async (
-      fullTimeWeeklyTarget: number,
-      partTimeWeeklyTarget: number,
+      fullTimeBiWeeklyTarget: number,
+      partTimeBiWeeklyTarget: number,
     ): Promise<void> => {
       if (!currentOrganization) {
         throw new Error("No organization selected");
@@ -406,8 +411,8 @@ export function OrganizationProvider({
             "X-Organization-ID": currentOrganization.id,
           },
           body: JSON.stringify({
-            full_time_weekly_target: fullTimeWeeklyTarget,
-            part_time_weekly_target: partTimeWeeklyTarget,
+            full_time_weekly_target: fullTimeBiWeeklyTarget,
+            part_time_weekly_target: partTimeBiWeeklyTarget,
           }),
         },
       );
@@ -422,8 +427,8 @@ export function OrganizationProvider({
         prev
           ? {
               ...prev,
-              full_time_weekly_target: fullTimeWeeklyTarget,
-              part_time_weekly_target: partTimeWeeklyTarget,
+              full_time_weekly_target: fullTimeBiWeeklyTarget,
+              part_time_weekly_target: partTimeBiWeeklyTarget,
             }
           : null,
       );
@@ -434,7 +439,91 @@ export function OrganizationProvider({
     [currentOrganization, getToken, refreshOrganizations],
   );
 
-  // Load organizations on auth change
+  // Approve a pending member (admin only)
+  const approveMember = useCallback(
+    async (orgId: string, memberId: string): Promise<void> => {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+
+      const res = await fetch(
+        `${API_BASE}/organizations/${orgId}/members/${memberId}/approve`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "X-Organization-ID": orgId,
+          },
+        },
+      );
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to approve member");
+      }
+
+      await refreshOrganizations();
+    },
+    [getToken, refreshOrganizations],
+  );
+
+  // Reject a pending member (admin only)
+  const rejectMember = useCallback(
+    async (orgId: string, memberId: string): Promise<void> => {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+
+      const res = await fetch(
+        `${API_BASE}/organizations/${orgId}/members/${memberId}/reject`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "X-Organization-ID": orgId,
+          },
+        },
+      );
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to reject member");
+      }
+
+      await refreshOrganizations();
+    },
+    [getToken, refreshOrganizations],
+  );
+
+  // Leave an organization
+  const leaveOrganization = useCallback(
+    async (orgId: string): Promise<void> => {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+
+      const res = await fetch(`${API_BASE}/organizations/${orgId}/leave`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "X-Organization-ID": orgId,
+        },
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to leave organization");
+      }
+
+      // Clear current org if it was the one we left
+      if (currentOrganization?.id === orgId) {
+        localStorage.removeItem(ORG_STORAGE_KEY);
+      }
+
+      await refreshOrganizations();
+    },
+    [getToken, refreshOrganizations, currentOrganization],
+  );
   useEffect(() => {
     if (isLoaded && isSignedIn) {
       refreshOrganizations();
@@ -455,6 +544,10 @@ export function OrganizationProvider({
     currentMembership?.role === "manager" ||
     false;
 
+  // Computed: is current membership pending approval?
+  const isPendingApproval: boolean =
+    currentMembership?.is_approved === false || false;
+
   const value: OrganizationContextType = {
     currentOrganization,
     currentMembership,
@@ -466,9 +559,13 @@ export function OrganizationProvider({
     // Don't rely on onboardingCompleted flag as it can get out of sync
     needsOnboarding: !!isSignedIn && !isLoading && organizations.length === 0,
     isAdmin,
+    isPendingApproval,
     setCurrentOrganization,
     createOrganization,
     joinOrganization,
+    approveMember,
+    rejectMember,
+    leaveOrganization,
     refreshOrganizations,
     updateOrganizationLogo,
     updateOrganizationWeeklyTargets,

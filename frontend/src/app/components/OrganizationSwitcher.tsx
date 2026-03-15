@@ -161,11 +161,18 @@ export function OrganizationSwitcher({
                   <p className="font-medium text-gray-900 truncate">
                     {membership.organization.name}
                   </p>
-                  <p
-                    className={`text-xs ${roleColors[membership.role]} inline-block px-1.5 py-0.5 rounded-full mt-0.5`}
-                  >
-                    {membership.role}
-                  </p>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <p
+                      className={`text-xs ${roleColors[membership.role]} inline-block px-1.5 py-0.5 rounded-full`}
+                    >
+                      {membership.role}
+                    </p>
+                    {!membership.is_approved && (
+                      <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full">
+                        pending
+                      </span>
+                    )}
+                  </div>
                 </div>
                 {currentOrganization?.id === membership.organization_id && (
                   <Check className="w-4 h-4 text-blue-600" />

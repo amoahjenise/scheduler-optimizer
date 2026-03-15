@@ -357,13 +357,15 @@ export default function AdminSchedulesPage() {
                           Continue
                         </Link>
                       )}
-                      <Link
-                        href={`/schedules/${schedule.id}`}
-                        className="flex items-center gap-2 px-4 py-2 text-emerald-600 border border-emerald-200 rounded-lg hover:bg-emerald-50 transition-colors"
-                      >
-                        <Eye className="w-4 h-4" />
-                        View
-                      </Link>
+                      {schedule.is_finalized && (
+                        <Link
+                          href={`/schedules/${schedule.id}`}
+                          className="flex items-center gap-2 px-4 py-2 text-emerald-600 border border-emerald-200 rounded-lg hover:bg-emerald-50 transition-colors"
+                        >
+                          <Eye className="w-4 h-4" />
+                          View
+                        </Link>
+                      )}
                       {deleteConfirm === schedule.id ? (
                         <div className="flex gap-2">
                           <button
