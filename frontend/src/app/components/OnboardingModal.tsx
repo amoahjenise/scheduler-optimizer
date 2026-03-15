@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import { useClerk } from "@clerk/nextjs";
 import { useOrganization } from "../context/OrganizationContext";
 import { Building2, Users, X, ArrowRight, Loader2, LogOut } from "lucide-react";
+import { clearSensitiveData } from "../lib/sessionCleanup";
 
 interface OnboardingModalProps {
   isOpen: boolean;
@@ -13,7 +14,9 @@ interface OnboardingModalProps {
 export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
   const { signOut } = useClerk();
   const { createOrganization, joinOrganization } = useOrganization();
-  const [step, setStep] = useState<"choose" | "create" | "join">("choose");
+  const [step, setStep] = useState<"choose" | "create" | "join" | "pending">(
+    "choose",
+  );
   const [orgName, setOrgName] = useState("");
   const [orgDescription, setOrgDescription] = useState("");
   const [inviteCode, setInviteCode] = useState("");
@@ -23,6 +26,7 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
   if (!isOpen) return null;
 
   const handleSignOut = async () => {
+    clearSensitiveData();
     await signOut();
   };
 
@@ -60,8 +64,12 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
     setError("");
 
     try {
-      await joinOrganization(inviteCode.trim());
-      onClose?.();
+      const membership = await joinOrganization(inviteCode.trim());
+      if (membership && !membership.is_approved) {
+        setStep("pending");
+      } else {
+        onClose?.();
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to join organization");
     } finally {
@@ -96,7 +104,9 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
                 ? "Create a new unit or join your team"
                 : step === "create"
                   ? "Enter your hospital unit details"
-                  : "Join your team with an invite code"}
+                  : step === "pending"
+                    ? "Your request has been submitted"
+                    : "Join your team with an invite code"}
             </p>
           </div>
         </div>
@@ -242,6 +252,43 @@ export function OnboardingModal({ isOpen, onClose }: OnboardingModalProps) {
                   )}
                 </button>
               </div>
+            </div>
+          )}
+
+          {step === "pending" && (
+            <div className="text-center space-y-4">
+              <div className="w-16 h-16 mx-auto bg-amber-100 rounded-full flex items-center justify-center">
+                <svg
+                  className="w-8 h-8 text-amber-600"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900">
+                Request Submitted
+              </h3>
+              <p className="text-sm text-gray-600">
+                Your membership is pending admin approval. You&apos;ll have
+                access once an administrator approves your request.
+              </p>
+              <p className="text-xs text-gray-400">
+                Contact your unit administrator for faster approval.
+              </p>
+              <button
+                onClick={handleSignOut}
+                className="mt-2 inline-flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+                Sign out
+              </button>
             </div>
           )}
         </div>

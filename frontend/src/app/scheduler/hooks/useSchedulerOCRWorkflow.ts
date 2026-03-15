@@ -1,14 +1,11 @@
 "use client";
 
 import { useCallback } from "react";
-import {
-  listNursesAPI,
-  parseImageWithFastAPI,
-  updateNurseAPI,
-} from "../../lib/api";
+import { Nurse, parseImageWithFastAPI, updateNurseAPI } from "../../lib/api";
 import { GridRow, ManualNurse, OCRWarning, ShiftEntry, Step } from "../types";
 import {
   cleanNurseName,
+  deduplicateGridGhosts,
   detectOCRIssues,
   extractNurseMetadata,
   getPotentialMatches,
@@ -24,7 +21,12 @@ interface UseSchedulerOCRWorkflowOptions {
   startDate: string;
   endDate: string;
   userId: string;
+  /** Already-loaded nurses from the parent — avoids a redundant un-authenticated API call */
+  organizationNurses: Nurse[];
   getDefaultMaxWeeklyHours: (employmentType?: "FT" | "PT") => number;
+  /** Bi-weekly target hours for new nurses (e.g., 75h FT, 63.75h PT) */
+  fullTimeBiWeeklyTarget: number;
+  partTimeBiWeeklyTarget: number;
   setOcrLoading: (value: boolean) => void;
   setOcrError: (value: string | null) => void;
   setAutoComments: SetState<string>;
@@ -42,7 +44,10 @@ export function useSchedulerOCRWorkflow({
   startDate,
   endDate,
   userId,
+  organizationNurses,
   getDefaultMaxWeeklyHours,
+  fullTimeBiWeeklyTarget,
+  partTimeBiWeeklyTarget,
   setOcrLoading,
   setOcrError,
   setAutoComments,
@@ -231,23 +236,53 @@ export function useSchedulerOCRWorkflow({
       setOcrWarnings(warnings);
 
       setOcrDates(sortedDates);
-      setOcrGrid(gridRows);
-      setCurrentStep("review");
+      // De-Duplication Command: remove ghost Z23 tails before displaying the OCR grid.
+      // Without this, overnight shifts show phantom entries in two calendar columns.
 
-      if (userId) {
+      // Use already-loaded nurses from the parent to avoid a redundant
+      // un-authenticated API call that may return empty due to org filtering.
+      const existingNurses = organizationNurses;
+
+      console.log(
+        "[OCR Workflow] Existing nurses count:",
+        existingNurses.length,
+      );
+      if (existingNurses.length > 0) {
+        console.log(
+          "[OCR Workflow] Sample nurses:",
+          existingNurses.slice(0, 3).map((n) => n.name),
+        );
+      }
+
+      if (existingNurses.length === 0) {
+        // No nurses loaded (user not logged in, or no nurses in org) – show raw grid
+        console.warn("[OCR Workflow] No nurses loaded - skipping matching");
+        setOcrGrid(deduplicateGridGhosts(gridRows));
+        setCurrentStep("review");
+      } else {
         try {
-          const { nurses: existingNurses } = await listNursesAPI(
-            userId,
-            1,
-            1000,
-          );
           const ocrNurseNames = gridRows.map((r) => r.nurse);
+          console.log("[OCR Workflow] OCR names to match:", ocrNurseNames);
+          console.log(
+            "[OCR Workflow] DB nurses available:",
+            existingNurses.map((n) => n.name),
+          );
 
           const { matched, unmatched } = matchNursesWithDatabase(
             ocrNurseNames,
             existingNurses,
-            0.7,
+            0.65, // Lowered from 0.7 to catch more OCR variations
           );
+
+          console.log(
+            "[OCR Workflow] Matched:",
+            matched.length,
+            "Unmatched:",
+            unmatched.length,
+          );
+          if (unmatched.length > 0) {
+            console.log("[OCR Workflow] Unmatched names:", unmatched);
+          }
 
           const ocrToDbNameMap = new Map<string, string>();
           for (const match of matched) {
@@ -275,7 +310,8 @@ export function useSchedulerOCRWorkflow({
             }
           }
 
-          setOcrGrid([...gridRows]);
+          setOcrGrid(deduplicateGridGhosts([...gridRows]));
+          setCurrentStep("review");
 
           if (matched.length > 0) {
             setManualNurses((prev) => {
@@ -376,6 +412,15 @@ export function useSchedulerOCRWorkflow({
                   score: m.score,
                 }));
 
+                console.log(
+                  `[OCR Workflow] ${row.nurse} -> ${potentialMatches.length} potential matches`,
+                );
+                if (potentialMatches.length > 0) {
+                  console.log(
+                    `  Best match: ${potentialMatches[0].dbNurse.name} (score: ${potentialMatches[0].score})`,
+                  );
+                }
+
                 return {
                   originalName: row.nurse,
                   name: row.nurse,
@@ -387,7 +432,8 @@ export function useSchedulerOCRWorkflow({
                   isTransplantCertified: false,
                   isRenalCertified: false,
                   isChargeCertified: false,
-                  maxHours: getDefaultMaxWeeklyHours("FT"),
+                  // Use bi-weekly target (e.g., 75h) instead of max cap (120h) for new nurses
+                  maxHours: fullTimeBiWeeklyTarget,
                   potentialMatches,
                   selectedMatchId: undefined,
                   matchAction:
@@ -397,12 +443,19 @@ export function useSchedulerOCRWorkflow({
                 };
               });
 
+              console.log(
+                "[OCR Workflow] Setting candidates:",
+                candidatesWithMatches.length,
+              );
               setNewNurseCandidates(candidatesWithMatches);
               setShowCreateNursesModal(true);
             }
           }
         } catch (error) {
-          console.error("Error checking nurses:", error);
+          console.error("Error during nurse matching:", error);
+          // On failure, still show the grid with original OCR names
+          setOcrGrid(deduplicateGridGhosts([...gridRows]));
+          setCurrentStep("review");
         }
       }
     } catch (err) {
@@ -415,7 +468,10 @@ export function useSchedulerOCRWorkflow({
     startDate,
     endDate,
     userId,
+    organizationNurses,
     getDefaultMaxWeeklyHours,
+    fullTimeBiWeeklyTarget,
+    partTimeBiWeeklyTarget,
     setOcrLoading,
     setOcrError,
     setAutoComments,

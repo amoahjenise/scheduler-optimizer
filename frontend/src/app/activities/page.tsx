@@ -15,6 +15,7 @@ import {
   type DeletionActivity,
 } from "../lib/api";
 import { useOrganization } from "../context/OrganizationContext";
+import { FEATURES } from "../lib/featureFlags";
 
 type RecentActivityItem = {
   id: string;
@@ -165,7 +166,7 @@ export default function ActivitiesPage() {
 
         setActivities(
           [
-            ...patientActivities,
+            ...(FEATURES.PATIENT_MANAGEMENT ? patientActivities : []),
             ...handoverActivities,
             ...scheduleActivities,
             ...deletionRecentActivities,

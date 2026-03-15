@@ -146,7 +146,8 @@ export async function parseImageWithFastAPI(
   const data = await apiRequest<any>("/schedules/upload-schedule/", {
     method: "POST",
     body: formData,
-    timeoutMs: 45000,
+    // OCR upload/parse can take longer for larger screenshots
+    timeoutMs: 180000,
   });
 
   if (data.error) {
@@ -215,7 +216,8 @@ export async function createScheduleAPI(
   return apiRequest<any>("/schedules/", {
     method: "POST",
     body: formData,
-    timeoutMs: 45000,
+    // Multi-image extraction can exceed 45s on local/dev backends
+    timeoutMs: 180000,
   });
 }
 
@@ -246,7 +248,7 @@ export async function optimizeScheduleAPI(reqBody: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify(reqBody),
-    timeoutMs: 90000,
+    timeoutMs: 300000,
   });
 }
 
@@ -531,11 +533,13 @@ export interface HandoverPatient {
   room_number: string;
   bed?: string;
   diagnosis?: string;
+  age?: string;
+  date_of_birth?: string;
 }
 
 export interface Handover {
   id: string;
-  patient_id: string;
+  patient_id?: string;
   shift_date: string;
   shift_type: ShiftType;
   outgoing_nurse: string;
@@ -547,6 +551,17 @@ export interface Handover {
   code_status_manual?: string;
   revision_date?: string;
   revision_author?: string;
+
+  // Embedded patient demographics (HIPAA: stored on the handover itself)
+  p_first_name?: string;
+  p_last_name?: string;
+  p_room_number?: string;
+  p_bed?: string;
+  p_mrn?: string;
+  p_diagnosis?: string;
+  p_date_of_birth?: string;
+  p_age?: string;
+  p_attending_physician?: string;
 
   // Header Section (Static)
   pertinent_issues?: string;
@@ -720,7 +735,7 @@ export interface Handover {
 }
 
 export interface HandoverCreate {
-  patient_id: string;
+  patient_id?: string;
   shift_date: string;
   shift_type: ShiftType;
   outgoing_nurse: string;
@@ -729,6 +744,17 @@ export interface HandoverCreate {
   acuity?: AcuityLevel;
   isolation?: IsolationType;
   code_status?: string;
+
+  // Embedded patient demographics (for creating without a patient record)
+  p_first_name?: string;
+  p_last_name?: string;
+  p_room_number?: string;
+  p_bed?: string;
+  p_mrn?: string;
+  p_diagnosis?: string;
+  p_date_of_birth?: string;
+  p_age?: string;
+  p_attending_physician?: string;
 
   // Header/Static fields that carry over
   pertinent_issues?: string;
@@ -792,6 +818,17 @@ export interface HandoverUpdate {
   revision_date?: string;
   revision_author?: string;
   shift_type?: ShiftType;
+
+  // Embedded patient demographics (editable on the handover)
+  p_first_name?: string;
+  p_last_name?: string;
+  p_room_number?: string;
+  p_bed?: string;
+  p_mrn?: string;
+  p_diagnosis?: string;
+  p_date_of_birth?: string;
+  p_age?: string;
+  p_attending_physician?: string;
 
   // Header Section
   pertinent_issues?: string;
@@ -1161,13 +1198,27 @@ export async function fetchLatestHandoverForPatientAPI(
   return res.json();
 }
 
+export async function fetchHandoverHistoryForPatientAPI(
+  patient_id: string,
+  limit: number = 50,
+): Promise<{ handovers: Handover[]; total: number }> {
+  const res = await fetch(
+    `${API_BASE}/handovers/patient/${patient_id}/history?limit=${limit}`,
+  );
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to fetch handover history");
+  }
+  return res.json();
+}
+
 // Schedule Optimization APIs
 export async function previewConstraintsAPI(payload: any): Promise<any> {
   return apiRequest<any>("/optimize/preview", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
-    timeoutMs: 90000,
+    timeoutMs: 30000,
   });
 }
 
@@ -1182,7 +1233,7 @@ export async function optimizeWithConstraintsAPI(payload: {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
-    timeoutMs: 90000,
+    timeoutMs: 300000,
   });
 }
 
@@ -1191,15 +1242,33 @@ export async function refineScheduleAPI(payload: {
   refinement_request: string;
   dates: string[];
   nurseHoursStats?: any[];
-  fullTimeWeeklyTarget?: number;
-  partTimeWeeklyTarget?: number;
+  fullTimeBiWeeklyTarget?: number;
+  partTimeBiWeeklyTarget?: number;
+  rules?: string;
 }): Promise<any> {
   return apiRequest<any>("/optimize/refine", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
-    timeoutMs: 90000,
+    timeoutMs: 180000,
   });
+}
+
+export interface GapFillSuggestion {
+  date: string;
+  nurse: string;
+  shiftCode: string;
+  shiftStart: string;
+  shiftEnd: string;
+  shiftHours: number;
+  shiftType: "day" | "night";
+  currentHeadcount: number;
+  averageHeadcount: number;
+  nurseDelta: number;
+  nurseCurrentHours: number;
+  nurseTargetHours: number;
+  nurseEmploymentType: string;
+  priority: "high" | "medium";
 }
 
 export async function analyzeScheduleInsightsAPI(payload: {
@@ -1208,6 +1277,8 @@ export async function analyzeScheduleInsightsAPI(payload: {
   nurseHoursStats?: any[];
   coverageSnapshot?: any;
   orgContext?: string;
+  staffNotes?: Record<string, string[]>;
+  markerComments?: string;
 }): Promise<{
   summary: string;
   score: number | null;
@@ -1217,6 +1288,7 @@ export async function analyzeScheduleInsightsAPI(payload: {
     description: string;
   }[];
   suggestions: { category: string; text: string }[];
+  gapFillSuggestions?: GapFillSuggestion[];
 }> {
   return apiRequest("/optimize/insights", {
     method: "POST",
@@ -1297,23 +1369,15 @@ export async function listNursesAPI(
   });
   if (search) params.append("search", search);
 
-  const res = await fetch(`${API_BASE}/nurses?${params.toString()}`);
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => null);
-    const detail = err?.detail;
-    const message =
-      typeof detail === "string"
-        ? detail
-        : Array.isArray(detail)
-          ? detail.map((e: { msg?: string }) => e.msg || String(e)).join(", ")
-          : detail
-            ? JSON.stringify(detail)
-            : "Failed to fetch nurses";
-    throw new Error(message);
-  }
-
-  return res.json();
+  return apiRequest<{
+    nurses: Nurse[];
+    total: number;
+    page: number;
+    page_size: number;
+  }>(`/nurses?${params.toString()}`, {
+    timeoutMs: 15000,
+    retryCount: 1,
+  });
 }
 
 export async function getNurseAPI(
@@ -1864,4 +1928,44 @@ export async function updateEmployeePreferenceAPI(
       timeoutMs: 15000,
     },
   );
+}
+
+// ── Schedule Rules ─────────────────────────────────────────────────
+
+export interface ScheduleRule {
+  id: number;
+  organization_id: string;
+  name: string;
+  rules_text: string;
+  created_by?: string;
+  updated_at?: string;
+  created_at?: string;
+}
+
+export async function getLatestScheduleRuleAPI(
+  orgId?: string,
+): Promise<ScheduleRule | null> {
+  try {
+    const opts: any = { timeoutMs: 10000 };
+    if (orgId) {
+      opts.headers = { "X-Organization-ID": orgId };
+    }
+    return await apiRequest("/schedule-rules/latest", opts);
+  } catch {
+    return null;
+  }
+}
+
+export async function saveScheduleRuleAPI(payload: {
+  name?: string;
+  rules_text: string;
+}): Promise<ScheduleRule> {
+  return apiRequest("/schedule-rules", {
+    method: "POST",
+    body: JSON.stringify({
+      name: payload.name || "default",
+      rules_text: payload.rules_text,
+    }),
+    timeoutMs: 10000,
+  });
 }

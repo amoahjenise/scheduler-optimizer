@@ -71,6 +71,7 @@ class RefineRequest(BaseModel):
     nurseHoursStats: Optional[List[Dict[str, Any]]] = None  # Optional hours breakdown per nurse
     fullTimeWeeklyTarget: Optional[float] = None
     partTimeWeeklyTarget: Optional[float] = None
+    rules: Optional[str] = None  # Optional scheduling rules to guide refinement
 
 # Model for AI schedule insights request
 class InsightsRequest(BaseModel):
@@ -79,3 +80,5 @@ class InsightsRequest(BaseModel):
     nurseHoursStats: Optional[List[Dict[str, Any]]] = None
     coverageSnapshot: Optional[Dict[str, Any]] = None
     orgContext: Optional[str] = None
+    staffNotes: Optional[Dict[str, List[str]]] = None
+    markerComments: Optional[str] = None

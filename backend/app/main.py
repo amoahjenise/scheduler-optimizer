@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Use the main optimizer with RobustScheduler
 from app.api.routes import user, schedule, system_prompts, webhook, patient, handover, nurse, organization, shift_codes, deletion_activity, scheduling
 from app.api.routes import optimized_schedule
+from app.api.routes import schedule_rules
 from app.core.config import settings
 import sys
 from pathlib import Path
@@ -42,3 +43,4 @@ app.include_router(organization.router, prefix="/organizations", tags=["Organiza
 app.include_router(shift_codes.router, tags=["Shift Codes"])
 app.include_router(scheduling.router)
 app.include_router(webhook.router)
+app.include_router(schedule_rules.router, tags=["Schedule Rules"])

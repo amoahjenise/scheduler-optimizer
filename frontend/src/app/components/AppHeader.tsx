@@ -13,6 +13,8 @@ import {
 } from "@clerk/nextjs";
 import { useOrganization } from "../context/OrganizationContext";
 import { OrganizationSwitcherWrapper } from "./OrganizationSwitcherWrapper";
+import { clearSensitiveData } from "../lib/sessionCleanup";
+import { FEATURES } from "../lib/featureFlags";
 
 const DEFAULT_LOGO = "/logo-placeholder.png";
 
@@ -20,11 +22,17 @@ export function AppHeader() {
   const { currentOrganization, isLoading, isAdmin } = useOrganization();
   const pathname = usePathname();
   const [mounted, setMounted] = useState(false);
+  const [navigatingTo, setNavigatingTo] = useState<string | null>(null);
 
   // Prevent hydration mismatch with Clerk components
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // Clear navigatingTo once the route actually changes
+  useEffect(() => {
+    setNavigatingTo(null);
+  }, [pathname]);
 
   // Hide header on landing page
   if (pathname === "/") {
@@ -38,7 +46,9 @@ export function AppHeader() {
     { label: "Schedules", href: isAdmin ? "/admin/schedules" : "/schedules" },
     { label: "Hand-offs", href: "/handover" },
     ...(isAdmin ? [{ label: "Staff", href: "/nurses" }] : []),
-    { label: "Patients", href: "/patients" },
+    ...(FEATURES.PATIENT_MANAGEMENT
+      ? [{ label: "Patients", href: "/patients" }]
+      : []),
   ];
 
   const isActive = (href: string) => {
@@ -76,13 +86,23 @@ export function AppHeader() {
               <Link
                 key={item.href}
                 href={item.href}
+                onClick={() => {
+                  if (!isActive(item.href)) setNavigatingTo(item.href);
+                }}
                 className={`px-4 py-1.5 text-sm font-medium rounded-full transition-all duration-200 ${
-                  isActive(item.href)
+                  isActive(item.href) || navigatingTo === item.href
                     ? "bg-white text-gray-900 shadow-sm"
                     : "text-gray-500 hover:text-gray-700"
                 }`}
               >
-                {item.label}
+                {navigatingTo === item.href ? (
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 border-2 border-gray-400 border-t-gray-900 rounded-full animate-spin" />
+                    {item.label}
+                  </span>
+                ) : (
+                  item.label
+                )}
               </Link>
             ))}
           </nav>
@@ -114,7 +134,21 @@ export function AppHeader() {
               >
                 <Settings className="w-4.5 h-4.5" />
               </Link>
-              <UserButton />
+              <UserButton
+                signInUrl="/"
+                afterSignOutUrl="/"
+                appearance={{
+                  elements: { userButtonAvatarBox: "w-8 h-8" },
+                }}
+              >
+                <UserButton.MenuItems>
+                  <UserButton.Action
+                    label="Sign out"
+                    labelIcon={<span>🚪</span>}
+                    onClick={() => clearSensitiveData()}
+                  />
+                </UserButton.MenuItems>
+              </UserButton>
             </SignedIn>
           </>
         ) : (

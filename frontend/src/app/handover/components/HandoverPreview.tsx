@@ -549,6 +549,8 @@ export default function HandoverPreview({
 
           <RespiratoryCardioSection handover={handover} />
 
+          <GISection handover={handover} />
+
           <GUIOSection handover={handover} />
 
           <MusculoskeletalSection handover={handover} />
@@ -1129,14 +1131,14 @@ function GUIOSection({ handover }: { handover: Handover }) {
   return (
     <div className="section mb-3">
       <div className="section-header text-xs font-semibold text-gray-500 uppercase border-b border-gray-200 pb-1 mb-2">
-        G.U.
+        G.U. — Urine Output &amp; Fluid Balance
       </div>
       <div className="section-content text-sm text-gray-800">
         {hasContent ? (
           <div className="space-y-3">
             <div className="flex items-center gap-4 border-b border-gray-200 pb-2">
               <span className="text-xs font-medium text-gray-700">
-                Interval:
+                Monitoring Interval:
               </span>
               <span className="inline-flex items-center gap-2 text-xs text-gray-900">
                 <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border border-blue-600">
@@ -1158,55 +1160,71 @@ function GUIOSection({ handover }: { handover: Handover }) {
             {/* I/O Table */}
             {hasIOData && (
               <div>
-                <div className="mb-1.5 flex items-center justify-between gap-3">
-                  <label className="text-xs font-medium text-gray-700">
-                    Urine output (I/O)
-                  </label>
-                  <div className="flex items-center gap-1 text-xs text-gray-500">
-                    <span className="w-[60px] text-center text-gray-400">
-                      ml
-                    </span>
-                    <span className="w-[60px] text-center text-gray-400">
-                      ml/kg/hr
-                    </span>
-                    <span className="w-[60px] text-center text-gray-400">
-                      ml
-                    </span>
-                    <span className="w-[60px] text-center text-gray-400">
-                      ml/kg/hr
-                    </span>
-                  </div>
+                <div className="mb-1 text-xs font-semibold text-gray-700">
+                  Urine Output (I/O)
+                </div>
+                <div className="mb-2 text-[10px] text-gray-500 leading-snug bg-gray-50 border border-gray-200 rounded px-2 py-1.5">
+                  <span className="font-semibold text-gray-600">
+                    How to read:
+                  </span>{" "}
+                  Each time block shows <strong>Total ml</strong> (volume in
+                  that interval) and <strong>ml/kg/hr</strong> (output ÷ patient
+                  weight ÷ hours).
+                  <br />
+                  Goal ≥ 1 ml/kg/hr&ensp;|&ensp;⚑ &lt; 0.5 ml/kg/hr for 6 hrs =
+                  medical alert&ensp;|&ensp; +value = net positive (intake &gt;
+                  output)&ensp;|&ensp;−value = net negative
                 </div>
                 <div className="grid grid-cols-2 gap-x-4 gap-y-3">
                   {ioRows.map((row) => (
                     <div key={row.label} className="space-y-1">
-                      <div className="text-xs font-medium text-gray-600">
+                      <div className="text-xs font-semibold text-blue-700 text-center bg-blue-50 rounded px-1 py-0.5">
                         {row.label}
                       </div>
                       <div className="grid grid-cols-2 gap-1">
-                        <div className="rounded border border-gray-300 bg-white px-1.5 py-1 text-xs text-gray-800">
-                          {row.interval || (
-                            <span className="text-gray-400">ml</span>
-                          )}
+                        <div>
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-0.5">
+                            Total ml
+                          </div>
+                          <div className="rounded border border-gray-300 bg-white px-1.5 py-1 text-xs text-gray-800">
+                            {row.interval || (
+                              <span className="text-gray-400">ml</span>
+                            )}
+                          </div>
                         </div>
-                        <div className="rounded border border-gray-300 bg-white px-1.5 py-1 text-xs text-gray-800">
-                          {row.intervalKgHr || (
-                            <span className="text-gray-400">ml/kg/hr</span>
-                          )}
+                        <div>
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-0.5">
+                            ml/kg/hr
+                          </div>
+                          <div className="rounded border border-gray-300 bg-white px-1.5 py-1 text-xs text-gray-800">
+                            {row.intervalKgHr || (
+                              <span className="text-gray-400">ml/kg/hr</span>
+                            )}
+                          </div>
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-1">
-                        <div className="rounded border border-gray-300 bg-white px-1.5 py-1 text-xs text-gray-800">
-                          {row.running || (
-                            <span className="text-gray-400">
-                              {runningPlaceholder}
-                            </span>
-                          )}
+                        <div>
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-0.5">
+                            Running
+                          </div>
+                          <div className="rounded border border-gray-300 bg-white px-1.5 py-1 text-xs text-gray-800">
+                            {row.running || (
+                              <span className="text-gray-400">
+                                {runningPlaceholder}
+                              </span>
+                            )}
+                          </div>
                         </div>
-                        <div className="rounded border border-gray-300 bg-white px-1.5 py-1 text-xs text-gray-800">
-                          {row.runningKgHr || (
-                            <span className="text-gray-400">ml/kg/hr</span>
-                          )}
+                        <div>
+                          <div className="text-[9px] text-gray-500 uppercase tracking-wide mb-0.5">
+                            ml/kg/hr
+                          </div>
+                          <div className="rounded border border-gray-300 bg-white px-1.5 py-1 text-xs text-gray-800">
+                            {row.runningKgHr || (
+                              <span className="text-gray-400">ml/kg/hr</span>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1265,6 +1283,146 @@ function GUIOSection({ handover }: { handover: Handover }) {
                 </div>
               </div>
             )}
+          </div>
+        ) : (
+          <span className="text-gray-400 italic">Not documented</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GISection({ handover }: { handover: Handover }) {
+  const hasContent =
+    handover.gi_tenderness ||
+    handover.gi_distention ||
+    handover.gi_girth ||
+    handover.vomiting ||
+    handover.vomiting_quantity ||
+    handover.nausea ||
+    handover.last_bowel_movement ||
+    handover.bowel_amount ||
+    handover.bowel_description ||
+    handover.constipation ||
+    handover.diarrhea ||
+    handover.diarrhea_quantity ||
+    handover.colostomy;
+
+  return (
+    <div className="section mb-3">
+      <div className="section-header text-xs font-semibold text-gray-500 uppercase border-b border-gray-200 pb-1 mb-2">
+        G.I.
+      </div>
+      <div className="section-content text-sm text-gray-800">
+        {hasContent ? (
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-4">
+              <span className="inline-flex items-center gap-2 text-xs text-gray-700">
+                <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-gray-400 text-[10px] leading-none text-gray-700">
+                  {handover.gi_tenderness ? "✓" : ""}
+                </span>
+                Abnormal tenderness
+              </span>
+              <span className="inline-flex items-center gap-2 text-xs text-gray-700">
+                <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-gray-400 text-[10px] leading-none text-gray-700">
+                  {handover.gi_distention ? "✓" : ""}
+                </span>
+                Distention
+              </span>
+            </div>
+
+            {handover.gi_girth && (
+              <div>
+                <span className="font-medium">Girth:</span> {handover.gi_girth}
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-4 items-center">
+              <span className="inline-flex items-center gap-2 text-xs text-gray-700">
+                <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-gray-400 text-[10px] leading-none text-gray-700">
+                  {handover.vomiting ? "✓" : ""}
+                </span>
+                Vomiting
+              </span>
+              {handover.vomiting_quantity && (
+                <>
+                  <span className="text-xs text-gray-600">Quantity:</span>
+                  <span className="inline-block px-2 py-0.5 border border-gray-300 rounded bg-white text-xs">
+                    {handover.vomiting_quantity}
+                  </span>
+                </>
+              )}
+              <span className="inline-flex items-center gap-2 text-xs text-gray-700">
+                <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-gray-400 text-[10px] leading-none text-gray-700">
+                  {handover.nausea ? "✓" : ""}
+                </span>
+                Nausea
+              </span>
+            </div>
+
+            {(handover.last_bowel_movement ||
+              handover.bowel_amount ||
+              handover.bowel_description) && (
+              <div className="space-y-2 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                <div className="text-xs font-semibold text-gray-700">
+                  Last Bowel Movement
+                </div>
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                  {handover.last_bowel_movement && (
+                    <div>
+                      <span className="text-xs font-medium text-gray-600">
+                        Date:
+                      </span>{" "}
+                      <span className="text-sm">
+                        {handover.last_bowel_movement}
+                      </span>
+                    </div>
+                  )}
+                  {handover.bowel_amount && (
+                    <div>
+                      <span className="text-xs font-medium text-gray-600">
+                        Amount:
+                      </span>{" "}
+                      <span className="text-sm">{handover.bowel_amount}</span>
+                    </div>
+                  )}
+                </div>
+                {handover.bowel_description && (
+                  <div>
+                    <span className="text-xs font-medium text-gray-600">
+                      Description:
+                    </span>{" "}
+                    <span className="text-sm">
+                      {handover.bowel_description}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="flex flex-wrap gap-4">
+              <span className="inline-flex items-center gap-2 text-xs text-gray-700">
+                <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-gray-400 text-[10px] leading-none text-gray-700">
+                  {handover.constipation ? "✓" : ""}
+                </span>
+                Constipation
+              </span>
+              <span className="inline-flex items-center gap-2 text-xs text-gray-700">
+                <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-gray-400 text-[10px] leading-none text-gray-700">
+                  {handover.diarrhea ? "✓" : ""}
+                </span>
+                Diarrhea
+                {handover.diarrhea_quantity
+                  ? ` (${handover.diarrhea_quantity})`
+                  : ""}
+              </span>
+              <span className="inline-flex items-center gap-2 text-xs text-gray-700">
+                <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-sm border border-gray-400 text-[10px] leading-none text-gray-700">
+                  {handover.colostomy ? "✓" : ""}
+                </span>
+                Colostomy
+              </span>
+            </div>
           </div>
         ) : (
           <span className="text-gray-400 italic">Not documented</span>

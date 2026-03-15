@@ -5,6 +5,7 @@ import { Patient, PatientCreate, createPatientAPI } from "../../lib/api";
 import { PatientFieldConfig } from "../../lib/patientConfig";
 import { loadRooms } from "../../lib/roomsConfig";
 import { loadTeams, DEFAULT_TEAMS } from "../../lib/teamsConfig";
+import { loadDiagnoses, addDiagnosis } from "../../lib/diagnosesConfig";
 
 interface AddPatientModalProps {
   onClose: () => void;
@@ -13,27 +14,6 @@ interface AddPatientModalProps {
 }
 
 const BED_OPTIONS = ["", "A", "B", "C", "D"];
-
-const DIAGNOSIS_SUGGESTIONS = [
-  "ALL (Acute Lymphoblastic Leukemia)",
-  "AML (Acute Myeloid Leukemia)",
-  "Neuroblastoma",
-  "Hodgkin Lymphoma",
-  "Non-Hodgkin Lymphoma",
-  "Brain Tumor",
-  "Osteosarcoma",
-  "Ewing Sarcoma",
-  "Wilms Tumor",
-  "Rhabdomyosarcoma",
-  "Retinoblastoma",
-  "Sickle Cell Disease",
-  "Aplastic Anemia",
-  "Hemophilia",
-  "Thalassemia",
-  "BMT - Auto",
-  "BMT - Allo",
-  "SCIDS",
-];
 
 const PHYSICIAN_SUGGESTIONS = [
   "Dr. Bhatt",
@@ -72,6 +52,8 @@ export default function AddPatientModal({
   const [selectedTeam, setSelectedTeam] = useState<string>("");
   const [teamSuggestions, setTeamSuggestions] = useState<string[]>(loadTeams());
   const [roomSuggestions, setRoomSuggestions] = useState<string[]>(loadRooms());
+  const [diagnosisSuggestions, setDiagnosisSuggestions] =
+    useState<string[]>(loadDiagnoses());
 
   // Load teams from shared settings and listen for changes
   useEffect(() => {
@@ -99,6 +81,15 @@ export default function AddPatientModal({
     return () => {
       window.removeEventListener("roomsConfigChanged", handleRoomsChange);
     };
+  }, []);
+
+  // Load diagnoses from config and listen for changes
+  useEffect(() => {
+    setDiagnosisSuggestions(loadDiagnoses());
+    const handleDiagChange = () => setDiagnosisSuggestions(loadDiagnoses());
+    window.addEventListener("diagnosesConfigChanged", handleDiagChange);
+    return () =>
+      window.removeEventListener("diagnosesConfigChanged", handleDiagChange);
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -486,29 +477,63 @@ export default function AddPatientModal({
                 placeholder="e.g., ALL, AML, Neuroblastoma"
                 className="w-full border border-gray-300 rounded px-2 py-1.5 text-sm focus:ring-1 focus:ring-blue-500"
               />
-              {showDiagnosisDropdown && (
-                <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded shadow-lg max-h-32 overflow-y-auto">
-                  {DIAGNOSIS_SUGGESTIONS.filter((d) =>
-                    d
-                      .toLowerCase()
-                      .includes((formData.diagnosis || "").toLowerCase()),
-                  )
-                    .slice(0, 6)
-                    .map((diag) => (
-                      <button
-                        key={diag}
-                        type="button"
-                        onClick={() => {
-                          updateField("diagnosis", diag);
-                          setShowDiagnosisDropdown(false);
-                        }}
-                        className="w-full text-left px-2 py-1 text-sm hover:bg-blue-50"
-                      >
-                        {diag}
-                      </button>
-                    ))}
-                </div>
-              )}
+              {showDiagnosisDropdown &&
+                (() => {
+                  const trimmed = (formData.diagnosis || "").trim();
+                  const filtered = diagnosisSuggestions
+                    .filter((d) =>
+                      d.toLowerCase().includes(trimmed.toLowerCase()),
+                    )
+                    .slice(0, 6);
+                  const exactMatch =
+                    trimmed.length > 0 &&
+                    diagnosisSuggestions.some(
+                      (d) => d.toLowerCase() === trimmed.toLowerCase(),
+                    );
+                  return (
+                    <div className="absolute z-10 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded shadow-lg max-h-40 overflow-y-auto">
+                      {filtered.map((diag) => (
+                        <button
+                          key={diag}
+                          type="button"
+                          onClick={() => {
+                            updateField("diagnosis", diag);
+                            setShowDiagnosisDropdown(false);
+                          }}
+                          className="w-full text-left px-2 py-1 text-sm hover:bg-blue-50"
+                        >
+                          {diag}
+                        </button>
+                      ))}
+                      {trimmed.length > 1 && !exactMatch && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = addDiagnosis(trimmed);
+                            setDiagnosisSuggestions(updated);
+                            setShowDiagnosisDropdown(false);
+                          }}
+                          className="w-full text-left px-2 py-1.5 text-sm text-green-700 bg-green-50 hover:bg-green-100 border-t border-gray-100 flex items-center gap-1.5"
+                        >
+                          <svg
+                            className="w-3.5 h-3.5"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M12 4v16m8-8H4"
+                            />
+                          </svg>
+                          Add &quot;{trimmed}&quot; to suggestions
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
             </div>
           )}
 

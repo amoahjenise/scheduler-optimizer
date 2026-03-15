@@ -79,13 +79,14 @@ def create_organization(
         db.add(org)
         db.flush()  # Get the org ID
         
-        # Add creator as admin
+        # Add creator as admin (auto-approved)
         member = OrganizationMember(
             organization_id=org.id,
             user_id=auth.user_id,
             user_email=auth.user_email,
             user_name=auth.user_name,
-            role=MemberRole.ADMIN
+            role=MemberRole.ADMIN,
+            is_approved=True
         )
         db.add(member)
         db.commit()
@@ -284,19 +285,20 @@ def join_organization(
             db.refresh(existing)
             return existing
     
-    # Create membership with default nurse role
+    # Create membership with default nurse role — pending admin approval
     member = OrganizationMember(
         organization_id=org.id,
         user_id=auth.user_id,
         user_email=auth.user_email,
         user_name=auth.user_name,
-        role=MemberRole.NURSE
+        role=MemberRole.NURSE,
+        is_approved=False
     )
     db.add(member)
     db.commit()
     db.refresh(member)
     
-    logger.info(f"User {auth.user_id} joined organization '{org.name}'")
+    logger.info(f"User {auth.user_id} requested to join organization '{org.name}' (pending approval)")
     return member
 
 
@@ -330,7 +332,7 @@ def list_members(
     db: Session = Depends(get_db)
 ):
     """
-    List all members of an organization.
+    List all members of an organization (including pending approval).
     """
     if auth.organization_id != org_id:
         raise HTTPException(status_code=403, detail="Cannot view members of a different organization")
@@ -341,6 +343,71 @@ def list_members(
     ).all()
     
     return members
+
+
+@router.post("/{org_id}/members/{member_id}/approve", response_model=MemberSchema)
+def approve_member(
+    org_id: str,
+    member_id: str,
+    auth: AuthContext = Depends(get_admin_auth),
+    db: Session = Depends(get_db)
+):
+    """
+    Approve a pending member. Admin only.
+    """
+    if auth.organization_id != org_id:
+        raise HTTPException(status_code=403, detail="Cannot manage members of a different organization")
+    
+    member = db.query(OrganizationMember).filter(
+        OrganizationMember.id == member_id,
+        OrganizationMember.organization_id == org_id,
+        OrganizationMember.is_active == True
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+    
+    if member.is_approved:
+        raise HTTPException(status_code=400, detail="Member is already approved")
+    
+    member.is_approved = True
+    db.commit()
+    db.refresh(member)
+    
+    logger.info(f"Admin {auth.user_id} approved member {member.user_email or member.user_id} in org {org_id}")
+    return member
+
+
+@router.post("/{org_id}/members/{member_id}/reject")
+def reject_member(
+    org_id: str,
+    member_id: str,
+    auth: AuthContext = Depends(get_admin_auth),
+    db: Session = Depends(get_db)
+):
+    """
+    Reject (remove) a pending member. Admin only.
+    """
+    if auth.organization_id != org_id:
+        raise HTTPException(status_code=403, detail="Cannot manage members of a different organization")
+    
+    member = db.query(OrganizationMember).filter(
+        OrganizationMember.id == member_id,
+        OrganizationMember.organization_id == org_id,
+        OrganizationMember.is_active == True
+    ).first()
+    
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found")
+    
+    if member.is_approved:
+        raise HTTPException(status_code=400, detail="Cannot reject an already approved member. Use remove instead.")
+    
+    member.is_active = False
+    db.commit()
+    
+    logger.info(f"Admin {auth.user_id} rejected member {member.user_email or member.user_id} in org {org_id}")
+    return {"message": "Member request rejected"}
 
 
 @router.patch("/{org_id}/members/{member_id}", response_model=MemberSchema)

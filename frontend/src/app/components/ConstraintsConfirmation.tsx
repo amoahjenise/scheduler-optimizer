@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { createNurseAPI, NurseCreate } from "../lib/api";
 import { useUser } from "@clerk/nextjs";
+import { loadStaffingDefaults } from "./StaffRequirementsEditor";
 
 interface Nurse {
   id: string;
@@ -49,8 +50,8 @@ interface Props {
   onConfirm: (editedConstraints: Constraints) => void;
   onCancel: () => void;
   onEdit: () => void;
-  fullTimeWeeklyTarget?: number;
-  partTimeWeeklyTarget?: number;
+  fullTimeBiWeeklyTarget?: number;
+  partTimeBiWeeklyTarget?: number;
 }
 
 export default function ConstraintsConfirmation({
@@ -58,8 +59,8 @@ export default function ConstraintsConfirmation({
   onConfirm,
   onCancel,
   onEdit,
-  fullTimeWeeklyTarget = 37.5,
-  partTimeWeeklyTarget = 26.25,
+  fullTimeBiWeeklyTarget = 75,
+  partTimeBiWeeklyTarget = 63.75,
 }: Props) {
   const { user } = useUser();
 
@@ -109,6 +110,39 @@ export default function ConstraintsConfirmation({
   const [activeTab, setActiveTab] = useState<
     "overview" | "nurses" | "requirements"
   >("overview");
+
+  // Per-category staffing requirements (07, 15, 19, 23)
+  // Initialize from saved Settings page values (localStorage), falling back to defaults
+  const [staffingCategories, setStaffingCategories] = useState<
+    Record<string, number>
+  >(() => {
+    const saved = loadStaffingDefaults();
+    return {
+      "07": saved["07(G)"] ?? 5,
+      "15": saved["15(G)"] ?? 5,
+      "19": saved["19(G)"] ?? 4,
+      "23": saved["23(G)"] ?? 4,
+    };
+  });
+
+  const handleCategoryChange = (category: string, value: number) => {
+    const updated = { ...staffingCategories, [category]: value };
+    setStaffingCategories(updated);
+    // Sync back to constraints: day = min of day categories, night = min of night categories
+    const dayMin = Math.min(updated["07"] ?? 5, updated["15"] ?? 5);
+    const nightMin = Math.min(updated["19"] ?? 4, updated["23"] ?? 4);
+    setConstraints({
+      ...constraints,
+      shiftRequirements: {
+        ...constraints.shiftRequirements,
+        dayShift: { ...constraints.shiftRequirements.dayShift, count: dayMin },
+        nightShift: {
+          ...constraints.shiftRequirements.nightShift,
+          count: nightMin,
+        },
+      },
+    });
+  };
 
   const handleDayCountChange = (value: number) => {
     setConstraints({
@@ -174,7 +208,6 @@ export default function ConstraintsConfirmation({
           <div className="flex gap-4">
             {[
               { key: "overview", label: "Overview" },
-              { key: "requirements", label: "Shift Requirements" },
               { key: "nurses", label: `Nurses (${constraints.nurses.length})` },
             ].map((tab) => (
               <button
@@ -222,30 +255,79 @@ export default function ConstraintsConfirmation({
                 })()}
               </div>
 
-              {/* Summary */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-amber-50 rounded-lg p-4 border border-amber-200">
-                  <h3 className="font-semibold text-amber-900 mb-1">
-                    Day Shifts
-                  </h3>
-                  <p className="text-3xl font-bold text-amber-600">
-                    {constraints.shiftRequirements.dayShift.count}
-                  </p>
-                  <p className="text-sm text-amber-700 mt-1">
-                    minimum nurses per day
-                  </p>
+              {/* Minimum Staff Requirements - Per-Category Editable */}
+              <div className="bg-white rounded-lg p-4 border border-gray-200">
+                <h3 className="font-semibold text-gray-900 mb-3">
+                  👥 Staffing Requirements (minimum per shift)
+                </h3>
+                <div className="grid grid-cols-4 gap-3">
+                  {[
+                    {
+                      key: "07",
+                      label: "07:00",
+                      icon: "☀️",
+                      desc: "Day (07, Z07)",
+                      color: "amber",
+                    },
+                    {
+                      key: "15",
+                      label: "15:00",
+                      icon: "🌅",
+                      desc: "Eve (E15)",
+                      color: "orange",
+                    },
+                    {
+                      key: "19",
+                      label: "19:00",
+                      icon: "🌙",
+                      desc: "Night (Z19)",
+                      color: "indigo",
+                    },
+                    {
+                      key: "23",
+                      label: "23:00",
+                      icon: "🌑",
+                      desc: "Night (23, Z23)",
+                      color: "purple",
+                    },
+                  ].map(({ key, label, icon, desc, color }) => (
+                    <div
+                      key={key}
+                      className={`bg-${color}-50 rounded-lg p-3 border border-${color}-200`}
+                    >
+                      <p className="text-xs font-medium text-gray-600 mb-1">
+                        {icon} {label}
+                      </p>
+                      <input
+                        type="number"
+                        value={staffingCategories[key] ?? 5}
+                        onChange={(e) =>
+                          handleCategoryChange(
+                            key,
+                            parseInt(e.target.value) || 1,
+                          )
+                        }
+                        className={`w-full px-2 py-1.5 text-xl font-bold text-${color}-600 bg-white border border-${color}-300 rounded-lg focus:ring-2 focus:ring-${color}-500 text-center`}
+                        min={1}
+                      />
+                      <p className="text-xs text-gray-500 mt-1 text-center">
+                        {desc}
+                      </p>
+                    </div>
+                  ))}
                 </div>
-                <div className="bg-indigo-50 rounded-lg p-4 border border-indigo-200">
-                  <h3 className="font-semibold text-indigo-900 mb-1">
-                    Night Shifts
-                  </h3>
-                  <p className="text-3xl font-bold text-indigo-600">
-                    {constraints.shiftRequirements.nightShift.count}
-                  </p>
-                  <p className="text-sm text-indigo-700 mt-1">
-                    minimum nurses per night
-                  </p>
-                </div>
+                <p className="text-xs text-gray-400 mt-2">
+                  Day minimum:{" "}
+                  {Math.min(
+                    staffingCategories["07"] ?? 5,
+                    staffingCategories["15"] ?? 5,
+                  )}{" "}
+                  • Night minimum:{" "}
+                  {Math.min(
+                    staffingCategories["19"] ?? 4,
+                    staffingCategories["23"] ?? 4,
+                  )}
+                </p>
               </div>
 
               {/* Nurses Summary */}
@@ -314,109 +396,6 @@ export default function ConstraintsConfirmation({
             </div>
           )}
 
-          {activeTab === "requirements" && (
-            <div className="space-y-6">
-              {/* Day Shift Requirements */}
-              <div className="border border-amber-200 rounded-lg p-4">
-                <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                  ☀️ Day Shift Requirements
-                </h3>
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Minimum Nurses per Day
-                    </label>
-                    <input
-                      type="number"
-                      value={constraints.shiftRequirements.dayShift.count}
-                      onChange={(e) =>
-                        handleDayCountChange(parseInt(e.target.value))
-                      }
-                      className="w-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                      min={1}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Min. Chemo Certified
-                    </label>
-                    <p className="text-gray-600">
-                      {constraints.shiftRequirements.dayShift.minChemoCertified}
-                    </p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Valid Shift Codes
-                    </label>
-                    <div className="flex flex-wrap gap-2">
-                      {constraints.shiftRequirements.dayShift.shiftCodes.map(
-                        (code) => (
-                          <span
-                            key={code}
-                            className="px-2 py-1 bg-amber-100 text-amber-800 rounded text-xs font-mono"
-                          >
-                            {code}
-                          </span>
-                        ),
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Night Shift Requirements */}
-              <div className="border border-indigo-200 rounded-lg p-4">
-                <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                  🌙 Night Shift Requirements
-                </h3>
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Minimum Nurses per Night
-                    </label>
-                    <input
-                      type="number"
-                      value={constraints.shiftRequirements.nightShift.count}
-                      onChange={(e) =>
-                        handleNightCountChange(parseInt(e.target.value))
-                      }
-                      className="w-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                      min={1}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Min. Chemo Certified
-                    </label>
-                    <p className="text-gray-600">
-                      {
-                        constraints.shiftRequirements.nightShift
-                          .minChemoCertified
-                      }
-                    </p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Valid Shift Codes
-                    </label>
-                    <div className="flex flex-wrap gap-2">
-                      {constraints.shiftRequirements.nightShift.shiftCodes.map(
-                        (code) => (
-                          <span
-                            key={code}
-                            className="px-2 py-1 bg-indigo-100 text-indigo-800 rounded text-xs font-mono"
-                          >
-                            {code}
-                          </span>
-                        ),
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
           {activeTab === "nurses" && (
             <div className="space-y-3">
               {/* Save All to DB Button */}
@@ -449,16 +428,16 @@ export default function ConstraintsConfirmation({
                         const resolvedMaxWeeklyHours =
                           nurse.maxWeeklyHours ||
                           (employmentType === "part-time"
-                            ? partTimeWeeklyTarget
-                            : fullTimeWeeklyTarget);
+                            ? partTimeBiWeeklyTarget
+                            : fullTimeBiWeeklyTarget);
                         const resolvedTargetWeeklyHours =
                           employmentType === "part-time" &&
                           resolvedMaxWeeklyHours > 0 &&
-                          resolvedMaxWeeklyHours <= 30
+                          resolvedMaxWeeklyHours <= 60
                             ? resolvedMaxWeeklyHours
                             : employmentType === "part-time"
-                              ? partTimeWeeklyTarget
-                              : fullTimeWeeklyTarget;
+                              ? partTimeBiWeeklyTarget
+                              : fullTimeBiWeeklyTarget;
 
                         const nurseData: NurseCreate = {
                           name: nurse.name,
@@ -575,7 +554,7 @@ export default function ConstraintsConfirmation({
                           )}
                         </div>
                         <div className="mt-2 flex items-center gap-4 text-sm text-gray-600">
-                          <span>Max: {nurse.maxWeeklyHours}h/week</span>
+                          <span>Max: {nurse.maxWeeklyHours}h/2wk</span>
                           {nurse.offRequests &&
                             nurse.offRequests.length > 0 && (
                               <span className="text-orange-600">
@@ -662,21 +641,23 @@ export default function ConstraintsConfirmation({
                                 // Auto-populate maxWeeklyHours when changing to part-time
                                 if (
                                   e.target.value === "part-time" &&
-                                  nurse.maxWeeklyHours === fullTimeWeeklyTarget
+                                  nurse.maxWeeklyHours ===
+                                    fullTimeBiWeeklyTarget
                                 ) {
                                   handleNurseUpdate(
                                     idx,
                                     "maxWeeklyHours",
-                                    partTimeWeeklyTarget,
+                                    partTimeBiWeeklyTarget,
                                   );
                                 } else if (
                                   e.target.value === "full-time" &&
-                                  nurse.maxWeeklyHours === partTimeWeeklyTarget
+                                  nurse.maxWeeklyHours ===
+                                    partTimeBiWeeklyTarget
                                 ) {
                                   handleNurseUpdate(
                                     idx,
                                     "maxWeeklyHours",
-                                    fullTimeWeeklyTarget,
+                                    fullTimeBiWeeklyTarget,
                                   );
                                 }
                               }}

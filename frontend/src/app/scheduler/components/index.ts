@@ -12,5 +12,5 @@ export { TimeOffRequestManager } from "./TimeOffRequestManager";
 export { BalancingShiftsPanel } from "./BalancingShiftsPanel";
 export { ShiftTemplateManager } from "./ShiftTemplateManager";
 
-// Export types
-export type { ShiftCode } from "./ShiftCodesReference";
+// Export types from the central types file
+export type { ShiftCode } from "../types";

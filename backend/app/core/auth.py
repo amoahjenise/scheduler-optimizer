@@ -171,6 +171,12 @@ def get_org_required_auth(
             detail="Your membership in this organization is inactive"
         )
     
+    if not auth.membership.is_approved:
+        raise HTTPException(
+            status_code=403,
+            detail="Your membership is pending admin approval"
+        )
+    
     return auth
 
 

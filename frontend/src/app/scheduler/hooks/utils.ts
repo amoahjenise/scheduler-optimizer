@@ -1,5 +1,130 @@
 // Scheduler utility functions
-import { ShiftEntry, OCRWarning, SHIFT_CODES } from "../types";
+import {
+  ShiftEntry,
+  GridRow,
+  OCRWarning,
+  SHIFT_CODES,
+  NIGHT_DEDUP_PAIRS,
+} from "../types";
+
+/**
+ * Deduplicate wrap-around night shifts.
+ *
+ * Hospital schedules show overnight shifts across two calendar-day columns.
+ * Only a plain Z23 (without "B") on day N+1 is a ghost/tail:
+ *   Day N: Z19 / Z23 / Z23 B  →  Day N+1: Z23 (ghost — zero it out)
+ * A Z23 B on day N+1 is always a REAL consecutive overnight shift:
+ *   Day N: Z23 B  →  Day N+1: Z23 B (new shift — keep it)
+ *
+ * Example: Z19, Z23 B, Z23 B, Z23 → 3 real shifts + 1 ghost (last Z23)
+ *
+ * The shifts array MUST be sorted by date before calling this function.
+ */
+export function deduplicateNightShifts(shifts: ShiftEntry[]): ShiftEntry[] {
+  if (shifts.length < 2) return shifts;
+
+  // Work on a shallow copy so we don't mutate the original
+  const result = shifts.map((s) => ({ ...s }));
+
+  for (let i = 1; i < result.length; i++) {
+    const prev = result[i - 1];
+    const curr = result[i];
+
+    // Skip empty entries
+    if (!prev.shift || !curr.shift) continue;
+
+    const prevCode = prev.shift
+      .replace(/\s*\*\s*$/, "")
+      .trim()
+      .toUpperCase();
+    const currCode = curr.shift
+      .replace(/\s*\*\s*$/, "")
+      .trim()
+      .toUpperCase();
+
+    // Check consecutive dates (day N → day N+1)
+    const prevDate = new Date(prev.date + "T00:00:00");
+    const currDate = new Date(curr.date + "T00:00:00");
+    const diffMs = currDate.getTime() - prevDate.getTime();
+    const isConsecutive = diffMs === 86400000; // exactly 1 day
+
+    if (!isConsecutive) continue;
+
+    // If (prevCode → currCode) is a known night dedup pair,
+    // curr is the wrap-around continuation — zero it out.
+    const validTails = NIGHT_DEDUP_PAIRS[prevCode];
+    if (validTails && validTails.has(currCode)) {
+      // Ensure the start shift carries the full block hours (11.25h)
+      const startShiftDef = SHIFT_CODES.find(
+        (s) => s.code.toUpperCase() === prevCode,
+      );
+      if (startShiftDef) {
+        result[i - 1].hours = startShiftDef.hours; // 11.25
+      }
+
+      // Zero out the tail — it's not a separate shift
+      result[i] = {
+        ...result[i],
+        hours: 0,
+        shiftType: "night",
+        startTime: "",
+        endTime: "",
+        // Keep the original shift text for display (add visual marker)
+        shift: result[i].shift + " ↩",
+      };
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Apply night-shift ghost dedup to every row in a grid.
+ * Convenience wrapper so every code path that sets ocrGrid can just call
+ * `deduplicateGridGhosts(rows)` instead of manually iterating.
+ *
+ * Also removes duplicate nurse rows (same nurse name appearing multiple times).
+ */
+export function deduplicateGridGhosts(rows: GridRow[]): GridRow[] {
+  // First, deduplicate rows by nurse name (case-insensitive)
+  // If two rows have the same nurse name, merge their shifts (prefer non-empty shifts)
+  const seenNurses = new Map<string, GridRow>();
+
+  for (const row of rows) {
+    const normalizedName = row.nurse.toLowerCase().trim();
+    const existing = seenNurses.get(normalizedName);
+
+    if (!existing) {
+      seenNurses.set(normalizedName, row);
+    } else {
+      // Merge shifts - prefer non-empty shifts from either row
+      const mergedShifts = existing.shifts.map((shift, idx) => {
+        const otherShift = row.shifts[idx];
+        if (!otherShift) return shift;
+        // If existing shift is empty but other has data, use other
+        if (
+          (!shift.shift || shift.hours === 0) &&
+          otherShift.shift &&
+          otherShift.hours > 0
+        ) {
+          return otherShift;
+        }
+        return shift;
+      });
+      seenNurses.set(normalizedName, { ...existing, shifts: mergedShifts });
+    }
+  }
+
+  const uniqueRows = Array.from(seenNurses.values());
+
+  // Then apply night-shift ghost deduplication to each row
+  return uniqueRows.map((row) => ({
+    ...row,
+    shifts: deduplicateNightShifts(
+      [...row.shifts].sort((a, b) => a.date.localeCompare(b.date)),
+    ),
+  }));
+}
 
 /**
  * Parse a shift code string into a ShiftEntry object
@@ -7,10 +132,19 @@ import { ShiftEntry, OCRWarning, SHIFT_CODES } from "../types";
 export function parseShiftCode(shiftCode: string, date: string): ShiftEntry {
   const code = shiftCode.trim().toUpperCase();
 
-  // Find matching shift code from our reference
-  const matchedShift = SHIFT_CODES.find(
-    (s) => s.code.toUpperCase() === code || code.includes(s.code.toUpperCase()),
-  );
+  // Find matching shift code from our reference.
+  // IMPORTANT: Try exact match first, then fall back to substring matching
+  // with longest-code-first ordering.  This prevents "Z07" from matching the
+  // shorter "07" code (7.5h) instead of the correct "Z07" (11.25h).
+  const exactMatch = SHIFT_CODES.find((s) => s.code.toUpperCase() === code);
+  // For substring matching, sort candidates by code length DESC so longer
+  // codes (Z07, Z23 B) are tested before shorter ones (07, 23).
+  const substringMatch = !exactMatch
+    ? [...SHIFT_CODES]
+        .sort((a, b) => b.code.length - a.code.length)
+        .find((s) => code.includes(s.code.toUpperCase()))
+    : undefined;
+  const matchedShift = exactMatch || substringMatch;
 
   if (matchedShift) {
     return {
@@ -422,6 +556,16 @@ export function findBestNurseMatch(
         if (nursePart.toLowerCase() === ocrLower) {
           score = Math.max(score, 0.92); // Very high score for exact match of a name part
         }
+        // OCR truncation: Check if OCR name matches the END of a DB name part
+        // e.g., "Omi" matching end of "Naomi", "Zabeth" matching end of "Elizabeth"
+        else if (
+          nursePart.toLowerCase().endsWith(ocrLower) &&
+          ocrLower.length >= 3
+        ) {
+          // Strong match if it's a suffix - common OCR error
+          const suffixRatio = ocrLower.length / nursePart.length;
+          score = Math.max(score, 0.75 + suffixRatio * 0.15);
+        }
         // Partial match - OCR name is contained within a name part
         // e.g., "Imoya" in "Shimoya"
         else if (
@@ -482,17 +626,55 @@ export function findBestNurseMatch(
     // e.g., "Trong Khoi" should match "Trong Khoi Tran"
     if (ocrParts.length >= 2) {
       let matchedParts = 0;
+      let totalPartScore = 0;
       for (const ocrPart of ocrParts) {
+        let bestPartMatch = 0;
         for (const nursePart of nurseParts) {
-          if (calculateSimilarity(ocrPart, nursePart) >= 0.85) {
+          const partSimilarity = calculateSimilarity(ocrPart, nursePart);
+          bestPartMatch = Math.max(bestPartMatch, partSimilarity);
+          // Lower threshold to catch OCR variations like "Asmine" vs "Jasmine"
+          if (partSimilarity >= 0.7) {
             matchedParts++;
+            totalPartScore += partSimilarity;
             break;
           }
         }
+        // Even if not matched above threshold, add the best score
+        if (bestPartMatch < 0.7) {
+          totalPartScore += bestPartMatch;
+        }
       }
       const partMatchRatio = matchedParts / ocrParts.length;
-      if (partMatchRatio >= 0.8) {
-        score = Math.max(score, 0.85 + partMatchRatio * 0.1);
+      if (partMatchRatio >= 0.6) {
+        // Lower threshold from 0.8 to 0.6 to catch partial matches
+        const avgScore = totalPartScore / ocrParts.length;
+        score = Math.max(score, 0.75 + avgScore * 0.15);
+      }
+    }
+
+    // Special case: Check first name similarity with suffix matching
+    // Handles cases like "Heila" vs "Sheila", "Omi" vs "Naomi"
+    if (ocrParts.length >= 1 && nurseParts.length >= 1) {
+      const ocrFirst = ocrParts[0].toLowerCase();
+      const dbFirst = nurseParts[0].toLowerCase();
+
+      // Check if OCR first name is a suffix of DB first name (truncated start)
+      if (dbFirst.endsWith(ocrFirst) && ocrFirst.length >= 3) {
+        const suffixRatio = ocrFirst.length / dbFirst.length;
+        const baseScore = 0.7 + suffixRatio * 0.2;
+
+        // If last names also match well, boost the score significantly
+        if (ocrParts.length >= 2 && nurseParts.length >= 2) {
+          const lastScore = calculateSimilarity(
+            ocrParts[ocrParts.length - 1],
+            nurseParts[nurseParts.length - 1],
+          );
+          if (lastScore >= 0.7) {
+            score = Math.max(score, baseScore + lastScore * 0.2);
+          }
+        } else {
+          score = Math.max(score, baseScore);
+        }
       }
     }
 
@@ -533,6 +715,14 @@ export function getPotentialMatches<
     .split(/\s+/)
     .filter((p) => p.length > 0);
 
+  console.log(
+    `[getPotentialMatches] Matching OCR name: "${ocrName}" -> cleaned: "${cleanedOcrName}"`,
+  );
+  console.log(`[getPotentialMatches] OCR parts:`, ocrParts);
+  console.log(
+    `[getPotentialMatches] Checking against ${existingNurses.length} nurses`,
+  );
+
   for (const nurse of existingNurses) {
     let score = 0;
     const cleanedDbName = cleanNurseName(nurse.name);
@@ -547,28 +737,159 @@ export function getPotentialMatches<
       cleanedDbName.toLowerCase(),
     );
 
-    // Check individual name parts
-    if (ocrParts.length > 0 && nurseParts.length > 0) {
-      let matchedParts = 0;
-      for (const ocrPart of ocrParts) {
-        for (const nursePart of nurseParts) {
-          if (calculateSimilarity(ocrPart, nursePart) >= 0.8) {
-            matchedParts++;
-            break;
+    const debugScores: string[] = [`base=${score.toFixed(3)}`];
+
+    // ENHANCED: Single word OCR name matching
+    if (ocrParts.length === 1) {
+      const ocrLower = ocrParts[0];
+      for (const nursePart of nurseParts) {
+        const nursePartLower = nursePart.toLowerCase();
+
+        // Exact match with any name part
+        if (nursePartLower === ocrLower) {
+          score = Math.max(score, 0.92);
+          debugScores.push(`exact=0.92`);
+        }
+        // OCR truncation: Check if OCR name matches the END of a DB name part
+        else if (nursePartLower.endsWith(ocrLower) && ocrLower.length >= 3) {
+          const suffixRatio = ocrLower.length / nursePartLower.length;
+          const suffixScore = 0.75 + suffixRatio * 0.15;
+          score = Math.max(score, suffixScore);
+          debugScores.push(`suffix(${nursePart})=${suffixScore.toFixed(3)}`);
+        }
+        // Partial containment
+        else if (nursePartLower.includes(ocrLower) && ocrLower.length >= 3) {
+          const containmentScore = ocrLower.length / nursePartLower.length;
+          const contScore = 0.8 + containmentScore * 0.1;
+          score = Math.max(score, contScore);
+          debugScores.push(`contains=${contScore.toFixed(3)}`);
+        }
+        // Fuzzy match on individual parts
+        else {
+          const partScore = calculateSimilarity(ocrLower, nursePartLower);
+          if (partScore >= 0.7) {
+            const fuzzyScore = partScore * 0.95;
+            score = Math.max(score, fuzzyScore);
+            debugScores.push(`fuzzy(${nursePart})=${fuzzyScore.toFixed(3)}`);
           }
         }
       }
+    }
+
+    // Check individual name parts with LOWER threshold
+    if (ocrParts.length > 0 && nurseParts.length > 0) {
+      let matchedParts = 0;
+      let totalPartScore = 0;
+      for (const ocrPart of ocrParts) {
+        let bestPartMatch = 0;
+        for (const nursePart of nurseParts) {
+          const partSim = calculateSimilarity(ocrPart, nursePart);
+          bestPartMatch = Math.max(bestPartMatch, partSim);
+          // Lower threshold to 0.7 to catch OCR variations
+          if (partSim >= 0.7) {
+            matchedParts++;
+            totalPartScore += partSim;
+            break;
+          }
+        }
+        if (bestPartMatch < 0.7) {
+          totalPartScore += bestPartMatch;
+        }
+      }
       const partMatchRatio = matchedParts / ocrParts.length;
-      if (partMatchRatio > 0.5) {
-        score = Math.max(score, 0.5 + partMatchRatio * 0.4);
+      if (partMatchRatio >= 0.6) {
+        const avgScore = totalPartScore / ocrParts.length;
+        const multiScore = 0.75 + avgScore * 0.15;
+        score = Math.max(score, multiScore);
+        debugScores.push(
+          `multiPart(${matchedParts}/${ocrParts.length})=${multiScore.toFixed(3)}`,
+        );
+      } else if (partMatchRatio > 0) {
+        // Even partial matches should contribute
+        const avgScore = totalPartScore / ocrParts.length;
+        const partialScore = avgScore * 0.9;
+        score = Math.max(score, partialScore);
+        debugScores.push(`partial=${partialScore.toFixed(3)}`);
       }
     }
 
-    // Check first names match
+    // Check first name with suffix matching
     if (ocrParts.length >= 1 && nurseParts.length >= 1) {
-      const firstNameScore = calculateSimilarity(ocrParts[0], nurseParts[0]);
-      if (firstNameScore >= 0.8) {
-        score = Math.max(score, firstNameScore * 0.7);
+      const ocrFirst = ocrParts[0];
+      const dbFirst = nurseParts[0].toLowerCase();
+
+      // Check if OCR first name is a suffix of DB first name
+      // This catches OCR truncations like "Arianna" vs "Marianna" (missing leading "M")
+      if (dbFirst.endsWith(ocrFirst) && ocrFirst.length >= 3) {
+        const suffixRatio = ocrFirst.length / dbFirst.length;
+        const baseScore = 0.7 + suffixRatio * 0.2;
+
+        // If last names also match well, boost significantly
+        if (ocrParts.length >= 2 && nurseParts.length >= 2) {
+          const lastScore = calculateSimilarity(
+            ocrParts[ocrParts.length - 1],
+            nurseParts[nurseParts.length - 1],
+          );
+          if (lastScore >= 0.7) {
+            const comboScore = baseScore + lastScore * 0.2;
+            score = Math.max(score, comboScore);
+            debugScores.push(`firstSuffix+last=${comboScore.toFixed(3)}`);
+          }
+        } else {
+          score = Math.max(score, baseScore);
+          debugScores.push(`firstSuffix=${baseScore.toFixed(3)}`);
+        }
+      }
+
+      // NEW: Check if OCR first name differs by only 1-2 leading chars from DB first name
+      // This catches cases like "Arianna" (OCR) vs "Marianna" (DB) where leading char is mangled/dropped
+      if (ocrFirst.length >= 4 && dbFirst.length >= 4) {
+        // Check if removing 1 or 2 chars from start of dbFirst gives ocrFirst
+        const db1 = dbFirst.slice(1); // "arianna" from "marianna"
+        const db2 = dbFirst.slice(2); // "rianna" from "marianna"
+        if (db1 === ocrFirst || db2 === ocrFirst) {
+          // OCR truncated first chars of first name
+          if (ocrParts.length >= 2 && nurseParts.length >= 2) {
+            const lastScore = calculateSimilarity(
+              ocrParts[ocrParts.length - 1],
+              nurseParts[nurseParts.length - 1],
+            );
+            if (lastScore >= 0.7) {
+              const truncScore = 0.85 + lastScore * 0.1;
+              score = Math.max(score, truncScore);
+              debugScores.push(`truncFirst+last=${truncScore.toFixed(3)}`);
+            }
+          } else {
+            score = Math.max(score, 0.82);
+            debugScores.push(`truncFirst=0.82`);
+          }
+        }
+        // Also check if ocrFirst is similar to dbFirst but with leading char mismatch
+        // e.g., "Arianna" vs "Marianna" - suffix "rianna" matches
+        const ocrSuffix = ocrFirst.slice(1); // "rianna" from "arianna"
+        if (ocrSuffix.length >= 4 && dbFirst.includes(ocrSuffix)) {
+          if (ocrParts.length >= 2 && nurseParts.length >= 2) {
+            const lastScore = calculateSimilarity(
+              ocrParts[ocrParts.length - 1],
+              nurseParts[nurseParts.length - 1],
+            );
+            if (lastScore >= 0.7) {
+              const suffixMatchScore = 0.8 + lastScore * 0.15;
+              score = Math.max(score, suffixMatchScore);
+              debugScores.push(
+                `innerSuffix+last=${suffixMatchScore.toFixed(3)}`,
+              );
+            }
+          }
+        }
+      }
+
+      // Also check standard first name matching
+      const firstNameScore = calculateSimilarity(ocrFirst, dbFirst);
+      if (firstNameScore >= 0.7) {
+        const firstScore = firstNameScore * 0.8;
+        score = Math.max(score, firstScore);
+        debugScores.push(`firstName=${firstScore.toFixed(3)}`);
       }
     }
 
@@ -576,10 +897,19 @@ export function getPotentialMatches<
     const { employeeId } = extractNurseMetadata(ocrName);
     if (employeeId && nurse.employee_id === employeeId) {
       score = Math.max(score, 0.95);
+      debugScores.push(`empId=0.95`);
     }
 
     if (score >= minThreshold) {
+      console.log(
+        `  ✓ "${nurse.name}" score=${score.toFixed(3)} [${debugScores.join(", ")}]`,
+      );
       matches.push({ nurse, score });
+    } else if (score >= 0.3) {
+      // Log near-misses for debugging
+      console.log(
+        `  ✗ "${nurse.name}" score=${score.toFixed(3)} (below ${minThreshold}) [${debugScores.join(", ")}]`,
+      );
     }
   }
 

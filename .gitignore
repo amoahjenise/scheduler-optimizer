@@ -48,3 +48,11 @@ yarn-error.log*
 next-env.d.ts
 __pycache__/
 *.pyc
+.git-backups/
+*.egg-info/
+backend/uploads/
+backend/db_backup_*.sql
+backend/*.sql
+.venv/
+venv/
+*.venv

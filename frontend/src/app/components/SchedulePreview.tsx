@@ -28,10 +28,11 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 
-// Shift codes for the hospital schedule
+// Standard hospital shift codes - only actual shift codes used on schedules
+// (not internal time slots like D, E, N which are categories, not actual codes)
 const SHIFT_CODES = [
   {
-    code: "D8-",
+    code: "07",
     label: "Day 8hr",
     type: "day" as const,
     hours: 7.5,
@@ -39,47 +40,7 @@ const SHIFT_CODES = [
     end: "15:15",
   },
   {
-    code: "ZD8-",
-    label: "Day 8hr",
-    type: "day" as const,
-    hours: 7.5,
-    start: "07:00",
-    end: "15:15",
-  },
-  {
-    code: "E8-",
-    label: "Evening 8hr",
-    type: "day" as const,
-    hours: 7.5,
-    start: "15:00",
-    end: "23:15",
-  },
-  {
-    code: "N8-",
-    label: "Night 8hr",
-    type: "night" as const,
-    hours: 7.5,
-    start: "23:00",
-    end: "07:15",
-  },
-  {
-    code: "ZN8-",
-    label: "Night 8hr",
-    type: "night" as const,
-    hours: 7.5,
-    start: "23:00",
-    end: "07:00",
-  },
-  {
-    code: "N8+ZE2-",
-    label: "Night+Eve 12hr",
-    type: "night" as const,
-    hours: 11.25,
-    start: "23:00",
-    end: "07:15",
-  },
-  {
-    code: "ZD12-",
+    code: "Z07",
     label: "Day 12hr",
     type: "day" as const,
     hours: 11.25,
@@ -87,28 +48,12 @@ const SHIFT_CODES = [
     end: "19:25",
   },
   {
-    code: "ZE2-",
-    label: "Evening 4hr",
-    type: "night" as const,
-    hours: 3.75,
-    start: "19:00",
-    end: "23:00",
-  },
-  {
-    code: "ZN-",
-    label: "Night 12hr",
-    type: "night" as const,
-    hours: 11.25,
-    start: "19:00",
-    end: "07:00",
-  },
-  {
-    code: "ZN+ZE2-",
-    label: "Night+Eve 12hr+",
-    type: "night" as const,
-    hours: 11.25,
-    start: "23:00",
-    end: "07:25",
+    code: "11",
+    label: "Mid 8hr",
+    type: "day" as const,
+    hours: 7.5,
+    start: "11:00",
+    end: "19:15",
   },
   {
     code: "Z11",
@@ -119,14 +64,181 @@ const SHIFT_CODES = [
     end: "23:25",
   },
   {
-    code: "11",
-    label: "Mid 8hr",
+    code: "E15",
+    label: "Evening 8hr",
     type: "day" as const,
     hours: 7.5,
-    start: "11:00",
-    end: "19:15",
+    start: "15:00",
+    end: "23:15",
+  },
+  {
+    code: "23",
+    label: "Night 8hr",
+    type: "night" as const,
+    hours: 7.5,
+    start: "23:00",
+    end: "07:15",
+  },
+  {
+    code: "Z19",
+    label: "Night 12hr",
+    type: "night" as const,
+    hours: 11.25,
+    start: "19:00",
+    end: "07:25",
+  },
+  {
+    code: "Z23",
+    label: "Night 12hr",
+    type: "night" as const,
+    hours: 11.25,
+    start: "23:00",
+    end: "11:25",
+  },
+  {
+    code: "Z23 B",
+    label: "Night 12hr Balance",
+    type: "night" as const,
+    hours: 11.25,
+    start: "23:00",
+    end: "11:25",
   },
 ];
+
+// Off-day and holiday codes (CF = Congé Férié)
+const OFF_CODES = [
+  {
+    code: "C",
+    label: "Congé (Off)",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "OFF",
+    label: "Off Day",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF",
+    label: "Congé Férié (Holiday)",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF-1",
+    label: "Canada Day",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF-2",
+    label: "Labour Day",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF-3",
+    label: "Thanksgiving",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF-4",
+    label: "Christmas Day",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF-5",
+    label: "Boxing Day",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF-6",
+    label: "New Year's Day",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF-7",
+    label: "Day after New Year's",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF-8",
+    label: "Good Friday",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF-9",
+    label: "Victoria Day",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF-10",
+    label: "Fête Nationale",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF-11",
+    label: "Easter Monday",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF-12",
+    label: "Mobile Holiday 1",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+  {
+    code: "CF-13",
+    label: "Mobile Holiday 2",
+    type: "off" as const,
+    hours: 0,
+    start: "",
+    end: "",
+  },
+];
+
+// Combined list for dropdowns
+const ALL_CODES = [...SHIFT_CODES, ...OFF_CODES];
 
 interface SchedulePreviewProps {
   ocrGrid: { nurse: string; shifts: ShiftEntry[] }[];
@@ -138,13 +250,14 @@ interface SchedulePreviewProps {
     maxHours?: number;
   }[];
   onChange?: (updatedGrid: { nurse: string; shifts: ShiftEntry[] }[]) => void;
+  onAsteriskDetected?: (nurse: string, date: string) => void;
 }
 
 interface ShiftEntry {
   // id: UUID
   date: string;
   shift: string;
-  shiftType: "day" | "night" | "combined";
+  shiftType: "day" | "night" | "combined" | "off";
   hours: number;
   startTime: string;
   endTime: string;
@@ -186,7 +299,26 @@ function createShiftMapFromGrid(
         map.set(shiftEntry.date, []);
       }
 
-      map.get(shiftEntry.date)!.push({ nurse, shiftEntry: { ...shiftEntry } });
+      // Correct stored hours using the authoritative SHIFT_CODES table.
+      // Previously, parseShiftCode had a substring bug that stored wrong
+      // hours (e.g. Z07 → 7.5h instead of 11.25h, Z23 B → 7.5h instead of
+      // 11.25h).  Re-validate on load so the calendar displays correct hours.
+      const corrected = { ...shiftEntry };
+      if (corrected.shift) {
+        const code = corrected.shift
+          .replace(/\s*\*\s*$/, "")
+          .trim()
+          .toUpperCase();
+        const def = SHIFT_CODES.find((s) => s.code.toUpperCase() === code);
+        if (def) {
+          corrected.hours = def.hours;
+          corrected.startTime = def.start;
+          corrected.endTime = def.end;
+          corrected.shiftType = def.type;
+        }
+      }
+
+      map.get(shiftEntry.date)!.push({ nurse, shiftEntry: corrected });
     });
   });
 
@@ -194,9 +326,17 @@ function createShiftMapFromGrid(
 }
 
 const shiftColor = (shiftType: string, shift?: string) => {
-  // Special styling for OFF days
-  if (!shift || shift === "OFF" || shift === "" || shift === "c") {
-    return "bg-gray-100 text-gray-400 border-dashed border-gray-300";
+  // Special styling for OFF days and holiday codes
+  const upperShift = shift?.toUpperCase() || "";
+  if (
+    !shift ||
+    shift === "" ||
+    upperShift === "OFF" ||
+    upperShift === "C" ||
+    upperShift.startsWith("CF") ||
+    shiftType === "off"
+  ) {
+    return "bg-gray-100 text-gray-500 border-dashed border-gray-300";
   }
 
   switch (shiftType) {
@@ -213,30 +353,46 @@ const shiftColor = (shiftType: string, shift?: string) => {
 
 function getShiftTimes(
   shift: string,
-  shiftType: "day" | "night" | "combined",
+  shiftType: "day" | "night" | "combined" | "off",
 ): { startTime: string; endTime: string } {
-  const mapping: Record<string, { startTime: string; endTime: string }> = {
-    "07": { startTime: "07:00", endTime: "15:00" },
-    Z07: { startTime: "07:00", endTime: "19:00" },
-    Z19: { startTime: "19:00", endTime: "07:00" },
-    Z23: { startTime: "23:00", endTime: "07:00" },
-    "Z23 B": { startTime: "19:00", endTime: "07:00" },
-  };
-  return (
-    mapping[shift] || {
-      startTime: shiftType === "day" ? "07:00" : "19:00",
-      endTime: shiftType === "day" ? "19:00" : "07:00",
-    }
+  // Look up shift times from the authoritative SHIFT_CODES array.
+  // This avoids the old bug where only 5 codes were mapped and everything
+  // else (11, Z11, E15, D8-, N8-, etc.) defaulted to 07:00–19:00.
+  const code = shift.replace(/\s*\*\s*$/, "").trim();
+  const def = SHIFT_CODES.find(
+    (s) => s.code.toUpperCase() === code.toUpperCase(),
   );
+  if (def) {
+    return { startTime: def.start, endTime: def.end };
+  }
+
+  // For CF- (congé/formation) combo codes like "CF-4 07", try the
+  // trailing base code after the last space.
+  const parts = code.split(/\s+/);
+  if (parts.length > 1) {
+    const baseCode = parts[parts.length - 1];
+    const baseDef = SHIFT_CODES.find(
+      (s) => s.code.toUpperCase() === baseCode.toUpperCase(),
+    );
+    if (baseDef) {
+      return { startTime: baseDef.start, endTime: baseDef.end };
+    }
+  }
+
+  // Fallback for completely unknown codes
+  return {
+    startTime: shiftType === "day" ? "07:00" : "19:00",
+    endTime: shiftType === "day" ? "19:00" : "07:00",
+  };
 }
 
-function makeId(nurse: string, shiftEntry: ShiftEntry) {
-  return `${nurse}|${shiftEntry.date}|${shiftEntry.shift}`;
+function makeId(nurse: string, shiftEntry: ShiftEntry, index: number) {
+  return `${nurse}|${shiftEntry.date}|${shiftEntry.shift}|${index}`;
 }
 
 function parseId(id: string) {
-  const [nurse, date, shift] = id.split("|");
-  return { nurse, date, shift };
+  const parts = id.split("|");
+  return { nurse: parts[0], date: parts[1], shift: parts[2] };
 }
 
 function DraggableShift({
@@ -263,9 +419,12 @@ function DraggableShift({
     id,
   });
   const isOff =
-    !shiftEntry.shift || shiftEntry.shift === "OFF" || shiftEntry.hours === 0;
+    !shiftEntry.shift ||
+    shiftEntry.shift === "OFF" ||
+    shiftEntry.shiftType === "off" ||
+    shiftEntry.hours === 0;
 
-  // Build tooltip content
+  // Build tooltip content (details shown on hover only)
   const tooltipLines = [nurse];
   if (nurseMetadata) {
     if (nurseMetadata.employmentType) {
@@ -282,13 +441,18 @@ function DraggableShift({
   }
   if (!isOff) {
     tooltipLines.push(`Shift: ${shiftEntry.shift} (${shiftEntry.hours}h)`);
-    tooltipLines.push(`Time: ${shiftEntry.startTime} - ${shiftEntry.endTime}`);
+    tooltipLines.push(`Time: ${shiftEntry.startTime} – ${shiftEntry.endTime}`);
+  } else {
+    const offDef = OFF_CODES.find(
+      (o) => o.code.toUpperCase() === (shiftEntry.shift || "").toUpperCase(),
+    );
+    if (offDef) tooltipLines.push(offDef.label);
   }
 
-  const shiftOptions = SHIFT_CODES.some(
+  const shiftOptions = ALL_CODES.some(
     (option) => option.code === shiftEntry.shift,
   )
-    ? SHIFT_CODES
+    ? ALL_CODES
     : [
         {
           code: shiftEntry.shift,
@@ -299,70 +463,87 @@ function DraggableShift({
           start: shiftEntry.startTime,
           end: shiftEntry.endTime,
         },
-        ...SHIFT_CODES,
+        ...ALL_CODES,
       ];
+
+  // Abbreviated first name for compact display
+  const nameParts = nurse.split(" ");
+  const shortName =
+    nameParts.length > 1
+      ? `${nameParts[0]} ${nameParts[nameParts.length - 1][0]}.`
+      : nurse;
 
   return (
     <div
       ref={setNodeRef}
       {...listeners}
       {...attributes}
-      className={`text-xs px-2.5 py-1.5 rounded-lg font-medium border cursor-move flex items-center justify-between gap-2 transition-all hover:shadow-md ${shiftColor(
+      className={`group text-xs px-1.5 py-0.5 rounded-md font-medium border cursor-move flex items-center gap-1 transition-all hover:shadow-md ${shiftColor(
         shiftEntry.shiftType,
         shiftEntry.shift,
       )} ${isDragging ? "opacity-50 scale-105" : ""}`}
       title={tooltipLines.join("\n")}
     >
-      <div className="flex flex-col min-w-0">
-        <span className="font-semibold truncate flex items-center gap-1">
-          {nurse}
-          {nurseMetadata?.isChemoCertified && (
-            <span className="text-[8px]">💉</span>
-          )}
-        </span>
-        {!isOff && (
-          <div className="flex flex-col gap-0.5">
-            <select
-              value={shiftEntry.shift}
-              onChange={(e) => onUpdateShift(e.target.value)}
-              onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
-              onTouchStart={(e) => e.stopPropagation()}
-              className="text-[10px] opacity-75 font-semibold bg-white/70 border border-transparent rounded px-1 -ml-1 max-w-[110px] focus:outline-none focus:ring-1 focus:ring-blue-400"
-              aria-label={`Change shift code for ${nurse}`}
-            >
-              {shiftOptions.map((option) => (
-                <option key={option.code} value={option.code}>
-                  {option.code}
-                </option>
-              ))}
-            </select>
-            <span className="text-[9px] opacity-60">
-              {shiftEntry.startTime}–{shiftEntry.endTime} • {shiftEntry.hours}h
-            </span>
-            {shiftEntry.shift.includes(" B") && (
-              <span className="text-[8px] opacity-70 italic text-purple-700">
-                ↩ Back at 19:00
-              </span>
-            )}
-          </div>
+      {/* Name — truncated, compact */}
+      <span className="font-semibold truncate text-[11px] leading-tight flex-1 min-w-0">
+        {shortName}
+        {nurseMetadata?.isChemoCertified && (
+          <span className="text-[7px] ml-0.5">💉</span>
         )}
-        {isOff && <span className="text-[10px] opacity-50 italic">Off</span>}
-      </div>
-      {!isOff && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          title="Delete"
-          type="button"
-          className="focus:outline-none opacity-50 hover:opacity-100 transition-opacity"
-        >
-          <Trash2 className="w-3.5 h-3.5 text-red-500 hover:text-red-600" />
-        </button>
-      )}
+      </span>
+
+      {/* Shift dropdown — always visible, compact */}
+      <select
+        value={shiftEntry.shift || "OFF"}
+        onChange={(e) => onUpdateShift(e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+        className="text-[9px] font-semibold bg-white/60 border-0 rounded px-0.5 py-0 w-[32px] shrink-0 focus:outline-none focus:ring-1 focus:ring-blue-400 appearance-none cursor-pointer"
+        aria-label={`Change shift code for ${nurse}`}
+      >
+        <optgroup label="Day Shifts">
+          {shiftOptions
+            .filter((o) => o.type === "day")
+            .map((option) => (
+              <option key={option.code} value={option.code}>
+                {option.code}
+              </option>
+            ))}
+        </optgroup>
+        <optgroup label="Night Shifts">
+          {shiftOptions
+            .filter((o) => o.type === "night")
+            .map((option) => (
+              <option key={option.code} value={option.code}>
+                {option.code}
+              </option>
+            ))}
+        </optgroup>
+        <optgroup label="Off / Holiday">
+          {shiftOptions
+            .filter((o) => o.type === "off")
+            .map((option) => (
+              <option key={option.code} value={option.code}>
+                {option.code} – {option.label}
+              </option>
+            ))}
+        </optgroup>
+      </select>
+
+      {/* Delete — visible on hover only */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+        title="Delete"
+        type="button"
+        className="focus:outline-none opacity-0 group-hover:opacity-70 hover:!opacity-100 transition-opacity flex-shrink-0"
+      >
+        <Trash2 className="w-3 h-3 text-red-500" />
+      </button>
     </div>
   );
 }
@@ -386,7 +567,7 @@ function DroppableDay({
   onAddShift: (
     date: string,
     nurse: string,
-    shiftCode: (typeof SHIFT_CODES)[0],
+    shiftCode: (typeof ALL_CODES)[0],
   ) => void;
   availableNurses: string[];
   getNurseMetadata: (name: string) =>
@@ -401,12 +582,38 @@ function DroppableDay({
   const { setNodeRef } = useDroppable({ id: date });
   const parsedDate = parseISO(date);
   const isWeekend = parsedDate.getDay() === 0 || parsedDate.getDay() === 6;
-  const dayShifts = shifts.filter(
-    (s) => s.shiftEntry.shiftType === "day" && s.shiftEntry.hours > 0,
-  );
-  const nightShifts = shifts.filter(
-    (s) => s.shiftEntry.shiftType === "night" && s.shiftEntry.hours > 0,
-  );
+
+  // Sort each category alphabetically by nurse name
+  const sortAlpha = (
+    a: { nurse: string; shiftEntry: ShiftEntry },
+    b: { nurse: string; shiftEntry: ShiftEntry },
+  ) => a.nurse.localeCompare(b.nurse);
+
+  const dayShifts = shifts
+    .filter((s) => s.shiftEntry.shiftType === "day" && s.shiftEntry.hours > 0)
+    .sort(sortAlpha);
+  const nightShifts = shifts
+    .filter((s) => s.shiftEntry.shiftType === "night" && s.shiftEntry.hours > 0)
+    .sort(sortAlpha);
+  // Only show off entries with a recognized code (C, CF-*, OFF) from OCR or manual edit.
+  // Suppress blank algorithm-generated offs so the calendar isn't cluttered.
+  const offShifts = shifts
+    .filter((s) => {
+      if (
+        s.shiftEntry.shiftType !== "off" &&
+        s.shiftEntry.shiftType !== "combined" &&
+        !(
+          s.shiftEntry.hours === 0 &&
+          s.shiftEntry.shiftType !== "day" &&
+          s.shiftEntry.shiftType !== "night"
+        )
+      )
+        return false;
+      const code = (s.shiftEntry.shift || "").trim().toUpperCase();
+      if (!code) return false; // blank = algorithm-generated, hide
+      return OFF_CODES.some((oc) => oc.code.toUpperCase() === code);
+    })
+    .sort(sortAlpha);
   const totalStaff = dayShifts.length + nightShifts.length;
 
   // State for add nurse modal
@@ -422,7 +629,7 @@ function DroppableDay({
 
   const handleAddSubmit = () => {
     if (!selectedNurse || !selectedShift) return;
-    const shiftCode = SHIFT_CODES.find((s) => s.code === selectedShift);
+    const shiftCode = ALL_CODES.find((s) => s.code === selectedShift);
     if (!shiftCode) return;
     onAddShift(date, selectedNurse, shiftCode);
     setShowAddModal(false);
@@ -434,55 +641,53 @@ function DroppableDay({
     <div
       ref={setNodeRef}
       id={date}
-      className={`bg-white border-2 rounded-xl p-3 shadow-sm flex flex-col transition-all hover:shadow-lg ${
+      className={`bg-white border-2 rounded-xl p-2 shadow-sm flex flex-col transition-all hover:shadow-lg ${
         isWeekend ? "border-orange-200 bg-orange-50/30" : "border-gray-200"
       }`}
     >
       {/* Header with date and stats */}
-      <div className="flex justify-between items-start mb-2 pb-2 border-b border-gray-100">
-        <div>
+      <div className="flex justify-between items-center mb-1.5 pb-1 border-b border-gray-100">
+        <div className="flex items-baseline gap-1">
           <div
-            className={`text-sm font-bold ${isWeekend ? "text-orange-600" : "text-gray-800"}`}
+            className={`text-xs font-bold ${isWeekend ? "text-orange-600" : "text-gray-800"}`}
           >
             {format(parsedDate, "EEE")}
           </div>
-          <div className="text-lg font-bold text-gray-900">
+          <div className="text-sm font-bold text-gray-900">
             {format(parsedDate, "d")}
           </div>
-          <div className="text-xs text-gray-500">
+          <div className="text-[10px] text-gray-400">
             {format(parsedDate, "MMM")}
           </div>
         </div>
-        <div className="text-right">
-          <div
-            className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-              totalStaff === 0
-                ? "bg-red-100 text-red-600"
-                : totalStaff < 5
-                  ? "bg-yellow-100 text-yellow-700"
-                  : "bg-green-100 text-green-700"
-            }`}
-          >
-            {totalStaff} staff
-          </div>
+        <div
+          className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+            totalStaff === 0
+              ? "bg-red-100 text-red-600"
+              : totalStaff < 5
+                ? "bg-yellow-100 text-yellow-700"
+                : "bg-green-100 text-green-700"
+          }`}
+        >
+          {totalStaff}
         </div>
       </div>
 
       {/* Day shifts section */}
       {dayShifts.length > 0 && (
-        <div className="mb-2">
-          <div className="text-[10px] uppercase tracking-wider text-amber-600 font-semibold mb-1 flex items-center gap-1">
+        <div className="mb-1">
+          <div className="text-[10px] uppercase tracking-wider text-amber-600 font-semibold mb-0.5 flex items-center gap-1">
             <span>☀️</span> Day ({dayShifts.length})
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-0.5">
             <SortableContext
-              items={dayShifts.map(({ nurse, shiftEntry }) =>
-                makeId(nurse, shiftEntry),
+              items={dayShifts.map(({ nurse, shiftEntry }, idx) =>
+                makeId(nurse, shiftEntry, idx),
               )}
               strategy={verticalListSortingStrategy}
             >
-              {dayShifts.map(({ nurse, shiftEntry }) => {
-                const id = makeId(nurse, shiftEntry);
+              {dayShifts.map(({ nurse, shiftEntry }, idx) => {
+                const id = makeId(nurse, shiftEntry, idx);
                 return (
                   <DraggableShift
                     key={id}
@@ -504,19 +709,53 @@ function DroppableDay({
 
       {/* Night shifts section */}
       {nightShifts.length > 0 && (
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-indigo-600 font-semibold mb-1 flex items-center gap-1">
+        <div className="mb-1">
+          <div className="text-[10px] uppercase tracking-wider text-indigo-600 font-semibold mb-0.5 flex items-center gap-1">
             <span>🌙</span> Night ({nightShifts.length})
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex flex-col gap-0.5">
             <SortableContext
-              items={nightShifts.map(({ nurse, shiftEntry }) =>
-                makeId(nurse, shiftEntry),
+              items={nightShifts.map(({ nurse, shiftEntry }, idx) =>
+                makeId(nurse, shiftEntry, idx),
               )}
               strategy={verticalListSortingStrategy}
             >
-              {nightShifts.map(({ nurse, shiftEntry }) => {
-                const id = makeId(nurse, shiftEntry);
+              {nightShifts.map(({ nurse, shiftEntry }, idx) => {
+                const id = makeId(nurse, shiftEntry, idx);
+                return (
+                  <DraggableShift
+                    key={id}
+                    id={id}
+                    nurse={nurse}
+                    shiftEntry={shiftEntry}
+                    onUpdateShift={(nextShiftCode) =>
+                      onUpdateShift(date, id, nextShiftCode)
+                    }
+                    nurseMetadata={getNurseMetadata(nurse)}
+                    onDelete={() => handleDelete(date, id)}
+                  />
+                );
+              })}
+            </SortableContext>
+          </div>
+        </div>
+      )}
+
+      {/* Off / CF shifts section */}
+      {offShifts.length > 0 && (
+        <div className="mb-1">
+          <div className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold mb-1 flex items-center gap-1">
+            <span>🏖️</span> Off ({offShifts.length})
+          </div>
+          <div className="flex flex-col gap-0.5">
+            <SortableContext
+              items={offShifts.map(({ nurse, shiftEntry }, idx) =>
+                makeId(nurse, shiftEntry, idx),
+              )}
+              strategy={verticalListSortingStrategy}
+            >
+              {offShifts.map(({ nurse, shiftEntry }, idx) => {
+                const id = makeId(nurse, shiftEntry, idx);
                 return (
                   <DraggableShift
                     key={id}
@@ -537,11 +776,13 @@ function DroppableDay({
       )}
 
       {/* Empty state */}
-      {totalStaff === 0 && (
-        <div className="flex-1 flex items-center justify-center py-4">
+      {totalStaff === 0 && offShifts.length === 0 && (
+        <div className="flex-1 flex items-center justify-center py-2">
           <div className="text-center">
-            <div className="text-2xl mb-1">⚠️</div>
-            <div className="text-xs text-red-500 font-medium">No Coverage</div>
+            <div className="text-lg mb-0.5">⚠️</div>
+            <div className="text-[10px] text-red-500 font-medium">
+              No Coverage
+            </div>
           </div>
         </div>
       )}
@@ -549,11 +790,11 @@ function DroppableDay({
       {/* Add Nurse Button */}
       <button
         onClick={() => setShowAddModal(true)}
-        className="mt-2 w-full py-1 px-2 text-xs text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg flex items-center justify-center gap-1 transition-colors"
+        className="mt-1 w-full py-0.5 px-2 text-[10px] text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-md flex items-center justify-center gap-1 transition-colors"
         type="button"
       >
-        <Plus className="w-3 h-3" />
-        Add Nurse
+        <Plus className="w-2.5 h-2.5" />
+        Add
       </button>
 
       {/* Add Nurse Modal */}
@@ -630,6 +871,13 @@ function DroppableDay({
                       ),
                     )}
                   </optgroup>
+                  <optgroup label="Off / Holiday (CF)">
+                    {OFF_CODES.map((shift) => (
+                      <option key={shift.code} value={shift.code}>
+                        {shift.code} - {shift.label}
+                      </option>
+                    ))}
+                  </optgroup>
                 </select>
               </div>
 
@@ -663,6 +911,7 @@ export default function SchedulePreview({
   ocrDates,
   nurseMetadata = [],
   onChange,
+  onAsteriskDetected,
 }: SchedulePreviewProps) {
   const gridDataKey = useMemo(() => {
     return buildGridDataKey(ocrGrid);
@@ -862,7 +1111,7 @@ export default function SchedulePreview({
   const handleAddShift = (
     date: string,
     nurse: string,
-    shiftCode: (typeof SHIFT_CODES)[0],
+    shiftCode: (typeof ALL_CODES)[0],
   ) => {
     saveHistory();
     const newShiftEntry: ShiftEntry = {
@@ -889,7 +1138,15 @@ export default function SchedulePreview({
     nextShiftCode: string,
   ) => {
     const { nurse, shift } = parseId(id);
-    const nextShiftDefinition = SHIFT_CODES.find(
+
+    // Detect asterisk (*) and trigger callback
+    if (nextShiftCode.trim() === "*" && onAsteriskDetected) {
+      onAsteriskDetected(nurse, date);
+      // Don't update the shift, just return
+      return;
+    }
+
+    const nextShiftDefinition = ALL_CODES.find(
       (shiftCode) => shiftCode.code === nextShiftCode,
     );
 
@@ -947,7 +1204,12 @@ export default function SchedulePreview({
       const nightShifts = entries.filter(
         (e) => e.shiftEntry.shiftType === "night",
       );
-      newMap.set(date, [...dayShifts, ...nightShifts]);
+      const offShifts = entries.filter(
+        (e) =>
+          e.shiftEntry.shiftType !== "day" &&
+          e.shiftEntry.shiftType !== "night",
+      );
+      newMap.set(date, [...dayShifts, ...nightShifts, ...offShifts]);
     });
     return newMap;
   }, [shiftMap]);

@@ -168,6 +168,7 @@ function JoinOrgModal({ onClose }: { onClose: () => void }) {
   const [inviteCode, setInviteCode] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [pendingMessage, setPendingMessage] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -180,8 +181,12 @@ function JoinOrgModal({ onClose }: { onClose: () => void }) {
     setError("");
 
     try {
-      await joinOrganization(inviteCode.trim());
-      onClose();
+      const membership = await joinOrganization(inviteCode.trim());
+      if (membership && !membership.is_approved) {
+        setPendingMessage(true);
+      } else {
+        onClose();
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to join organization");
     } finally {
@@ -202,47 +207,82 @@ function JoinOrgModal({ onClose }: { onClose: () => void }) {
           Join Organization
         </h2>
 
-        {error && (
-          <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
-            {error}
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Invite Code *
-            </label>
-            <input
-              type="text"
-              value={inviteCode}
-              onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
-              placeholder="Enter invite code"
-              className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none uppercase tracking-wider text-center font-mono text-lg"
-              autoFocus
-            />
-            <p className="text-sm text-gray-500 mt-2">
-              Ask your organization admin for the invite code
+        {pendingMessage ? (
+          <div className="text-center space-y-4">
+            <div className="w-16 h-16 mx-auto bg-amber-100 rounded-full flex items-center justify-center">
+              <svg
+                className="w-8 h-8 text-amber-600"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"
+                />
+              </svg>
+            </div>
+            <h3 className="text-lg font-semibold text-gray-900">
+              Request Submitted
+            </h3>
+            <p className="text-sm text-gray-600">
+              Your request to join has been submitted. An administrator must
+              approve your membership before you can access the organization.
             </p>
-          </div>
-
-          <div className="flex gap-3 pt-2">
             <button
-              type="button"
               onClick={onClose}
-              className="flex-1 px-4 py-3 border border-gray-300 text-gray-700 rounded-xl hover:bg-gray-50 transition-colors font-medium"
+              className="w-full px-4 py-3 bg-gray-100 text-gray-700 rounded-xl hover:bg-gray-200 transition-colors font-medium"
             >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="flex-1 px-4 py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition-colors font-medium disabled:opacity-50"
-            >
-              {isSubmitting ? "Joining..." : "Join"}
+              Got it
             </button>
           </div>
-        </form>
+        ) : (
+          <>
+            {error && (
+              <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">
+                {error}
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Invite Code *
+                </label>
+                <input
+                  type="text"
+                  value={inviteCode}
+                  onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+                  placeholder="Enter invite code"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none uppercase tracking-wider text-center font-mono text-lg"
+                  autoFocus
+                />
+                <p className="text-sm text-gray-500 mt-2">
+                  Ask your organization admin for the invite code
+                </p>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="flex-1 px-4 py-3 border border-gray-300 text-gray-700 rounded-xl hover:bg-gray-50 transition-colors font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="flex-1 px-4 py-3 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition-colors font-medium disabled:opacity-50"
+                >
+                  {isSubmitting ? "Joining..." : "Join"}
+                </button>
+              </div>
+            </form>
+          </>
+        )}
       </div>
     </div>
   );

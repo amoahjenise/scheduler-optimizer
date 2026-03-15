@@ -44,8 +44,19 @@ class Handover(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
     organization_id = Column(String, nullable=True, index=True)  # Multi-tenant org ID
     
-    # Patient reference
-    patient_id = Column(String, ForeignKey("patients.id", ondelete="CASCADE"), nullable=False)
+    # Patient reference (nullable – new handovers embed patient info directly)
+    patient_id = Column(String, ForeignKey("patients.id", ondelete="SET NULL"), nullable=True)
+    
+    # Embedded patient demographics (HIPAA: stored on the transient handover, not a permanent patient record)
+    p_first_name = Column(String(100), nullable=True)
+    p_last_name = Column(String(100), nullable=True)
+    p_room_number = Column(String(20), nullable=True)
+    p_bed = Column(String(10), nullable=True)
+    p_mrn = Column(String(50), nullable=True)
+    p_diagnosis = Column(String(255), nullable=True)
+    p_date_of_birth = Column(DateTime, nullable=True)
+    p_age = Column(String(50), nullable=True)
+    p_attending_physician = Column(String(100), nullable=True)
     
     # Shift info
     shift_date = Column(DateTime, nullable=False)

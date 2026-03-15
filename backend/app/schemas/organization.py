@@ -19,8 +19,8 @@ class OrganizationBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     timezone: str = "America/Montreal"
-    full_time_weekly_target: float = Field(37.5, ge=0, le=168)
-    part_time_weekly_target: float = Field(26.25, ge=0, le=168)
+    full_time_weekly_target: float = Field(75.0, ge=0, le=336)
+    part_time_weekly_target: float = Field(63.75, ge=0, le=336)
 
 
 class OrganizationCreate(OrganizationBase):
@@ -34,8 +34,8 @@ class OrganizationUpdate(BaseModel):
     description: Optional[str] = None
     timezone: Optional[str] = None
     logo_url: Optional[str] = None  # Base64 data URL or external URL
-    full_time_weekly_target: Optional[float] = Field(None, ge=0, le=168)
-    part_time_weekly_target: Optional[float] = Field(None, ge=0, le=168)
+    full_time_weekly_target: Optional[float] = Field(None, ge=0, le=336)
+    part_time_weekly_target: Optional[float] = Field(None, ge=0, le=336)
 
 
 class OrganizationInDB(OrganizationBase):
@@ -90,6 +90,7 @@ class OrganizationMemberInDB(OrganizationMemberBase):
     user_email: Optional[str] = None
     user_name: Optional[str] = None
     is_active: bool
+    is_approved: bool = True
     joined_at: datetime
     updated_at: datetime
 

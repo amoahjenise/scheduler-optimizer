@@ -36,7 +36,7 @@ export default function StaffRequirementsInput({
             onChange={(e) => onDayStaffChange(parseInt(e.target.value) || 1)}
             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           />
-          <p className="text-xs text-gray-400 mt-1">Minimum: 5</p>
+          <p className="text-xs text-gray-400 mt-1">Default: 5</p>
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -50,7 +50,7 @@ export default function StaffRequirementsInput({
             onChange={(e) => onNightStaffChange(parseInt(e.target.value) || 1)}
             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           />
-          <p className="text-xs text-gray-400 mt-1">Minimum: 3</p>
+          <p className="text-xs text-gray-400 mt-1">Default: 4</p>
         </div>
       </div>
     </div>

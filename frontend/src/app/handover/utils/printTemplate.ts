@@ -10,12 +10,27 @@ interface Patient {
   bed?: string | null;
   diagnosis?: string | null;
   age?: string | null;
+  date_of_birth?: string | null;
   attending_physician?: string | null;
 }
 
-// For input fields: show underscores if empty (user can write)
-const f = (v: string | null | undefined) =>
-  v && v.trim() ? v : "____________";
+/** Compute a human-readable age string from an ISO date-of-birth. */
+function ageFromDob(dob: string | null | undefined): string {
+  if (!dob) return "";
+  const birth = new Date(dob);
+  if (isNaN(birth.getTime())) return "";
+  const now = new Date();
+  const months =
+    (now.getFullYear() - birth.getFullYear()) * 12 +
+    (now.getMonth() - birth.getMonth());
+  if (months < 1) return "< 1 month";
+  if (months < 12) return `${months} month${months !== 1 ? "s" : ""}`;
+  const years = Math.floor(months / 12);
+  return `${years} year${years !== 1 ? "s" : ""}`;
+}
+
+// For input fields: show underline via CSS; leave value empty when missing
+const f = (v: string | null | undefined) => (v && v.trim() ? v : "");
 
 // For text areas: leave blank if empty
 const fEmpty = (v: string | null | undefined) => (v && v.trim() ? v : "");
@@ -40,23 +55,41 @@ const renderGuIoGrid = (
   }>,
   runningPlaceholder: string,
 ) => `
-  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px 14px; margin-top:3px;">
-    ${rows
-      .map(
-        (row) => `
-      <div style="display:flex; flex-direction:column; gap:4px;">
-        <div style="font-size:8px; font-weight:600; color:#4b5563;">${row.label}</div>
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px;">
-          <div class="gu-input-box">${inputLikeValue(values[row.intervalKey], "ml")}</div>
-          <div class="gu-input-box">${inputLikeValue(values[row.intervalKgHrKey], "ml/kg/hr")}</div>
-        </div>
-        <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px;">
-          <div class="gu-input-box">${inputLikeValue(values[row.runningKey], runningPlaceholder)}</div>
-          <div class="gu-input-box">${inputLikeValue(values[row.runningKgHrKey], "ml/kg/hr")}</div>
-        </div>
-      </div>`,
-      )
-      .join("")}
+  <div style="margin-top:6px; margin-bottom:4px;">
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:2px; margin-bottom:6px; font-size:7px; color:#6b7280; line-height:1.35;">
+      <div><strong style="color:#374151;">Total ml</strong> — volume produced in this interval</div>
+      <div><strong style="color:#374151;">ml/kg/hr</strong> — output ÷ (weight kg × hours) &nbsp;⚑ &lt; 0.5 is a red flag</div>
+    </div>
+    <div style="display:grid; grid-template-columns:repeat(${rows.length}, 1fr); gap:6px;">
+      ${rows
+        .map(
+          (row) => `
+        <div style="display:flex; flex-direction:column; gap:3px;">
+          <div style="font-size:8px; font-weight:700; color:#1e40af; text-align:center; background:#eff6ff; border-radius:3px; padding:2px 4px;">${row.label}</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:3px;">
+            <div>
+              <div style="font-size:6px; color:#6b7280; text-transform:uppercase; letter-spacing:0.03em; margin-bottom:1px;">Total ml</div>
+              <div class="gu-input-box">${inputLikeValue(values[row.intervalKey], "ml")}</div>
+            </div>
+            <div>
+              <div style="font-size:6px; color:#6b7280; text-transform:uppercase; letter-spacing:0.03em; margin-bottom:1px;">ml/kg/hr</div>
+              <div class="gu-input-box">${inputLikeValue(values[row.intervalKgHrKey], "ml/kg/hr")}</div>
+            </div>
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:3px;">
+            <div>
+              <div style="font-size:6px; color:#6b7280; text-transform:uppercase; letter-spacing:0.03em; margin-bottom:1px;">Running</div>
+              <div class="gu-input-box">${inputLikeValue(values[row.runningKey], runningPlaceholder)}</div>
+            </div>
+            <div>
+              <div style="font-size:6px; color:#6b7280; text-transform:uppercase; letter-spacing:0.03em; margin-bottom:1px;">ml/kg/hr</div>
+              <div class="gu-input-box">${inputLikeValue(values[row.runningKgHrKey], "ml/kg/hr")}</div>
+            </div>
+          </div>
+        </div>`,
+        )
+        .join("")}
+    </div>
   </div>
 `;
 
@@ -98,7 +131,7 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
     .filter(Boolean)
     .join("");
   const patientBarFields = [
-    `<div><strong>${showAge ? "Patient / Age" : "Patient"}</strong>${p.last_name}, ${p.first_name}${showAge ? ` / ${p.age || "—"}` : ""}</div>`,
+    `<div><strong>${showAge ? "Patient / Age" : "Patient"}</strong>${p.last_name}, ${p.first_name}${showAge ? ` / ${p.age || ageFromDob(p.date_of_birth) || "—"}` : ""}</div>`,
     `<div><strong>${showBed ? "Room / Bed" : "Room"}</strong>${p.room_number}${showBed && p.bed ? " – " + p.bed : ""}</div>`,
     showMrn && p.mrn ? `<div><strong>MRN</strong>${p.mrn}</div>` : "",
     `<div><strong>Code Status</strong>${f(h.code_status)}</div>`,
@@ -131,7 +164,7 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
           .section-body { padding: 5px 7px; }
           .field { margin-bottom: 3px; }
           .field-label { font-size: 7px; color: #9ca3af; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 1px; }
-          .field-value { font-size: 10px; white-space: pre-wrap; min-height: 12px; color: #111827; }
+          .field-value { font-size: 10px; white-space: pre-wrap; min-height: 12px; color: #111827; border-bottom: 1px solid #d1d5db; padding-bottom: 1px; }
           .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
           .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
           .four-col { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 6px; }
@@ -182,7 +215,7 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
         <div class="two-col">
           <div class="section">
             <div class="section-title">Pertinent Issues</div>
-            <div class="section-body"><div class="field-value">${fEmpty(h.pertinent_issues)}</div></div>
+            <div class="section-body"><div class="field-value">${f(h.pertinent_issues)}</div></div>
           </div>
           <div class="section">
             <div class="section-title">Static Info</div>
@@ -202,9 +235,9 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
           <div class="section-title">Medications</div>
           <div class="section-body">
             <div class="three-col">
-              <div class="field"><div class="field-label">Scheduled</div><div class="field-value">${f(h.medications_summary)}</div></div>
-              <div class="field"><div class="field-label">PRN</div><div class="field-value">${f(h.prn_medications)}</div></div>
-              <div class="field"><div class="field-label">Chemotherapy</div><div class="field-value">${f(h.chemotherapies)}</div></div>
+              <div class="field"><div class="field-label">Scheduled</div><div class="field-value" style="min-height:56px; border-bottom:1px solid #d1d5db; padding-bottom:2px;">${f(h.medications_summary)}</div></div>
+              <div class="field"><div class="field-label">PRN</div><div class="field-value" style="min-height:56px; border-bottom:1px solid #d1d5db; padding-bottom:2px;">${f(h.prn_medications)}</div></div>
+              <div class="field"><div class="field-label">Chemotherapy</div><div class="field-value" style="min-height:56px; border-bottom:1px solid #d1d5db; padding-bottom:2px;">${f(h.chemotherapies)}</div></div>
             </div>
           </div>
         </div>
@@ -255,14 +288,14 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
                 <div class="field"><div class="field-label">Dressing</div><div class="field-value">${f(h.cvad_dressing)}</div></div>
                 <div class="field"><div class="field-label">TPN</div><div class="field-value">${f(h.tpn)}</div></div>
               </div>
-              <div class="field" style="margin-top:3px"><div class="field-label">IV Infusions</div><div class="field-value">${fEmpty(h.iv_infusions)}</div></div>
+              <div class="field" style="margin-top:3px"><div class="field-label">IV Infusions</div><div class="field-value">${f(h.iv_infusions)}</div></div>
             </div>
           </div>
           <div class="section">
-            <div class="section-title">G.U.</div>
+            <div class="section-title">G.U. — Urine Output & Fluid Balance</div>
             <div class="section-body">
-              <div style="display:flex; align-items:center; gap:14px; padding-bottom:6px; border-bottom:1px solid #e5e7eb; margin-bottom:6px;">
-                <span style="font-size:8px; font-weight:600; color:#374151;">Interval:</span>
+              <div style="display:flex; align-items:center; gap:14px; padding-bottom:6px; border-bottom:1px solid #e5e7eb; margin-bottom:4px;">
+                <span style="font-size:8px; font-weight:600; color:#374151;">Monitoring Interval:</span>
                 <span style="display:inline-flex; align-items:center; gap:4px; font-size:8px; color:#111827;">
                   <span class="radio-dot">${h.io_interval === "4h" ? '<span class="radio-dot-inner"></span>' : ""}</span>
                   4 hours
@@ -274,14 +307,11 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
               </div>
               
               <div style="margin-top:4px;">
-                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px;">
-                  <div style="font-size:8px; font-weight:600; color:#374151;">Urine output (I/O)</div>
-                  <div style="display:flex; align-items:center; gap:4px; font-size:8px; color:#9ca3af;">
-                    <span style="width:54px; text-align:center;">ml</span>
-                    <span style="width:54px; text-align:center;">ml/kg/hr</span>
-                    <span style="width:54px; text-align:center;">ml</span>
-                    <span style="width:54px; text-align:center;">ml/kg/hr</span>
-                  </div>
+                <div style="font-size:9px; font-weight:700; color:#374151; margin-bottom:2px;">Urine Output (I/O)</div>
+                <div style="font-size:7px; color:#6b7280; line-height:1.35; margin-bottom:4px; padding:3px 5px; background:#f9fafb; border-radius:3px; border:1px solid #e5e7eb;">
+                  <strong style="color:#374151;">How to read:</strong>
+                  Each time block shows <strong>Total ml</strong> (volume in that interval) and <strong>ml/kg/hr</strong> (output ÷ patient weight ÷ hours).
+                  <br/>Goal ≥ 1 ml/kg/hr &nbsp;|&nbsp; ⚑ &lt; 0.5 ml/kg/hr for 6 hrs = medical alert &nbsp;|&nbsp; +value = net positive (intake &gt; output) &nbsp;|&nbsp; −value = net negative
                 </div>
                 ${
                   h.io_interval === "4h"
@@ -397,7 +427,7 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
                 <div class="field"><div class="field-label">Glasgow</div><div class="field-value">${f(h.glasgow_score)}</div></div>
                 <div class="field"><div class="field-label">GCS</div><div class="field-value">${f(h.gcs_score)}</div></div>
               </div>
-              <div class="field" style="margin-top:3px"><div class="field-label">Notes</div><div class="field-value">${fEmpty(h.neuro_notes)}</div></div>
+              <div class="field" style="margin-top:3px"><div class="field-label">Notes</div><div class="field-value">${f(h.neuro_notes)}</div></div>
             </div>
           </div>
           <div class="section">
@@ -429,15 +459,24 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
                 <span class="cb"><span class="cb-box">${h.gi_tenderness ? "✓" : ""}</span> Abnormal tenderness</span>
                 <span class="cb"><span class="cb-box">${h.gi_distention ? "✓" : ""}</span> Distention</span>
               </div>
-              <div class="field" style="margin-top:2px"><div class="field-label">Girth</div><div class="field-value">${f(h.gi_girth)}</div></div>
-              <div class="inline-fields" style="margin-top:2px">
-                <span class="cb"><span class="cb-box">${h.vomiting ? "✓" : ""}</span> Vomiting${h.vomiting_quantity ? " (" + h.vomiting_quantity + ")" : ""}</span>
+              ${h.gi_girth ? `<div style="margin-top:3px"><span style="font-weight:600;">Girth:</span> ${h.gi_girth}</div>` : ""}
+              <div style="margin-top:3px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                <span class="cb"><span class="cb-box">${h.vomiting ? "✓" : ""}</span> Vomiting</span>
+                <div style="display:flex; align-items:center; gap:4px;">
+                  <span style="font-size:8px; color:#4b5563;">Quantity:</span>
+                  <div style="display:inline-block; padding:4px 10px; border:1px solid #d1d5db; border-radius:3px; background:#fff; font-size:9px; min-width:80px; min-height:20px;">${h.vomiting_quantity || ""}</div>
+                </div>
                 <span class="cb"><span class="cb-box">${h.nausea ? "✓" : ""}</span> Nausea</span>
               </div>
-              <div class="two-col" style="margin-top:3px">
-                <div class="field"><div class="field-label">Last BM Date</div><div class="field-value">${f(h.last_bowel_movement)}</div></div>
+              <div style="margin-top:3px; padding:8px; background:#f9fafb; border:1px solid #e5e7eb; border-radius:6px;">
+                <div style="font-size:8px; font-weight:600; color:#374151; margin-bottom:6px;">Last Bowel Movement</div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:6px;">
+                  <div><span style="font-size:8px; font-weight:500; color:#4b5563;">Date:</span> <span style="font-size:9px;">${h.last_bowel_movement || ""}</span></div>
+                  <div><span style="font-size:8px; font-weight:500; color:#4b5563;">Amount:</span> <span style="font-size:9px;">${h.bowel_amount || ""}</span></div>
+                </div>
+                <div><span style="font-size:8px; font-weight:500; color:#4b5563;">Description:</span> <span style="font-size:9px;">${h.bowel_description || ""}</span></div>
               </div>
-              <div class="inline-fields" style="margin-top:2px">
+              <div class="inline-fields" style="margin-top:3px">
                 <span class="cb"><span class="cb-box">${h.constipation ? "✓" : ""}</span> Constipation</span>
                 <span class="cb"><span class="cb-box">${h.diarrhea ? "✓" : ""}</span> Diarrhea${h.diarrhea_quantity ? " (" + h.diarrhea_quantity + ")" : ""}</span>
                 <span class="cb"><span class="cb-box">${h.colostomy ? "✓" : ""}</span> Colostomy</span>
@@ -471,7 +510,7 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
                 <div class="two-col">
                   <div class="field">
                     <span class="cb"><span class="cb-box">${h.formula_checkbox ? "✓" : ""}</span> Formula</span>
-                    ${h.formula ? `<div class="input-box" style="margin-top:2px">${h.formula}</div>` : '<div class="input-box" style="margin-top:2px">____________</div>'}
+                    ${h.formula ? `<div class="input-box" style="margin-top:2px">${h.formula}</div>` : '<div class="input-box" style="margin-top:2px"></div>'}
                   </div>
                   <div class="field">
                     <span class="cb"><span class="cb-box">${h.breast_milk ? "✓" : ""}</span> Breast Milk</span>
@@ -483,11 +522,11 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
                 <div class="two-col">
                   <div class="field">
                     <span class="cb"><span class="cb-box">${h.continuous_feeding ? "✓" : ""}</span> Continuous</span>
-                    ${h.continuous_feeding_rate ? `<div class="input-box" style="margin-top:2px">${h.continuous_feeding_rate} ml/h</div>` : '<div class="input-box" style="margin-top:2px">____________</div>'}
+                    ${h.continuous_feeding_rate ? `<div class="input-box" style="margin-top:2px">${h.continuous_feeding_rate} ml/h</div>` : '<div class="input-box" style="margin-top:2px"></div>'}
                   </div>
                   <div class="field">
                     <span class="cb"><span class="cb-box">${h.bolus_feeding ? "✓" : ""}</span> Bolus</span>
-                    ${h.bolus_amount ? `<div class="input-box" style="margin-top:2px">${h.bolus_amount}</div>` : '<div class="input-box" style="margin-top:2px">____________</div>'}
+                    ${h.bolus_amount ? `<div class="input-box" style="margin-top:2px">${h.bolus_amount}</div>` : '<div class="input-box" style="margin-top:2px"></div>'}
                   </div>
                 </div>
               </div>
@@ -499,7 +538,7 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
                   <span class="cb"><span class="cb-box">${h.gt_tube ? "✓" : ""}</span> GT</span>
                   <span class="cb"><span class="cb-box">${h.npo ? "✓" : ""}</span> NPO</span>
                 </div>
-                ${h.feeding_goal ? `<div class="field" style="margin-top:3px"><div class="field-label">Goal</div><div class="input-box">${h.feeding_goal}</div></div>` : '<div class="field" style="margin-top:3px"><div class="field-label">Goal</div><div class="input-box">____________</div></div>'}
+                ${h.feeding_goal ? `<div class="field" style="margin-top:3px"><div class="field-label">Goal</div><div class="input-box">${h.feeding_goal}</div></div>` : '<div class="field" style="margin-top:3px"><div class="field-label">Goal</div><div class="input-box"></div></div>'}
                 ${h.see_feeding_schedule ? '<div style="margin-top:3px; font-size:9px; color:#1d4ed8;">ℹ️ See feeding schedule</div>' : ""}
               </div>
             </div>
@@ -519,9 +558,9 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
             <div class="section-body">
               <div class="two-col">
                 <div class="field"><div class="field-label">Braden Q Score</div><div class="field-value">${f(h.braden_q_score)}</div></div>
-                <div class="field"><div class="field-label">Skin Assessment</div><div class="field-value">${fEmpty(h.skin_assessment)}</div></div>
+                <div class="field"><div class="field-label">Skin Assessment</div><div class="field-value">${f(h.skin_assessment)}</div></div>
               </div>
-              <div class="field" style="margin-top:3px"><div class="field-label">Skin Care Plan</div><div class="field-value">${fEmpty(h.skin_care_plan)}</div></div>
+              <div class="field" style="margin-top:3px"><div class="field-label">Skin Care Plan</div><div class="field-value">${f(h.skin_care_plan)}</div></div>
               <div class="three-col" style="margin-top:3px">
                 <div class="field"><div class="field-label">Pressure Sore Stage</div><div class="field-value">${f(h.pressure_sore_stage)}</div></div>
                 <div class="field"><div class="field-label">Location</div><div class="field-value">${f(h.pressure_sore_location)}</div></div>
@@ -535,18 +574,19 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
           <div class="section">
             <div class="section-title">Psycho-Social</div>
             <div class="section-body">
-              <div class="field"><div class="field-label">Patient/Family Concerns</div><div class="field-value">${fEmpty(h.psychosocial_notes)}</div></div>
+              <div class="field"><div class="field-label">Patient/Family Concerns</div><div class="field-value">${f(h.psychosocial_notes)}</div></div>
             </div>
           </div>
           <div class="section">
             <div class="section-title">Discharge Planning</div>
             <div class="section-body">
               <div class="three-col">
-                <div class="field"><div class="field-label">Expected D/C</div><div class="field-value">${fEmpty(h.expected_discharge_date)}</div></div>
-                <div class="field" style="grid-column:span 2"><div class="field-label">Teaching</div><div class="field-value">${fEmpty(h.discharge_teaching)}</div></div>
+                <div class="field"><div class="field-label">Expected D/C</div><div class="field-value">${f(h.expected_discharge_date)}</div></div>
+                <div class="field" style="grid-column:span 2"><div class="field-label">Teaching</div><div class="field-value">${f(h.discharge_teaching)}</div></div>
               </div>
-              <div class="field" style="margin-top:3px"><div class="field-label">Prescriptions</div><div class="field-value">${fEmpty(h.discharge_prescriptions)}</div></div>
-              <div class="field"><div class="field-label">Follow-up Appts</div><div class="field-value">${fEmpty(h.followup_appointments)}</div></div>
+              <div class="field" style="margin-top:3px"><div class="field-label">Home Enteral Feeding</div><div class="field-value">${f(h.home_enteral_feeding)}</div></div>
+              <div class="field"><div class="field-label">Prescriptions</div><div class="field-value">${f(h.discharge_prescriptions)}</div></div>
+              <div class="field"><div class="field-label">Follow-up Appts</div><div class="field-value">${f(h.followup_appointments)}</div></div>
             </div>
           </div>
         </div>
@@ -555,13 +595,13 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
           <div class="section todo-section">
             <div class="section-title">To Do</div>
             <div class="section-body">
-              <div class="field-value">${fEmpty(h.todo_items)}</div>
+              <div class="field-value">${f(h.todo_items)}</div>
             </div>
           </div>
           <div class="section todo-section">
             <div class="section-title">Follow Up</div>
             <div class="section-body">
-              <div class="field-value">${fEmpty(h.followup_items)}</div>
+              <div class="field-value">${f(h.followup_items)}</div>
             </div>
           </div>
         </div>

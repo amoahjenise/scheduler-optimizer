@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import { useUser } from "@clerk/nextjs";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import { Calendar, Clock, Users, Eye, CheckCircle } from "lucide-react";
+import { Calendar, Clock, Users, Eye, CheckCircle, Pencil } from "lucide-react";
 import { fetchOptimizedSchedulesAPI, OptimizedSchedule } from "../lib/api";
 import { useOrganization } from "../context/OrganizationContext";
 
@@ -209,13 +209,23 @@ export default function SchedulesPage() {
                   </div>
 
                   <div className="flex items-center gap-2">
-                    <Link
-                      href={`/schedules/${schedule.id}`}
-                      className="flex items-center gap-2 px-4 py-2 text-emerald-600 border border-emerald-200 rounded-lg hover:bg-emerald-50 transition-colors"
-                    >
-                      <Eye className="w-4 h-4" />
-                      View
-                    </Link>
+                    {schedule.is_finalized ? (
+                      <Link
+                        href={`/schedules/${schedule.id}`}
+                        className="flex items-center gap-2 px-4 py-2 text-emerald-600 border border-emerald-200 rounded-lg hover:bg-emerald-50 transition-colors"
+                      >
+                        <Eye className="w-4 h-4" />
+                        View
+                      </Link>
+                    ) : isAdmin ? (
+                      <Link
+                        href={`/scheduler?draft=${schedule.id}`}
+                        className="flex items-center gap-2 px-4 py-2 text-amber-600 border border-amber-200 rounded-lg hover:bg-amber-50 transition-colors"
+                      >
+                        <Pencil className="w-4 h-4" />
+                        Edit Draft
+                      </Link>
+                    ) : null}
                   </div>
                 </div>
               </motion.div>

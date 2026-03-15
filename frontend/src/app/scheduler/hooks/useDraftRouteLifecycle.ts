@@ -6,7 +6,7 @@ import {
   deleteScheduleAPI,
   fetchOptimizedScheduleByIdAPI,
 } from "../../lib/api";
-import { GridRow, ManualNurse, ShiftEntry, Step } from "../types";
+import { GridRow, ManualNurse, ShiftEntry, Step, SHIFT_CODES } from "../types";
 import { getDefaultDates } from "./utils";
 
 type RequiredStaff = Record<string, Record<string, number>>;
@@ -52,15 +52,39 @@ function normalizeShiftEntry(
   shift: Partial<ShiftEntry>,
   date: string,
 ): ShiftEntry {
+  const shiftCode = String(shift.shift || "")
+    .replace(/\s*\*\s*$/, "")
+    .trim();
   const normalizedType = shift.shiftType === "night" ? "night" : "day";
+
+  // Re-validate hours against SHIFT_CODES to correct any previously stored
+  // wrong values (e.g. Z07 stored as 7.5h instead of 11.25h due to a
+  // substring-matching bug in parseShiftCode).
+  let hours = Number(shift.hours || 0);
+  let startTime = String(shift.startTime || "");
+  let endTime = String(shift.endTime || "");
+  let shiftType = normalizedType;
+
+  if (shiftCode) {
+    const codeUpper = shiftCode.toUpperCase();
+    const exactDef = SHIFT_CODES.find(
+      (s) => s.code.toUpperCase() === codeUpper,
+    );
+    if (exactDef) {
+      hours = exactDef.hours;
+      startTime = exactDef.start;
+      endTime = exactDef.end;
+      shiftType = exactDef.type;
+    }
+  }
 
   return {
     date,
     shift: String(shift.shift || ""),
-    shiftType: normalizedType,
-    hours: Number(shift.hours || 0),
-    startTime: String(shift.startTime || ""),
-    endTime: String(shift.endTime || ""),
+    shiftType: shiftType,
+    hours,
+    startTime,
+    endTime,
   };
 }
 

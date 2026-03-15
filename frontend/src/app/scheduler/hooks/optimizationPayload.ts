@@ -13,6 +13,7 @@ export type SchedulerOptimizationNurse = {
   employmentType: "full-time" | "part-time";
   maxWeeklyHours: number;
   targetWeeklyHours: number;
+  targetBiWeeklyHours?: number;
   preferredShiftLengthHours?: number;
   offRequests: string[];
 };
@@ -25,16 +26,16 @@ interface BuildSchedulerNursesArgs {
   autoComments: string;
   nurseMetadataByName?: NurseMetadataLookup;
   getDefaultMaxWeeklyHours: (employmentType?: "FT" | "PT") => number;
-  fullTimeWeeklyTarget: number;
-  partTimeWeeklyTarget: number;
+  fullTimeBiWeeklyTarget: number;
+  partTimeBiWeeklyTarget: number;
 }
 
 function resolveTargetWeeklyHours(
   isPartTime: boolean,
   maxWeeklyHours: number,
   explicitTargetWeeklyHours: number | undefined,
-  fullTimeWeeklyTarget: number,
-  partTimeWeeklyTarget: number,
+  fullTimeBiWeeklyTarget: number,
+  partTimeBiWeeklyTarget: number,
 ): number {
   if (
     typeof explicitTargetWeeklyHours === "number" &&
@@ -45,25 +46,26 @@ function resolveTargetWeeklyHours(
   }
 
   const defaultTarget = isPartTime
-    ? partTimeWeeklyTarget
-    : fullTimeWeeklyTarget;
+    ? partTimeBiWeeklyTarget
+    : fullTimeBiWeeklyTarget;
 
-  // Support custom PT lines (e.g., 0.6 FTE = 22.5h/week) when entered as nurse max hours.
+  // Support custom PT lines (e.g., 0.6 FTE) when entered as nurse max hours.
+  // Bi-weekly: values up to 60h are plausible PT targets.
   if (
     isPartTime &&
     Number.isFinite(maxWeeklyHours) &&
     maxWeeklyHours > 0 &&
-    maxWeeklyHours <= 30
+    maxWeeklyHours <= 60
   ) {
     return maxWeeklyHours;
   }
 
-  // For FT, allow explicit realistic target override when provided near standard FT range.
+  // For FT, allow explicit realistic target override near standard FT range (60-80h bi-weekly).
   if (
     !isPartTime &&
     Number.isFinite(maxWeeklyHours) &&
-    maxWeeklyHours >= 30 &&
-    maxWeeklyHours <= 40
+    maxWeeklyHours >= 60 &&
+    maxWeeklyHours <= 80
   ) {
     return maxWeeklyHours;
   }
@@ -99,7 +101,12 @@ function getOffRequestsFromShiftCodes(row: GridRow): string[] {
   for (const shift of row.shifts) {
     if (!shift?.shift) continue;
 
+    // Strip trailing asterisks — a lone "*" is just a comment marker
+    // (the actual off determination lives in autoComments / Employee
+    // Notes & Time-Off Requests), NOT a time-off request by itself.
     const shiftCode = shift.shift.replace(/\*/g, "").trim().toUpperCase();
+    if (!shiftCode) continue; // bare "*" → skip
+
     if (
       (shiftCode === "C" ||
         shiftCode === "CF" ||
@@ -114,13 +121,47 @@ function getOffRequestsFromShiftCodes(row: GridRow): string[] {
   return Array.from(offRequests);
 }
 
+/**
+ * Night-start codes whose next-day "tail" in the OCR grid is a visual
+ * artefact, NOT a separate worked shift.
+ */
+const NIGHT_START_CODES = new Set(["Z19", "Z23", "Z23 B", "23"]);
+/** Only plain Z23 (without "B") is ever a ghost tail. */
+const GHOST_TAIL_CODES = new Set(["Z23"]);
+
+/**
+ * Pre-clean an array of shift codes: remove ghost tails left→right.
+ * Returns a NEW array (does not mutate the original).
+ */
+function removeGhostTails(shifts: string[]): string[] {
+  const cleaned = [...shifts];
+  for (let i = 0; i < cleaned.length - 1; i++) {
+    const code = cleaned[i].replace(/\*/g, "").trim().toUpperCase();
+    if (!code || !NIGHT_START_CODES.has(code)) continue;
+    const next = cleaned[i + 1].replace(/\*/g, "").trim().toUpperCase();
+    if (GHOST_TAIL_CODES.has(next)) {
+      cleaned[i + 1] = ""; // null out ghost tail
+    }
+  }
+  return cleaned;
+}
+
 export function buildSchedulerAssignments(
   ocrGrid: GridRow[],
 ): Record<string, string[]> {
   return Object.fromEntries(
     ocrGrid.map((row) => [
       row.nurse,
-      row.shifts.map((shift) => shift.shift.replace(/\*/g, "").trim()),
+      // De-Duplication Command: clean ghost tails BEFORE data leaves the frontend.
+      removeGhostTails(
+        row.shifts.map((shift) => {
+          const code = shift.shift.replace(/\*/g, "").trim();
+          // Wrap-around night tails (marked with ↩ by dedup) are not real shifts.
+          // Send empty so the optimizer treats the day as a rest/recovery day.
+          if (code.includes("↩")) return "";
+          return code;
+        }),
+      ),
     ]),
   );
 }
@@ -155,8 +196,8 @@ export function buildSchedulerNurses({
   autoComments,
   nurseMetadataByName,
   getDefaultMaxWeeklyHours,
-  fullTimeWeeklyTarget,
-  partTimeWeeklyTarget,
+  fullTimeBiWeeklyTarget,
+  partTimeBiWeeklyTarget,
 }: BuildSchedulerNursesArgs): SchedulerOptimizationNurse[] {
   const metadataLookup = nurseMetadataByName ?? new Map<string, ManualNurse>();
   const nurseOffDates = extractOffDatesFromComments(autoComments);
@@ -170,16 +211,40 @@ export function buildSchedulerNurses({
         ...getOffRequestsFromShiftCodes(row),
         ...(nurseMetadata?.offRequests || []),
       ]);
+      // `maxHours` stored in manual metadata is a bi-weekly value in the
+      // UI/DB; convert to a weekly cap for the optimizer's `maxWeeklyHours`.
+      const rawMax = nurseMetadata?.maxHours;
       const maxWeeklyHours =
-        nurseMetadata?.maxHours ||
-        getDefaultMaxWeeklyHours(isPartTime ? "PT" : "FT");
-      const targetWeeklyHours = resolveTargetWeeklyHours(
-        isPartTime,
-        maxWeeklyHours,
-        nurseMetadata?.targetWeeklyHours,
-        fullTimeWeeklyTarget,
-        partTimeWeeklyTarget,
-      );
+        typeof rawMax === "number" && rawMax > 0
+          ? Math.max(0, Number(rawMax) / 2.0)
+          : getDefaultMaxWeeklyHours(isPartTime ? "PT" : "FT");
+
+      // Resolve bi-weekly and weekly target hours consistently.  The
+      // frontend stores organization-level defaults as bi-weekly values
+      // (`fullTimeBiWeeklyTarget`), so expose both fields to the backend
+      // to avoid ambiguity: `targetBiWeeklyHours` (bi-weekly) and
+      // `targetWeeklyHours` (weekly = bi-weekly / 2).
+      const explicitWeeklyTarget = nurseMetadata?.targetWeeklyHours;
+      const explicitBiweeklyTarget = (nurseMetadata as any)
+        ?.targetBiWeeklyHours;
+
+      let targetBiWeeklyHours: number;
+      if (
+        typeof explicitWeeklyTarget === "number" &&
+        explicitWeeklyTarget > 0
+      ) {
+        targetBiWeeklyHours = explicitWeeklyTarget * 2.0;
+      } else if (
+        typeof explicitBiweeklyTarget === "number" &&
+        explicitBiweeklyTarget > 0
+      ) {
+        targetBiWeeklyHours = explicitBiweeklyTarget;
+      } else {
+        targetBiWeeklyHours = isPartTime
+          ? partTimeBiWeeklyTarget
+          : fullTimeBiWeeklyTarget;
+      }
+      const targetWeeklyHours = targetBiWeeklyHours / 2.0;
 
       return {
         id: `ocr-${idx}`,
@@ -193,6 +258,7 @@ export function buildSchedulerNurses({
         employmentType: isPartTime ? "part-time" : "full-time",
         maxWeeklyHours,
         targetWeeklyHours,
+        targetBiWeeklyHours,
         preferredShiftLengthHours: nurseMetadata?.preferredShiftLengthHours,
         offRequests: Array.from(offRequests),
       };
@@ -202,15 +268,35 @@ export function buildSchedulerNurses({
   const manualNurseObjects: SchedulerOptimizationNurse[] = manualNurses.map(
     (nurse, idx) => {
       const isPartTime = nurse.employmentType === "PT";
-      const maxWeeklyHours =
-        nurse.maxHours || getDefaultMaxWeeklyHours(nurse.employmentType);
-      const targetWeeklyHours = resolveTargetWeeklyHours(
-        isPartTime,
-        maxWeeklyHours,
-        nurse.targetWeeklyHours,
-        fullTimeWeeklyTarget,
-        partTimeWeeklyTarget,
-      );
+      // Manual nurse entries come from the nurses UI where `maxHours` and
+      // organization defaults are expressed as bi-weekly values. Convert
+      // `maxHours` to a weekly cap and expose both weekly+biweekly targets.
+      const rawManualMax = nurse.maxHours;
+      const manualMaxWeekly =
+        typeof rawManualMax === "number" && rawManualMax > 0
+          ? Math.max(0, Number(rawManualMax) / 2.0)
+          : getDefaultMaxWeeklyHours(nurse.employmentType);
+
+      const explicitWeeklyTargetManual = nurse.targetWeeklyHours;
+      const explicitBiweeklyTargetManual = (nurse as any).targetBiWeeklyHours;
+
+      let manualTargetBiweekly: number;
+      if (
+        typeof explicitWeeklyTargetManual === "number" &&
+        explicitWeeklyTargetManual > 0
+      ) {
+        manualTargetBiweekly = explicitWeeklyTargetManual * 2.0;
+      } else if (
+        typeof explicitBiweeklyTargetManual === "number" &&
+        explicitBiweeklyTargetManual > 0
+      ) {
+        manualTargetBiweekly = explicitBiweeklyTargetManual;
+      } else {
+        manualTargetBiweekly = isPartTime
+          ? partTimeBiWeeklyTarget
+          : fullTimeBiWeeklyTarget;
+      }
+      const manualTargetWeekly = manualTargetBiweekly / 2.0;
 
       return {
         id: `manual-${idx}`,
@@ -222,8 +308,9 @@ export function buildSchedulerNurses({
         isChargeCertified: nurse.chargeCertified || false,
         isHeadNurse: nurse.isHeadNurse || false,
         employmentType: isPartTime ? "part-time" : "full-time",
-        maxWeeklyHours,
-        targetWeeklyHours,
+        maxWeeklyHours: manualMaxWeekly,
+        targetWeeklyHours: manualTargetWeekly,
+        targetBiWeeklyHours: manualTargetBiweekly,
         preferredShiftLengthHours: nurse.preferredShiftLengthHours,
         offRequests: nurse.offRequests || [],
       };
@@ -232,20 +319,35 @@ export function buildSchedulerNurses({
 
   const nurseMap = new Map<string, SchedulerOptimizationNurse>();
   for (const nurse of manualNurseObjects) {
-    nurseMap.set(nurse.name, nurse);
+    nurseMap.set(normalizeNurseName(nurse.name), nurse);
   }
 
   for (const nurse of ocrNurseObjects) {
-    const existing = nurseMap.get(nurse.name);
+    const key = normalizeNurseName(nurse.name);
+    const existing = nurseMap.get(key);
     if (existing) {
-      nurse.offRequests = [
+      // Merge OCR-derived nurse with the existing manual nurse entry.
+      // Prefer authoritative/manual fields (employeeId, certifications,
+      // employmentType, max/target hours) while combining offRequests.
+      const mergedOff = [
         ...new Set([
           ...(existing.offRequests || []),
           ...(nurse.offRequests || []),
         ]),
       ];
+
+      const merged = {
+        // Start with OCR values, then overlay manual (existing) to prefer manual
+        // metadata for fields that matter for optimization.
+        ...nurse,
+        ...existing,
+        offRequests: mergedOff,
+      } as SchedulerOptimizationNurse;
+
+      nurseMap.set(key, merged);
+      continue;
     }
-    nurseMap.set(nurse.name, nurse);
+    nurseMap.set(key, nurse);
   }
 
   return Array.from(nurseMap.values());
