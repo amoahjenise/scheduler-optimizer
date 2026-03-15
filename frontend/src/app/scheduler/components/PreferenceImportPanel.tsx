@@ -12,7 +12,18 @@
 "use client";
 
 import React, { useState, useRef, useCallback } from "react";
-import { Upload, ClipboardPaste, PenLine, CheckCircle, AlertTriangle, X, FileSpreadsheet, Trash2, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  Upload,
+  ClipboardPaste,
+  PenLine,
+  CheckCircle,
+  AlertTriangle,
+  X,
+  FileSpreadsheet,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
+} from "lucide-react";
 import {
   usePreferenceImport,
   type ImportSource,
@@ -37,7 +48,12 @@ interface PreferenceImportPanelProps {
 // TAB CONFIG
 // ============================================================================
 
-const TABS: { key: ImportSource; label: string; icon: React.ReactNode; desc: string }[] = [
+const TABS: {
+  key: ImportSource;
+  label: string;
+  icon: React.ReactNode;
+  desc: string;
+}[] = [
   {
     key: "upload",
     label: "Upload File",
@@ -225,8 +241,8 @@ export function PreferenceImportPanel({
                 Supports: .csv, .tsv, .xlsx, .xls
               </p>
               <p className="text-xs text-gray-400 mt-2">
-                Compatible with Logibec eEspresso exports, grid schedules, or
-                flat preference lists
+                Compatible with Logibec GCH eEspresso self-scheduling exports,
+                grid schedules, or flat preference lists
               </p>
               <input
                 ref={fileInputRef}
@@ -238,6 +254,20 @@ export function PreferenceImportPanel({
                 }}
               />
             </div>
+
+            {/* Logibec format hint */}
+            <details className="mt-3 text-xs">
+              <summary className="cursor-pointer text-gray-500 hover:text-gray-700 font-medium">
+                How to export from Logibec eEspresso
+              </summary>
+              <div className="mt-2 p-3 bg-gray-50 rounded-lg text-gray-600 space-y-1.5">
+                <p>1. Open <strong>Logibec GCH Espresso</strong> → <em>Workforce Management</em> → <em>Reports</em></p>
+                <p>2. Select <strong>Self-Scheduling Export</strong> (Rapport de l&apos;auto-inscription)</p>
+                <p>3. Choose your unit and period</p>
+                <p>4. Export as <strong>CSV (Comma Delimited)</strong></p>
+                <p className="text-gray-400 mt-1">The parser automatically skips metadata headers and detects Matricule, Nom_Prénom, Statut_FTE columns and DD-MM-YYYY date format. Concatenated codes like <code className="bg-gray-200 px-1 rounded">CF-3 07</code> and <code className="bg-gray-200 px-1 rounded">Z23 B</code> are recognised.</p>
+              </div>
+            </details>
           </div>
         )}
 
@@ -251,7 +281,13 @@ export function PreferenceImportPanel({
             <textarea
               value={pasteText}
               onChange={(e) => setPasteText(e.target.value)}
-              placeholder={`Employee ID\tName\tDate\tShift Code\n12345\tSmith, Jane\t2025-07-01\t07\n12345\tSmith, Jane\t2025-07-02\tZ07\n...`}
+              placeholder={`"Matricule","Nom_Prénom","Statut_FTE","24-08-2025","25-08-2025","26-08-2025"
+"1234567","Zatylny, Alexandra","0.85","OFF","Z07","Z07"
+"2345678","Sita, Demitra","1.00","VAC","VAC","CF-3 07"
+
+Or flat format:
+Employee ID\tName\tDate\tShift Code
+12345\tSmith, Jane\t2025-07-01\t07`}
               className="w-full h-48 px-3 py-2 border border-gray-300 rounded-lg font-mono text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-y"
             />
             <div className="mt-3 flex gap-2">
@@ -564,9 +600,22 @@ export function PreferenceImportPanel({
                   <ChevronDown className="w-4 h-4" />
                 )}
               </button>
-              {showPreview && (
+              {showPreview && (() => {
+                // Derive FTE map from parsedRows
+                const fteMap = new Map<string, number>();
+                for (const row of result.parsedRows) {
+                  if (row.fte != null && !fteMap.has(row.nurseName)) {
+                    fteMap.set(row.nurseName, row.fte);
+                  }
+                }
+                return (
                 <div className="max-h-64 overflow-y-auto">
-                  {result.submissions.map((sub) => (
+                  {result.submissions.map((sub) => {
+                    const fte = fteMap.get(sub.nurseName);
+                    const holidayShifts = sub.primaryRequests.filter(
+                      (p) => p.reason && p.reason.startsWith("Holiday:")
+                    );
+                    return (
                     <div
                       key={sub.nurseId}
                       className="px-4 py-3 border-t border-gray-100"
@@ -579,6 +628,17 @@ export function PreferenceImportPanel({
                               ({sub.nurseId})
                             </span>
                           )}
+                          {fte != null && (
+                            <span
+                              className={`ml-1.5 px-1.5 py-0.5 rounded text-xs font-normal ${
+                                fte >= 1.0
+                                  ? "bg-emerald-50 text-emerald-700"
+                                  : "bg-amber-50 text-amber-700"
+                              }`}
+                            >
+                              {fte >= 1.0 ? "FT" : `PT ${fte}`}
+                            </span>
+                          )}
                         </span>
                         <div className="flex items-center gap-2 text-xs text-gray-500">
                           <span>
@@ -587,6 +647,11 @@ export function PreferenceImportPanel({
                           </span>
                           {sub.offRequests.length > 0 && (
                             <span>• {sub.offRequests.length} off</span>
+                          )}
+                          {holidayShifts.length > 0 && (
+                            <span className="text-purple-600">
+                              • {holidayShifts.length} holiday
+                            </span>
                           )}
                           <span className="px-1.5 py-0.5 rounded bg-gray-100">
                             {sub.preferredShiftLength}
@@ -600,9 +665,15 @@ export function PreferenceImportPanel({
                         {sub.primaryRequests.slice(0, 14).map((pref, i) => (
                           <span
                             key={i}
-                            className="px-1.5 py-0.5 rounded text-xs bg-blue-50 text-blue-700"
+                            className={`px-1.5 py-0.5 rounded text-xs ${
+                              pref.reason?.startsWith("Holiday:")
+                                ? "bg-purple-50 text-purple-700 ring-1 ring-purple-200"
+                                : "bg-blue-50 text-blue-700"
+                            }`}
+                            title={pref.reason || undefined}
                           >
                             {pref.date.slice(5)} {pref.shiftCode}
+                            {pref.reason?.startsWith("Holiday:") && " 🏖"}
                           </span>
                         ))}
                         {sub.offRequests.slice(0, 5).map((d, i) => (
@@ -625,9 +696,11 @@ export function PreferenceImportPanel({
                         )}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
-              )}
+                );
+              })()}
             </div>
 
             {/* Action buttons */}

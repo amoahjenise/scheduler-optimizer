@@ -51,8 +51,11 @@ export default function SetupStep({
   onPreferenceSubmissions,
   availableNurses = [],
 }: SetupStepProps) {
-  const [localSource, setLocalSource] = useState<PreferenceSource>(preferenceSource);
-  const activeSource = onPreferenceSourceChange ? preferenceSource : localSource;
+  const [localSource, setLocalSource] =
+    useState<PreferenceSource>(preferenceSource);
+  const activeSource = onPreferenceSourceChange
+    ? preferenceSource
+    : localSource;
 
   const handleSourceChange = (source: PreferenceSource) => {
     if (onPreferenceSourceChange) {

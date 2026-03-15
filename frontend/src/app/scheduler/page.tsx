@@ -250,8 +250,11 @@ export default function SchedulerPage() {
 
   // ── Self-scheduling / Preference Import ──
   type PreferenceSource = "ocr" | "import";
-  const [preferenceSource, setPreferenceSource] = useState<PreferenceSource>("ocr");
-  const [preferenceSubmissions, setPreferenceSubmissions] = useState<NurseScheduleSubmission[]>([]);
+  const [preferenceSource, setPreferenceSource] =
+    useState<PreferenceSource>("ocr");
+  const [preferenceSubmissions, setPreferenceSubmissions] = useState<
+    NurseScheduleSubmission[]
+  >([]);
   const selfScheduling = useSelfScheduling();
 
   // AI Schedule Insights
@@ -2300,277 +2303,303 @@ export default function SchedulerPage() {
             className="space-y-6"
           >
             {/* ── Imported Preferences Summary (when source = import) ── */}
-            {preferenceSource === "import" && preferenceSubmissions.length > 0 && (
-              <div className="bg-white rounded-xl border border-green-200 p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                    <span className="text-xl">📥</span> Imported Preferences
-                  </h2>
-                  <span className="px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800">
-                    {preferenceSubmissions.length} nurse{preferenceSubmissions.length !== 1 ? "s" : ""}
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-4 mb-4">
-                  <div className="bg-blue-50 rounded-lg p-3 text-center">
-                    <div className="text-xl font-bold text-blue-700">
-                      {preferenceSubmissions.reduce((sum, s) => sum + s.primaryRequests.length, 0)}
-                    </div>
-                    <div className="text-xs text-blue-600">Shift Preferences</div>
+            {preferenceSource === "import" &&
+              preferenceSubmissions.length > 0 && (
+                <div className="bg-white rounded-xl border border-green-200 p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                      <span className="text-xl">📥</span> Imported Preferences
+                    </h2>
+                    <span className="px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800">
+                      {preferenceSubmissions.length} nurse
+                      {preferenceSubmissions.length !== 1 ? "s" : ""}
+                    </span>
                   </div>
-                  <div className="bg-gray-50 rounded-lg p-3 text-center">
-                    <div className="text-xl font-bold text-gray-700">
-                      {preferenceSubmissions.reduce((sum, s) => sum + s.offRequests.length, 0)}
-                    </div>
-                    <div className="text-xs text-gray-600">Off Requests</div>
-                  </div>
-                  <div className="bg-indigo-50 rounded-lg p-3 text-center">
-                    <div className="text-xl font-bold text-indigo-700">
-                      {startDate} → {endDate}
-                    </div>
-                    <div className="text-xs text-indigo-600">Period</div>
-                  </div>
-                </div>
-                <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
-                  {preferenceSubmissions.map((sub) => (
-                    <div key={sub.nurseId} className="px-4 py-2.5 flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <span className="text-sm font-medium text-gray-800">{sub.nurseName}</span>
-                        {sub.nurseId !== sub.nurseName && (
-                          <span className="text-xs text-gray-400">ID: {sub.nurseId}</span>
+                  <div className="grid grid-cols-3 gap-4 mb-4">
+                    <div className="bg-blue-50 rounded-lg p-3 text-center">
+                      <div className="text-xl font-bold text-blue-700">
+                        {preferenceSubmissions.reduce(
+                          (sum, s) => sum + s.primaryRequests.length,
+                          0,
                         )}
                       </div>
-                      <div className="flex items-center gap-2 text-xs">
-                        <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700">
-                          {sub.primaryRequests.length} shifts
-                        </span>
-                        {sub.offRequests.length > 0 && (
-                          <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-600">
-                            {sub.offRequests.length} off
-                          </span>
-                        )}
-                        <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-500">
-                          {sub.preferredShiftLength} · {sub.shiftTypePreference}
-                        </span>
+                      <div className="text-xs text-blue-600">
+                        Shift Preferences
                       </div>
                     </div>
-                  ))}
-                </div>
-                <div className="mt-4 flex items-center gap-3">
-                  <button
-                    onClick={() => setCurrentStep("setup")}
-                    className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-                  >
-                    ← Re-import
-                  </button>
-                  <button
-                    onClick={() => {
-                      // Build dates array for the period
-                      const dates: string[] = [];
-                      const d = new Date(startDate);
-                      const end = new Date(endDate);
-                      while (d <= end) {
-                        dates.push(d.toISOString().split("T")[0]);
-                        d.setDate(d.getDate() + 1);
-                      }
-
-                      // Build staffing requirements from requiredStaff
-                      const staffingReqs: Record<string, { day: number; night: number }> = {};
-                      for (const [date, shifts] of Object.entries(requiredStaff)) {
-                        staffingReqs[date] = {
-                          day: Object.entries(shifts)
-                            .filter(([k]) => k.startsWith("day"))
-                            .reduce((s, [, v]) => s + v, 0) || 4,
-                          night: Object.entries(shifts)
-                            .filter(([k]) => k.startsWith("night"))
-                            .reduce((s, [, v]) => s + v, 0) || 2,
-                        };
-                      }
-
-                      selfScheduling.optimizeWithSubmissions(
-                        preferenceSubmissions,
-                        dates,
-                        staffingReqs,
-                      );
-                      setCurrentStep("optimize");
-                    }}
-                    className="px-5 py-2.5 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
-                  >
-                    Run Self-Scheduling Optimizer →
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* ── OCR Review (original flow) ── */}
-            {preferenceSource === "ocr" && (
-            <>
-            <div className="bg-white rounded-xl border border-gray-200 p-6">
-              <div className="mb-4">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-lg font-semibold text-gray-900">
-                    Review Extracted Data
-                  </h2>
-                  <ShiftCodesPopover
-                    shiftCodes={SHIFT_CODES}
-                    timeSlots={TIME_SLOTS.map((ts) => ({
-                      slot: ts.slot,
-                      category: ts.category,
-                      duration: ts.duration,
-                      label: ts.label,
-                      mapsTo: ts.mapsTo,
-                    }))}
-                    label="Shift Codes"
-                  />
-                </div>
-                <p className="text-gray-500 text-sm mt-1">
-                  Review and edit the extracted schedule data. Click any cell to
-                  modify.
-                </p>
-              </div>
-
-              {/* OCR Warnings Banner */}
-              {ocrWarnings.length > 0 && (
-                <div className="mb-4 p-4 bg-amber-50 border border-amber-300 rounded-lg">
-                  <div className="flex items-start gap-3">
-                    <svg
-                      className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                      />
-                    </svg>
-                    <div className="flex-1">
-                      <h3 className="text-sm font-semibold text-amber-800">
-                        Potential OCR Issues Detected ({ocrWarnings.length})
-                      </h3>
-                      <p className="text-xs text-amber-700 mt-1 mb-2">
-                        The following names may have been misread by OCR. Please
-                        review and correct if needed:
-                      </p>
-                      <ul className="space-y-1.5">
-                        {ocrWarnings.map((warning, idx) => (
-                          <li
-                            key={idx}
-                            className="flex items-center gap-2 text-sm"
-                          >
-                            <span
-                              className={`w-2 h-2 rounded-full flex-shrink-0 ${
-                                warning.severity === "error"
-                                  ? "bg-red-500"
-                                  : "bg-amber-500"
-                              }`}
-                            />
-                            <span className="font-medium text-amber-900">
-                              &quot;{warning.name}&quot;
-                            </span>
-                            <span className="text-amber-700">—</span>
-                            <span className="text-amber-700">
-                              {warning.issue}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                      <p className="text-xs text-amber-600 mt-3 italic">
-                        💡 Tip: Click on a nurse name in the grid below to edit
-                        it directly.
-                      </p>
+                    <div className="bg-gray-50 rounded-lg p-3 text-center">
+                      <div className="text-xl font-bold text-gray-700">
+                        {preferenceSubmissions.reduce(
+                          (sum, s) => sum + s.offRequests.length,
+                          0,
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-600">Off Requests</div>
                     </div>
-                    <button
-                      onClick={() => setOcrWarnings([])}
-                      className="text-amber-600 hover:text-amber-800 p-1"
-                      title="Dismiss warnings"
-                    >
-                      <svg
-                        className="w-4 h-4"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
+                    <div className="bg-indigo-50 rounded-lg p-3 text-center">
+                      <div className="text-xl font-bold text-indigo-700">
+                        {startDate} → {endDate}
+                      </div>
+                      <div className="text-xs text-indigo-600">Period</div>
+                    </div>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+                    {preferenceSubmissions.map((sub) => (
+                      <div
+                        key={sub.nurseId}
+                        className="px-4 py-2.5 flex items-center justify-between"
                       >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M6 18L18 6M6 6l12 12"
-                        />
-                      </svg>
+                        <div className="flex items-center gap-3">
+                          <span className="text-sm font-medium text-gray-800">
+                            {sub.nurseName}
+                          </span>
+                          {sub.nurseId !== sub.nurseName && (
+                            <span className="text-xs text-gray-400">
+                              ID: {sub.nurseId}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700">
+                            {sub.primaryRequests.length} shifts
+                          </span>
+                          {sub.offRequests.length > 0 && (
+                            <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-600">
+                              {sub.offRequests.length} off
+                            </span>
+                          )}
+                          <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-500">
+                            {sub.preferredShiftLength} ·{" "}
+                            {sub.shiftTypePreference}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 flex items-center gap-3">
+                    <button
+                      onClick={() => setCurrentStep("setup")}
+                      className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+                    >
+                      ← Re-import
+                    </button>
+                    <button
+                      onClick={() => {
+                        // Build dates array for the period
+                        const dates: string[] = [];
+                        const d = new Date(startDate);
+                        const end = new Date(endDate);
+                        while (d <= end) {
+                          dates.push(d.toISOString().split("T")[0]);
+                          d.setDate(d.getDate() + 1);
+                        }
+
+                        // Build staffing requirements from requiredStaff
+                        const staffingReqs: Record<
+                          string,
+                          { day: number; night: number }
+                        > = {};
+                        for (const [date, shifts] of Object.entries(
+                          requiredStaff,
+                        )) {
+                          staffingReqs[date] = {
+                            day:
+                              Object.entries(shifts)
+                                .filter(([k]) => k.startsWith("day"))
+                                .reduce((s, [, v]) => s + v, 0) || 4,
+                            night:
+                              Object.entries(shifts)
+                                .filter(([k]) => k.startsWith("night"))
+                                .reduce((s, [, v]) => s + v, 0) || 2,
+                          };
+                        }
+
+                        selfScheduling.optimizeWithSubmissions(
+                          preferenceSubmissions,
+                          dates,
+                          staffingReqs,
+                        );
+                        setCurrentStep("optimize");
+                      }}
+                      className="px-5 py-2.5 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+                    >
+                      Run Self-Scheduling Optimizer →
                     </button>
                   </div>
                 </div>
               )}
 
-              {manualNurses.length > 0 && (
-                <div className="mb-4 p-3 bg-purple-50 border border-purple-200 rounded-lg">
-                  <p className="text-sm font-medium text-purple-900 mb-2">
-                    Manual Nurses Added ({manualNurses.length}):
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {manualNurses.map((nurse, idx) => (
-                      <span
-                        key={idx}
-                        className="px-2 py-1 bg-white border border-purple-300 rounded text-sm text-purple-700"
-                      >
-                        {nurse.name}
-                        {nurse.chemoCertified && " 💉"}
-                        {nurse.employmentType && ` (${nurse.employmentType})`}
-                      </span>
-                    ))}
+            {/* ── OCR Review (original flow) ── */}
+            {preferenceSource === "ocr" && (
+              <>
+                <div className="bg-white rounded-xl border border-gray-200 p-6">
+                  <div className="mb-4">
+                    <div className="flex items-center justify-between">
+                      <h2 className="text-lg font-semibold text-gray-900">
+                        Review Extracted Data
+                      </h2>
+                      <ShiftCodesPopover
+                        shiftCodes={SHIFT_CODES}
+                        timeSlots={TIME_SLOTS.map((ts) => ({
+                          slot: ts.slot,
+                          category: ts.category,
+                          duration: ts.duration,
+                          label: ts.label,
+                          mapsTo: ts.mapsTo,
+                        }))}
+                        label="Shift Codes"
+                      />
+                    </div>
+                    <p className="text-gray-500 text-sm mt-1">
+                      Review and edit the extracted schedule data. Click any
+                      cell to modify.
+                    </p>
+                  </div>
+
+                  {/* OCR Warnings Banner */}
+                  {ocrWarnings.length > 0 && (
+                    <div className="mb-4 p-4 bg-amber-50 border border-amber-300 rounded-lg">
+                      <div className="flex items-start gap-3">
+                        <svg
+                          className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+                          />
+                        </svg>
+                        <div className="flex-1">
+                          <h3 className="text-sm font-semibold text-amber-800">
+                            Potential OCR Issues Detected ({ocrWarnings.length})
+                          </h3>
+                          <p className="text-xs text-amber-700 mt-1 mb-2">
+                            The following names may have been misread by OCR.
+                            Please review and correct if needed:
+                          </p>
+                          <ul className="space-y-1.5">
+                            {ocrWarnings.map((warning, idx) => (
+                              <li
+                                key={idx}
+                                className="flex items-center gap-2 text-sm"
+                              >
+                                <span
+                                  className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                                    warning.severity === "error"
+                                      ? "bg-red-500"
+                                      : "bg-amber-500"
+                                  }`}
+                                />
+                                <span className="font-medium text-amber-900">
+                                  &quot;{warning.name}&quot;
+                                </span>
+                                <span className="text-amber-700">—</span>
+                                <span className="text-amber-700">
+                                  {warning.issue}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                          <p className="text-xs text-amber-600 mt-3 italic">
+                            💡 Tip: Click on a nurse name in the grid below to
+                            edit it directly.
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setOcrWarnings([])}
+                          className="text-amber-600 hover:text-amber-800 p-1"
+                          title="Dismiss warnings"
+                        >
+                          <svg
+                            className="w-4 h-4"
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M6 18L18 6M6 6l12 12"
+                            />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {manualNurses.length > 0 && (
+                    <div className="mb-4 p-3 bg-purple-50 border border-purple-200 rounded-lg">
+                      <p className="text-sm font-medium text-purple-900 mb-2">
+                        Manual Nurses Added ({manualNurses.length}):
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {manualNurses.map((nurse, idx) => (
+                          <span
+                            key={idx}
+                            className="px-2 py-1 bg-white border border-purple-300 rounded text-sm text-purple-700"
+                          >
+                            {nurse.name}
+                            {nurse.chemoCertified && " 💉"}
+                            {nurse.employmentType &&
+                              ` (${nurse.employmentType})`}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="overflow-x-auto">
+                    <EditableOCRGrid
+                      ocrDates={ocrDates}
+                      ocrGrid={ocrGrid}
+                      setOcrGrid={handleSetOcrGrid}
+                      marker={marker}
+                    />
                   </div>
                 </div>
-              )}
 
-              <div className="overflow-x-auto">
-                <EditableOCRGrid
-                  ocrDates={ocrDates}
-                  ocrGrid={ocrGrid}
-                  setOcrGrid={handleSetOcrGrid}
-                  marker={marker}
-                />
-              </div>
-            </div>
+                <div className="bg-white rounded-xl border border-gray-200 p-6">
+                  <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                    Staff Requirements (Optional)
+                  </h2>
+                  <StaffRequirementsEditor
+                    ocrDates={ocrDates}
+                    shiftTypes={shiftTypes}
+                    requiredStaff={requiredStaff}
+                    setRequiredStaff={setRequiredStaff}
+                  />
+                </div>
 
-            <div className="bg-white rounded-xl border border-gray-200 p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                Staff Requirements (Optional)
-              </h2>
-              <StaffRequirementsEditor
-                ocrDates={ocrDates}
-                shiftTypes={shiftTypes}
-                requiredStaff={requiredStaff}
-                setRequiredStaff={setRequiredStaff}
-              />
-            </div>
+                {/* Auto-detected marker comments from OCR */}
+                {autoComments && (
+                  <AutoCommentsBox
+                    autoComments={autoComments}
+                    setAutoComments={setAutoComments}
+                    validationErrors={commentValidationErrors}
+                  />
+                )}
 
-            {/* Auto-detected marker comments from OCR */}
-            {autoComments && (
-              <AutoCommentsBox
-                autoComments={autoComments}
-                setAutoComments={setAutoComments}
-                validationErrors={commentValidationErrors}
-              />
-            )}
-
-            <div className="flex justify-between">
-              <button
-                onClick={() => setCurrentStep("setup")}
-                className="px-6 py-2 text-gray-600 font-medium hover:text-gray-900"
-              >
-                ← Back
-              </button>
-              <button
-                onClick={() => setCurrentStep("optimize")}
-                disabled={ocrGrid.length === 0}
-                className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
-              >
-                Continue to Optimize
-              </button>
-            </div>
-            </>
+                <div className="flex justify-between">
+                  <button
+                    onClick={() => setCurrentStep("setup")}
+                    className="px-6 py-2 text-gray-600 font-medium hover:text-gray-900"
+                  >
+                    ← Back
+                  </button>
+                  <button
+                    onClick={() => setCurrentStep("optimize")}
+                    disabled={ocrGrid.length === 0}
+                    className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    Continue to Optimize
+                  </button>
+                </div>
+              </>
             )}
           </motion.div>
         )}
