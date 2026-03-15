@@ -4334,10 +4334,10 @@ CRITICAL RULE: For remove_shift or change actions, you MUST use dates that actua
 
 User Refinement Request:
 {request.refinement_request}
-{"" if not request.rules else f"""
-SCHEDULING RULES (must be respected):
+
+{f'''SCHEDULING RULES (must be respected):
 {request.rules}
-"""}
+''' if request.rules else ''}
 Analyze the schedule and provide specific, actionable changes. 
 
 CRITICAL RULES:
