@@ -4,12 +4,14 @@ import React, { Dispatch, SetStateAction, useState } from "react";
 import { motion } from "framer-motion";
 import { SchedulePeriodInput } from "../components";
 import { PreferenceImportPanel } from "../components/PreferenceImportPanel";
+import { TemplatePicker } from "../components/ScheduleTemplateManager";
 import UploadInput from "../../components/UploadInput";
-import { AlertTriangle, Camera, FileSpreadsheet } from "lucide-react";
+import { AlertTriangle, Camera, FileSpreadsheet, LayoutTemplate } from "lucide-react";
 import { NurseScheduleSubmission } from "../types";
+import type { ScheduleTemplate } from "../hooks/useScheduleTemplates";
 
 // ── Preference source modes ──
-export type PreferenceSource = "ocr" | "import";
+export type PreferenceSource = "ocr" | "import" | "template";
 
 interface SetupStepProps {
   startDate: string;
@@ -32,6 +34,10 @@ interface SetupStepProps {
   onPreferenceSubmissions?: (submissions: NurseScheduleSubmission[]) => void;
   /** Available nurses for manual entry auto-complete */
   availableNurses?: { id: string; name: string }[];
+  // Template mode
+  templates?: ScheduleTemplate[];
+  onTemplateSelect?: (templateId: string) => void;
+  onTemplateDelete?: (templateId: string) => void;
 }
 
 export default function SetupStep({
@@ -50,6 +56,9 @@ export default function SetupStep({
   onPreferenceSourceChange,
   onPreferenceSubmissions,
   availableNurses = [],
+  templates = [],
+  onTemplateSelect,
+  onTemplateDelete,
 }: SetupStepProps) {
   const [localSource, setLocalSource] =
     useState<PreferenceSource>(preferenceSource);
@@ -92,7 +101,7 @@ export default function SetupStep({
           Choose how to provide nurse schedule data for optimization.
         </p>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           {/* OCR option */}
           <button
             type="button"
@@ -148,6 +157,40 @@ export default function SetupStep({
             </span>
             {activeSource === "import" && (
               <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-green-500" />
+            )}
+          </button>
+
+          {/* Template option */}
+          <button
+            type="button"
+            onClick={() => handleSourceChange("template")}
+            className={`
+              relative flex flex-col items-center gap-2 px-4 py-5 rounded-xl border-2 transition-all text-left
+              ${
+                activeSource === "template"
+                  ? "border-purple-500 bg-purple-50 ring-1 ring-purple-200"
+                  : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
+              }
+            `}
+          >
+            <LayoutTemplate
+              className={`w-7 h-7 ${activeSource === "template" ? "text-purple-600" : "text-gray-400"}`}
+            />
+            <span
+              className={`text-sm font-medium ${activeSource === "template" ? "text-purple-700" : "text-gray-700"}`}
+            >
+              From Template
+            </span>
+            <span className="text-xs text-gray-500 text-center">
+              Start from a previously saved schedule
+            </span>
+            {templates.length > 0 && (
+              <span className="absolute top-2 left-2 px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-purple-100 text-purple-600">
+                {templates.length}
+              </span>
+            )}
+            {activeSource === "template" && (
+              <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-purple-500" />
             )}
           </button>
         </div>
@@ -239,6 +282,24 @@ export default function SetupStep({
           }}
           availableNurses={availableNurses}
         />
+      )}
+
+      {/* ── Template Mode ── */}
+      {activeSource === "template" && (
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-2 flex items-center gap-2">
+            <span className="text-xl">📂</span> Load from Template
+          </h2>
+          <p className="text-gray-500 text-sm mb-4">
+            Select a previously saved schedule template. The nurse roster and
+            shift pattern will be projected onto your selected date range.
+          </p>
+          <TemplatePicker
+            templates={templates}
+            onSelect={(id) => onTemplateSelect?.(id)}
+            onDelete={(id) => onTemplateDelete?.(id)}
+          />
+        </div>
       )}
     </motion.div>
   );

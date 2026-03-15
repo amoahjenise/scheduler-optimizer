@@ -102,7 +102,12 @@ const LOGIBEC_META_KEYWORDS = [
 ];
 
 /** Known Logibec header columns (always French) */
-const LOGIBEC_HEADER_MARKERS = ["matricule", "nom_prénom", "nom_prenom", "statut_fte"];
+const LOGIBEC_HEADER_MARKERS = [
+  "matricule",
+  "nom_prénom",
+  "nom_prenom",
+  "statut_fte",
+];
 
 /** Common column header synonyms for auto-detection */
 const HEADER_SYNONYMS: Record<keyof ColumnMapping, string[]> = {
@@ -171,6 +176,119 @@ const HEADER_SYNONYMS: Record<keyof ColumnMapping, string[]> = {
 // PARSER UTILITIES
 // ============================================================================
 
+/**
+ * Strip RTF (Rich Text Format) markup from text.
+ *
+ * macOS copy-paste often wraps content in RTF ({\rtf1 …}) instead of
+ * plain text. This function extracts the visible text, converting:
+ *   - \'XX hex escapes → actual characters (Windows-1252 / Latin-1)
+ *   - \<newline>       → line break
+ *   - \par, \line      → line break
+ *   - \tab             → tab character
+ * and stripping font tables, color tables, and all other control words.
+ *
+ * If the input is NOT RTF, it is returned unchanged.
+ */
+function stripRtf(text: string): string {
+  const trimStart = text.trimStart();
+  if (!trimStart.startsWith("{\\rtf")) return text;
+
+  let output = "";
+  let depth = 0;
+  let skipGroup = false;
+  let skipDepth = 0;
+  let i = 0;
+
+  while (i < text.length) {
+    const ch = text[i];
+
+    // ── Opening brace: increase depth, check for groups to skip ──
+    if (ch === "{") {
+      depth++;
+      // Skip known non-content groups (font table, color table, stylesheet, etc.)
+      const ahead = text.substring(i, i + 40);
+      if (
+        /^\{\\(?:fonttbl|colortbl|stylesheet|info|header|footer|\*\\)/.test(
+          ahead,
+        )
+      ) {
+        skipGroup = true;
+        skipDepth = depth;
+      }
+      i++;
+      continue;
+    }
+
+    // ── Closing brace: decrease depth, end skip if matched ──
+    if (ch === "}") {
+      if (skipGroup && depth === skipDepth) {
+        skipGroup = false;
+      }
+      depth--;
+      i++;
+      continue;
+    }
+
+    // ── While inside a skipped group, consume everything ──
+    if (skipGroup) {
+      i++;
+      continue;
+    }
+
+    // ── Backslash: control word or escape ──
+    if (ch === "\\") {
+      const next = text[i + 1];
+
+      // Hex escape: \'XX  (Windows-1252 byte → char)
+      if (next === "'") {
+        const hex = text.substring(i + 2, i + 4);
+        const code = parseInt(hex, 16);
+        if (!isNaN(code)) {
+          output += String.fromCharCode(code);
+          i += 4;
+          continue;
+        }
+      }
+
+      // Literal escapes: \\  \{  \}
+      if (next === "\\" || next === "{" || next === "}") {
+        output += next;
+        i += 2;
+        continue;
+      }
+
+      // Line break: \ at end of line
+      if (next === "\n" || next === "\r") {
+        output += "\n";
+        i += 2;
+        if (i < text.length && text[i] === "\n") i++; // \r\n
+        continue;
+      }
+
+      // Control word: \word or \wordN (with optional trailing space delimiter)
+      const ctrlMatch = text.substring(i).match(/^\\([a-zA-Z]+)(-?\d+)?\s?/);
+      if (ctrlMatch) {
+        const word = ctrlMatch[1];
+        if (word === "par" || word === "line") output += "\n";
+        else if (word === "tab") output += "\t";
+        // else: discard (formatting control words)
+        i += ctrlMatch[0].length;
+        continue;
+      }
+
+      // Unknown backslash escape — skip the backslash
+      i++;
+      continue;
+    }
+
+    // ── Regular character: keep it ──
+    output += ch;
+    i++;
+  }
+
+  return output.trim();
+}
+
 /** Normalise a date string to YYYY-MM-DD, accepting multiple formats */
 function normaliseDate(raw: string): string | null {
   if (!raw) return null;
@@ -212,8 +330,8 @@ function normaliseDate(raw: string): string | null {
  * and the holiday modifier is returned separately.
  */
 interface NormalisedCode {
-  code: string;       // The working shift code (e.g., "07") or off code (e.g., "C")
-  isOff: boolean;     // true if the nurse is OFF / on vacation / holiday-only
+  code: string; // The working shift code (e.g., "07") or off code (e.g., "C")
+  isOff: boolean; // true if the nurse is OFF / on vacation / holiday-only
   holidayModifier?: string; // e.g., "CF-3" when raw is "CF-3 07"
 }
 
@@ -273,7 +391,7 @@ function normaliseShiftCode(raw: string): NormalisedCode {
     MALADIE: "C",
     MAL: "C",
     ABS: "C",
-    FER: "C",   // Férié (holiday without shift)
+    FER: "C", // Férié (holiday without shift)
   };
   if (aliases[trimmed]) {
     const code = aliases[trimmed];
@@ -349,8 +467,7 @@ function tryParseGridFormat(
     const firstCellLower = (row[0] || "").toLowerCase();
     if (
       LOGIBEC_META_KEYWORDS.some((kw) => firstCellLower.includes(kw)) ||
-      firstCellLower === "" &&
-        row.every((c) => !c || c.trim() === "")
+      (firstCellLower === "" && row.every((c) => !c || c.trim() === ""))
     ) {
       continue;
     }
@@ -377,11 +494,25 @@ function tryParseGridFormat(
       // Identify non-date columns by Logibec header names
       for (let i = 0; i < row.length; i++) {
         const cell = rowLower[i];
-        if (cell === "matricule" || cell === "no_employé" || cell === "no_employe" || cell === "employee_id") {
+        if (
+          cell === "matricule" ||
+          cell === "no_employé" ||
+          cell === "no_employe" ||
+          cell === "employee_id"
+        ) {
           matriculeIdx = i;
-        } else if (cell === "nom_prénom" || cell === "nom_prenom" || cell === "nom" || cell === "name") {
+        } else if (
+          cell === "nom_prénom" ||
+          cell === "nom_prenom" ||
+          cell === "nom" ||
+          cell === "name"
+        ) {
           nameIdx = i;
-        } else if (cell === "statut_fte" || cell === "fte" || cell === "statut") {
+        } else if (
+          cell === "statut_fte" ||
+          cell === "fte" ||
+          cell === "statut"
+        ) {
           fteIdx = i;
         }
       }
@@ -471,7 +602,8 @@ function tryParseGridFormat(
 
   if (parsed.length > 0) {
     // Report detection summary
-    const nurseCount = new Set(parsed.map((p) => p.employeeId || p.nurseName)).size;
+    const nurseCount = new Set(parsed.map((p) => p.employeeId || p.nurseName))
+      .size;
     const format = isLogibecFormat ? "Logibec eEspresso" : "generic grid";
     warnings.unshift(
       `Detected ${format} format: ${nurseCount} nurses × ${dateColumns.length} dates (rows ${headerRowIdx + 1}–${rows.length})`,
@@ -630,8 +762,7 @@ function rowsToSubmissions(
       ["23", "Z19", "Z23", "Z23 B"].includes(c),
     ).length;
     const totalShifts = shiftCodes.length;
-    const isPermanentNight =
-      totalShifts > 0 && nightCount / totalShifts >= 0.8;
+    const isPermanentNight = totalShifts > 0 && nightCount / totalShifts >= 0.8;
 
     submissions.push({
       nurseId: id || name,
@@ -703,7 +834,9 @@ export function usePreferenceImport() {
         const ext = file.name.split(".").pop()?.toLowerCase();
 
         if (ext === "csv" || ext === "tsv" || ext === "txt") {
-          const text = await file.text();
+          const rawText = await file.text();
+          // macOS TextEdit can save .csv files as RTF — strip if detected
+          const text = stripRtf(rawText);
           rows = parseCSVString(text);
         } else if (ext === "xlsx" || ext === "xls") {
           const buffer = await file.arrayBuffer();
@@ -840,7 +973,9 @@ export function usePreferenceImport() {
       const errors: string[] = [];
 
       try {
-        const rows = parseCSVString(text);
+        // macOS clipboard often wraps rich-text in RTF — strip if detected
+        const cleanText = stripRtf(text);
+        const rows = parseCSVString(cleanText);
         if (rows.length === 0) {
           errors.push("No data found in pasted text.");
           setResult({

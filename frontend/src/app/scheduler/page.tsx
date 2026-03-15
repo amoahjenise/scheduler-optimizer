@@ -39,6 +39,8 @@ import {
   ProgressSteps,
   SchedulePeriodInput,
   StaffRequirementsInput,
+  SaveTemplateDialog,
+  TemplatePicker,
 } from "./components";
 
 // Import step components
@@ -64,6 +66,7 @@ import {
   useSchedulerOCRWorkflow,
   useOptimization,
   useSelfScheduling,
+  useScheduleTemplates,
   parseShiftCode,
   cleanNurseName,
   normalizeNurseName,
@@ -249,13 +252,17 @@ export default function SchedulerPage() {
   const [excludedNurses, setExcludedNurses] = useState<Set<string>>(new Set());
 
   // ── Self-scheduling / Preference Import ──
-  type PreferenceSource = "ocr" | "import";
+  type PreferenceSource = "ocr" | "import" | "template";
   const [preferenceSource, setPreferenceSource] =
     useState<PreferenceSource>("ocr");
   const [preferenceSubmissions, setPreferenceSubmissions] = useState<
     NurseScheduleSubmission[]
   >([]);
   const selfScheduling = useSelfScheduling();
+
+  // ── Schedule Templates ──
+  const scheduleTemplates = useScheduleTemplates();
+  const [showSaveTemplateDialog, setShowSaveTemplateDialog] = useState(false);
 
   // AI Schedule Insights
   const [showInsightsPanel, setShowInsightsPanel] = useState(false);
@@ -2292,6 +2299,20 @@ export default function SchedulerPage() {
               id: n.employee_id || n.id,
               name: n.name,
             }))}
+            templates={scheduleTemplates.templates}
+            onTemplateSelect={(templateId) => {
+              const loaded = scheduleTemplates.loadTemplate(
+                templateId,
+                startDate,
+                endDate,
+              );
+              if (loaded) {
+                setOcrGrid(loaded.grid);
+                setOcrDates(loaded.dates);
+                setCurrentStep("review");
+              }
+            }}
+            onTemplateDelete={(id) => scheduleTemplates.deleteTemplate(id)}
           />
         )}
 
@@ -2769,9 +2790,17 @@ export default function SchedulerPage() {
               </div>
               <div className="flex items-center gap-2">
                 {isFinalized ? (
-                  <span className="px-3 py-1 bg-green-600 text-white text-sm font-medium rounded-full">
-                    ✓ Finalized
-                  </span>
+                  <>
+                    <span className="px-3 py-1 bg-green-600 text-white text-sm font-medium rounded-full">
+                      ✓ Finalized
+                    </span>
+                    <button
+                      onClick={() => setShowSaveTemplateDialog(true)}
+                      className="px-3 py-1 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors"
+                    >
+                      💾 Save as Template
+                    </button>
+                  </>
                 ) : (
                   <button
                     onClick={handleFinalizeSchedule}
@@ -5182,6 +5211,24 @@ export default function SchedulerPage() {
           </div>
         </div>
       )}
+
+      {/* ── Save as Template Dialog ── */}
+      <SaveTemplateDialog
+        open={showSaveTemplateDialog}
+        onClose={() => setShowSaveTemplateDialog(false)}
+        onSave={(name, notes) => {
+          scheduleTemplates.saveTemplate(
+            name,
+            optimizedGrid,
+            startDate,
+            endDate,
+            undefined,
+            notes,
+          );
+          alert("Template saved! You can load it next time from the Setup step.");
+        }}
+        defaultName={`${startDate} to ${endDate}`}
+      />
     </div>
   );
 }
