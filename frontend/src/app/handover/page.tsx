@@ -142,10 +142,11 @@ export default function HandoverPage() {
   async function loadData() {
     try {
       setLoading(true);
+      const authHeaders = await getAuthHeaders();
       const [patientsRes, dayHandovers, nightHandovers] = await Promise.all([
-        fetchPatientsAPI({ active_only: true }),
-        fetchTodaysHandoversAPI("day"),
-        fetchTodaysHandoversAPI("night"),
+        fetchPatientsAPI({ active_only: true }, authHeaders),
+        fetchTodaysHandoversAPI("day", authHeaders),
+        fetchTodaysHandoversAPI("night", authHeaders),
       ]);
       setPatients(patientsRes.patients);
       // Combine both shift handovers
@@ -329,12 +330,14 @@ export default function HandoverPage() {
             )
           : handovers.filter((h) => h.patient_id === patientId);
 
-      // Delete each handover from the DB
+      // Delete each handover from the DB — track failures
+      let deleteFailed = false;
       for (const h of relatedHandovers) {
         try {
           await deleteHandoverAPI(h.id, authHeaders);
         } catch (e) {
-          console.warn(`Failed to delete handover ${h.id}:`, e);
+          console.error(`Failed to delete handover ${h.id}:`, e);
+          deleteFailed = true;
         }
       }
 
@@ -343,15 +346,18 @@ export default function HandoverPage() {
         try {
           await deletePatientAPI(patientId, authHeaders);
         } catch (e) {
-          console.warn(`Failed to delete patient ${patientId}:`, e);
+          console.error(`Failed to delete patient ${patientId}:`, e);
+          deleteFailed = true;
         }
       }
 
-      // Remove from local state
-      const removedHandoverIds = new Set(relatedHandovers.map((h) => h.id));
-      setPatients((prev) => prev.filter((p) => p.id !== patientId));
-      setHandovers((prev) => prev.filter((h) => !removedHandoverIds.has(h.id)));
+      // Always refetch from server to get the authoritative state
+      await loadData();
       setDeleteConfirm(null);
+
+      if (deleteFailed) {
+        setError("Some records could not be deleted. Please try again.");
+      }
     } catch {
       setError("Failed to delete patient");
     }
@@ -544,10 +550,26 @@ export default function HandoverPage() {
       ),
     );
 
+    // Also build a set of just room numbers for fuzzy matching—same room =
+    // same physical patient even if OCR captured a slightly different name.
+    const patientRoomSet = new Set(
+      patients
+        .map((p) => (p.room_number || "").trim())
+        .filter((r) => r && r !== "Unassigned"),
+    );
+
     const orphanHandovers = handovers.filter((h) => {
+      // Already linked to a real patient → not an orphan
       if (h.patient_id && patientIdSet.has(h.patient_id)) return false;
+      // Exact name+room match → not an orphan
       const key = `${norm(h.p_first_name)}|${norm(h.p_last_name)}|${(h.p_room_number || "").trim()}`;
-      return !patientKeys.has(key);
+      if (patientKeys.has(key)) return false;
+      // Room-only match: if the room already belongs to a known patient,
+      // treat this handover as belonging to that patient (OCR name variance)
+      const room = (h.p_room_number || "").trim();
+      if (room && room !== "Unassigned" && patientRoomSet.has(room))
+        return false;
+      return true;
     });
 
     // Deduplicate by embedded identity (same patient may have day+night handovers)
