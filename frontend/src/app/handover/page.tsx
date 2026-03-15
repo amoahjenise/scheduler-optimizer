@@ -346,8 +346,12 @@ export default function HandoverPage() {
         try {
           await deletePatientAPI(patientId, authHeaders);
         } catch (e) {
-          console.error(`Failed to delete patient ${patientId}:`, e);
-          deleteFailed = true;
+          // Patient not found is OK (may have been deleted already or be orphaned)
+          const errMsg = e instanceof Error ? e.message : String(e);
+          if (!errMsg.includes("not found")) {
+            console.error(`Failed to delete patient ${patientId}:`, e);
+            deleteFailed = true;
+          }
         }
       }
 
