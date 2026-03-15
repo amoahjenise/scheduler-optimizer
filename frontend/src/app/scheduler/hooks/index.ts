@@ -5,6 +5,8 @@ export { useDraftRouteLifecycle } from "./useDraftRouteLifecycle";
 export { useOCR } from "./useOCR";
 export { useSchedulerOCRWorkflow } from "./useSchedulerOCRWorkflow";
 export { useOptimization } from "./useOptimization";
+export { useSelfScheduling } from "./useSelfScheduling";
+export { usePreferenceImport } from "./usePreferenceImport";
 export * from "./optimizationPayload";
 
 // Export utility functions

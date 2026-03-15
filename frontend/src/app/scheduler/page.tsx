@@ -52,6 +52,7 @@ import {
   ManualNurse,
   OCRWarning,
   NewNurseCandidate,
+  NurseScheduleSubmission,
   SHIFT_CODES,
   TIME_SLOTS,
 } from "./types";
@@ -62,6 +63,7 @@ import {
   useDraftRouteLifecycle,
   useSchedulerOCRWorkflow,
   useOptimization,
+  useSelfScheduling,
   parseShiftCode,
   cleanNurseName,
   normalizeNurseName,
@@ -245,6 +247,12 @@ export default function SchedulerPage() {
   const [showDebugInfo, setShowDebugInfo] = useState(false);
   const [showHoursBreakdown, setShowHoursBreakdown] = useState(false);
   const [excludedNurses, setExcludedNurses] = useState<Set<string>>(new Set());
+
+  // ── Self-scheduling / Preference Import ──
+  type PreferenceSource = "ocr" | "import";
+  const [preferenceSource, setPreferenceSource] = useState<PreferenceSource>("ocr");
+  const [preferenceSubmissions, setPreferenceSubmissions] = useState<NurseScheduleSubmission[]>([]);
+  const selfScheduling = useSelfScheduling();
 
   // AI Schedule Insights
   const [showInsightsPanel, setShowInsightsPanel] = useState(false);
@@ -2270,6 +2278,17 @@ export default function SchedulerPage() {
             onExtract={runOCR}
             nursesLoadedCount={organizationNurses.length}
             nursesLoading={organizationNursesLoading}
+            preferenceSource={preferenceSource}
+            onPreferenceSourceChange={setPreferenceSource}
+            onPreferenceSubmissions={(submissions) => {
+              setPreferenceSubmissions(submissions);
+              // Auto-advance to review step after import
+              setCurrentStep("review");
+            }}
+            availableNurses={organizationNurses.map((n) => ({
+              id: n.employee_id || n.id,
+              name: n.name,
+            }))}
           />
         )}
 
@@ -2280,6 +2299,111 @@ export default function SchedulerPage() {
             animate={{ opacity: 1, y: 0 }}
             className="space-y-6"
           >
+            {/* ── Imported Preferences Summary (when source = import) ── */}
+            {preferenceSource === "import" && preferenceSubmissions.length > 0 && (
+              <div className="bg-white rounded-xl border border-green-200 p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                    <span className="text-xl">📥</span> Imported Preferences
+                  </h2>
+                  <span className="px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800">
+                    {preferenceSubmissions.length} nurse{preferenceSubmissions.length !== 1 ? "s" : ""}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-4 mb-4">
+                  <div className="bg-blue-50 rounded-lg p-3 text-center">
+                    <div className="text-xl font-bold text-blue-700">
+                      {preferenceSubmissions.reduce((sum, s) => sum + s.primaryRequests.length, 0)}
+                    </div>
+                    <div className="text-xs text-blue-600">Shift Preferences</div>
+                  </div>
+                  <div className="bg-gray-50 rounded-lg p-3 text-center">
+                    <div className="text-xl font-bold text-gray-700">
+                      {preferenceSubmissions.reduce((sum, s) => sum + s.offRequests.length, 0)}
+                    </div>
+                    <div className="text-xs text-gray-600">Off Requests</div>
+                  </div>
+                  <div className="bg-indigo-50 rounded-lg p-3 text-center">
+                    <div className="text-xl font-bold text-indigo-700">
+                      {startDate} → {endDate}
+                    </div>
+                    <div className="text-xs text-indigo-600">Period</div>
+                  </div>
+                </div>
+                <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+                  {preferenceSubmissions.map((sub) => (
+                    <div key={sub.nurseId} className="px-4 py-2.5 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-medium text-gray-800">{sub.nurseName}</span>
+                        {sub.nurseId !== sub.nurseName && (
+                          <span className="text-xs text-gray-400">ID: {sub.nurseId}</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700">
+                          {sub.primaryRequests.length} shifts
+                        </span>
+                        {sub.offRequests.length > 0 && (
+                          <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-600">
+                            {sub.offRequests.length} off
+                          </span>
+                        )}
+                        <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-500">
+                          {sub.preferredShiftLength} · {sub.shiftTypePreference}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-4 flex items-center gap-3">
+                  <button
+                    onClick={() => setCurrentStep("setup")}
+                    className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+                  >
+                    ← Re-import
+                  </button>
+                  <button
+                    onClick={() => {
+                      // Build dates array for the period
+                      const dates: string[] = [];
+                      const d = new Date(startDate);
+                      const end = new Date(endDate);
+                      while (d <= end) {
+                        dates.push(d.toISOString().split("T")[0]);
+                        d.setDate(d.getDate() + 1);
+                      }
+
+                      // Build staffing requirements from requiredStaff
+                      const staffingReqs: Record<string, { day: number; night: number }> = {};
+                      for (const [date, shifts] of Object.entries(requiredStaff)) {
+                        staffingReqs[date] = {
+                          day: Object.entries(shifts)
+                            .filter(([k]) => k.startsWith("day"))
+                            .reduce((s, [, v]) => s + v, 0) || 4,
+                          night: Object.entries(shifts)
+                            .filter(([k]) => k.startsWith("night"))
+                            .reduce((s, [, v]) => s + v, 0) || 2,
+                        };
+                      }
+
+                      selfScheduling.optimizeWithSubmissions(
+                        preferenceSubmissions,
+                        dates,
+                        staffingReqs,
+                      );
+                      setCurrentStep("optimize");
+                    }}
+                    className="px-5 py-2.5 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+                  >
+                    Run Self-Scheduling Optimizer →
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── OCR Review (original flow) ── */}
+            {preferenceSource === "ocr" && (
+            <>
             <div className="bg-white rounded-xl border border-gray-200 p-6">
               <div className="mb-4">
                 <div className="flex items-center justify-between">
@@ -2446,6 +2570,8 @@ export default function SchedulerPage() {
                 Continue to Optimize
               </button>
             </div>
+            </>
+            )}
           </motion.div>
         )}
 
