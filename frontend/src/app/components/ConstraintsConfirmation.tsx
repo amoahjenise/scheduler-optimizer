@@ -17,7 +17,7 @@ import {
   NurseUpdate,
   listNursesAPI,
 } from "../lib/api";
-import { useUser } from "@clerk/nextjs";
+import { useUser, useAuth } from "@clerk/nextjs";
 import { loadStaffingDefaults } from "./StaffRequirementsEditor";
 
 interface Nurse {
@@ -79,6 +79,7 @@ export default function ConstraintsConfirmation({
   isOptimizing = false,
 }: Props) {
   const { user } = useUser();
+  const { getToken } = useAuth();
 
   const parseLocalDate = (value: string) => {
     const normalized = /^\d{4}-\d{2}-\d{2}$/.test(value)
@@ -196,7 +197,9 @@ export default function ConstraintsConfirmation({
 
     try {
       // Fetch existing nurses to map names to database IDs
-      const existingNursesResponse = await listNursesAPI(userId, 1, 500);
+      const token = await getToken();
+      const authHeaders = token ? { Authorization: `Bearer ${token}` } : undefined;
+      const existingNursesResponse = await listNursesAPI(userId, 1, 500, undefined, authHeaders);
       const existingNursesMap = new Map<string, string>();
       existingNursesResponse.nurses.forEach((n) => {
         // Use lowercase name as key for case-insensitive matching
@@ -247,7 +250,7 @@ export default function ConstraintsConfirmation({
               is_charge_certified: nurse.isChargeCertified || false,
             };
 
-            await updateNurseAPI(existingNurseId, userId, nurseUpdateData);
+            await updateNurseAPI(existingNurseId, userId, nurseUpdateData, authHeaders);
             setSavedNurseIds((prev) => new Set([...prev, nurse.id]));
             updatedCount++;
           } else {
@@ -265,7 +268,7 @@ export default function ConstraintsConfirmation({
               is_charge_certified: nurse.isChargeCertified || false,
             };
 
-            await createNurseAPI(userId, nurseData);
+            await createNurseAPI(userId, nurseData, authHeaders);
             setSavedNurseIds((prev) => new Set([...prev, nurse.id]));
             savedCount++;
           }
