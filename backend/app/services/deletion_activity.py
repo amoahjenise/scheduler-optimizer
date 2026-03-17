@@ -39,10 +39,14 @@ def get_actor_display_name(
             )
             .first()
         )
-        if org_member:
-            return org_member.user_name or org_member.user_email or "Unknown user"
+        if org_member and (org_member.user_name or org_member.user_email):
+            return org_member.user_name or org_member.user_email
 
-    return "Unknown user"
+    # Fallback: return user_id if no other name available (better than "Unknown user")
+    if auth.user_id:
+        return auth.user_id
+    
+    return "Anonymous"
 
 
 def record_deletion_activity(

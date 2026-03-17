@@ -29,11 +29,13 @@ export interface ManualNurse {
   chargeCertified?: boolean;
   isHeadNurse?: boolean;
   maxHours?: number;
-  targetWeeklyHours?: number;
-  targetBiWeeklyHours?: number;
   preferredShiftLengthHours?: number;
   employmentType?: "FT" | "PT";
   offRequests?: string[];
+  // Leave status
+  isOnMaternityLeave?: boolean;
+  isOnSickLeave?: boolean;
+  isOnSabbatical?: boolean;
 }
 
 export type OCRWarning = {

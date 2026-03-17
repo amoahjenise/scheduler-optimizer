@@ -76,6 +76,14 @@ def parse_schedule_from_image(image_bytes: bytes, start_date: date, end_date: da
         for block in blocks if block['BlockType'] == 'CELL'
     }
 
+    # If no table cells found, return empty result
+    if not cell_map:
+        return {
+            "dates": [],
+            "grid": [],
+            "error": "No table detected in image. Please upload a clearer schedule image with visible table structure."
+        }
+
     def get_text(cell):
         if not cell or 'Relationships' not in cell:
             return ''

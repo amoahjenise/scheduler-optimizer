@@ -130,6 +130,10 @@ export function useOptimization({
 
   // Preview constraints before optimization
   const previewConstraints = useCallback(async () => {
+    if (loadingConstraints || optimizing) {
+      return;
+    }
+
     setLoadingConstraints(true);
     try {
       const nurses = buildSchedulerNurses({
@@ -267,6 +271,8 @@ export function useOptimization({
     startDate,
     endDate,
     buildFallbackConstraints,
+    loadingConstraints,
+    optimizing,
   ]);
 
   // Optimize with confirmed constraints
@@ -277,7 +283,9 @@ export function useOptimization({
       console.log("  manualNurses length:", manualNurses.length);
 
       if (ocrGrid.length === 0 && manualNurses.length === 0) {
-        console.error("❌ Cannot optimize: no nurses in grid or manual list");
+        alert(
+          "Cannot optimize: No nurses found in the schedule. Please add nurses to your grid or manual list first.",
+        );
         // Still close modal and show result step with empty grid
         setShowConstraintsModal(false);
         onOptimized?.({
@@ -303,6 +311,27 @@ export function useOptimization({
           partTimeBiWeeklyTarget,
         });
         const assignments = buildSchedulerAssignments(ocrGrid);
+
+        // Debug logging for optimization payload
+        console.log("[OPTIMIZATION DEBUG] ocrGrid rows:", ocrGrid.length);
+        console.log("[OPTIMIZATION DEBUG] nurses array:", nurses.length);
+        console.log(
+          "[OPTIMIZATION DEBUG] assignments keys:",
+          Object.keys(assignments).length,
+        );
+        if (nurses.length !== Object.keys(assignments).length) {
+          console.warn(
+            "[OPTIMIZATION DEBUG] MISMATCH! Nurses and assignments have different counts",
+          );
+          console.log(
+            "[OPTIMIZATION DEBUG] Nurse names:",
+            nurses.map((n) => n.name),
+          );
+          console.log(
+            "[OPTIMIZATION DEBUG] Assignment keys:",
+            Object.keys(assignments),
+          );
+        }
 
         // Guard against long-hanging backend calls in dev/local environments.
         // Use a sentinel object for timeouts instead of rejecting so the

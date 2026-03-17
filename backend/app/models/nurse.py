@@ -39,6 +39,11 @@ class Nurse(Base):
     is_charge_certified = Column(Boolean, nullable=False, default=False)
     other_certifications = Column(Text, nullable=True)  # JSON array or comma-separated
     
+    # Leave Status - nurses on leave are excluded from scheduling
+    is_on_maternity_leave = Column(Boolean, nullable=False, default=False)
+    is_on_sick_leave = Column(Boolean, nullable=False, default=False)
+    is_on_sabbatical = Column(Boolean, nullable=False, default=False)
+    
     # Metadata
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

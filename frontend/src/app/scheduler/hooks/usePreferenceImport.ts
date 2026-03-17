@@ -289,13 +289,55 @@ function stripRtf(text: string): string {
   return output.trim();
 }
 
-/** Normalise a date string to YYYY-MM-DD, accepting multiple formats */
-function normaliseDate(raw: string): string | null {
+/** Normalise a date string to YYYY-MM-DD, accepting multiple formats
+ * @param raw - The raw date string to normalise
+ * @param referenceYear - Optional year to use when the date doesn't include a year
+ */
+function normaliseDate(raw: string, referenceYear?: number): string | null {
   if (!raw) return null;
   const trimmed = raw.trim();
 
   // Already YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+
+  // DD-MM or DD/MM (without year) — common in EU exports
+  // Use referenceYear if provided, otherwise infer from current date
+  const dmNoYear = trimmed.match(/^(\d{1,2})[\/\-.](\d{1,2})$/);
+  if (dmNoYear) {
+    const [, d, m] = dmNoYear;
+    const day = parseInt(d, 10);
+    const month = parseInt(m, 10);
+
+    // Validate day and month ranges
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      // If a reference year is provided, use it directly
+      if (referenceYear) {
+        return `${referenceYear}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+      }
+
+      // Smart year inference: prefer the current year, but adjust if clearly wrong
+      const now = new Date();
+      const currentYear = now.getFullYear();
+      const currentMonth = now.getMonth() + 1; // 0-indexed to 1-indexed
+
+      // If the month is within the next 11 months from now, use current year
+      // If it's more than 11 months away, it's probably last year
+      let year = currentYear;
+
+      // Calculate month difference (positive = future, negative = past)
+      let monthDiff = month - currentMonth;
+
+      // If the date seems to be in the far past (>6 months ago), use next year
+      // If the date seems to be in the far future (>11 months away), use last year
+      if (monthDiff < -6) {
+        year = currentYear + 1;
+      } else if (monthDiff > 11) {
+        year = currentYear - 1;
+      }
+
+      return `${year}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+    }
+  }
 
   // DD/MM/YYYY or DD-MM-YYYY
   const dmy = trimmed.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
@@ -381,17 +423,18 @@ function normaliseShiftCode(raw: string): NormalisedCode {
     "NIGHT 12": "Z19",
     EVENING: "E15",
     "EVE 8": "E15",
-    OFF: "C",
-    CONGE: "C",
-    CONGÉ: "C",
-    VACATION: "C",
-    VACANCES: "C",
-    VAC: "C",
-    V: "C",
-    MALADIE: "C",
-    MAL: "C",
-    ABS: "C",
-    FER: "C", // Férié (holiday without shift)
+    OFF: "OFF",
+    CONGE: "OFF",
+    CONGÉ: "OFF",
+    VACATION: "OFF",
+    VACANCES: "OFF",
+    VAC: "OFF",
+    V: "OFF",
+    MALADIE: "OFF",
+    MAL: "OFF",
+    ABS: "OFF",
+    C: "OFF",
+    FER: "OFF", // Férié (holiday without shift)
   };
   if (aliases[trimmed]) {
     const code = aliases[trimmed];
@@ -444,10 +487,12 @@ function autoDetectColumns(headers: string[]): ColumnMapping {
  *   Rows H+1:  Data   — "1234567","Zatylny, Alexandra","0.85","OFF","Z07",...
  *
  * Also supports simpler grids where row 0 is the header with dates.
+ * @param referenceYear - Optional year to use when dates don't include a year
  */
 function tryParseGridFormat(
   rows: string[][],
   warnings: string[],
+  referenceYear?: number,
 ): ParsedPreferenceRow[] | null {
   if (rows.length < 2) return null;
 
@@ -483,7 +528,7 @@ function tryParseGridFormat(
     // Scan for date columns in this row
     const candidateDates: { idx: number; date: string }[] = [];
     for (let i = 0; i < row.length; i++) {
-      const d = normaliseDate(row[i]);
+      const d = normaliseDate(row[i], referenceYear);
       if (d) candidateDates.push({ idx: i, date: d });
     }
 
@@ -525,7 +570,7 @@ function tryParseGridFormat(
     headerRowIdx = 0;
     const header = rows[0];
     for (let i = 1; i < header.length; i++) {
-      const d = normaliseDate(header[i]);
+      const d = normaliseDate(header[i], referenceYear);
       if (d) dateColumns.push({ idx: i, date: d });
     }
   }
@@ -573,9 +618,23 @@ function tryParseGridFormat(
 
     if (!nurseName && !employeeId) continue;
 
+    // CRITICAL: Convert "Last, First" format to "First Last" for consistency
+    // e.g., "Langeo, Elizabeth" -> "Elizabeth Langeo"
+    if (nurseName.includes(",")) {
+      const nameParts = nurseName.split(",").map((p) => p.trim());
+      if (nameParts.length === 2 && nameParts[0] && nameParts[1]) {
+        nurseName = `${nameParts[1]} ${nameParts[0]}`;
+      }
+    }
+
+    // Track if this nurse has any preferences
+    let hasAnyPreference = false;
+
     for (const col of dateColumns) {
       const cellValue = (row[col.idx] || "").trim();
       if (!cellValue) continue;
+
+      hasAnyPreference = true;
 
       const { code, isOff, holidayModifier } = normaliseShiftCode(cellValue);
 
@@ -597,6 +656,25 @@ function tryParseGridFormat(
         holidayModifier,
         raw: cellValue,
       });
+    }
+
+    // Even if nurse has no preferences, add placeholder entries for all dates
+    // so they appear in the grid with the full date range
+    if (!hasAnyPreference && dateColumns.length > 0) {
+      // Add an empty entry for each date column to ensure date range is preserved
+      for (const col of dateColumns) {
+        parsed.push({
+          employeeId,
+          nurseName: nurseName || employeeId,
+          date: col.date,
+          shiftCode: "",
+          priority: "primary",
+          isOff: false,
+          fte,
+          holidayModifier: undefined,
+          raw: "",
+        });
+      }
     }
   }
 
@@ -728,6 +806,16 @@ function rowsToSubmissions(
 
     for (const row of nurseRows) {
       if (row.isOff) {
+        // Store off days as primary requests with their actual code (C, VAC, etc.)
+        // so we preserve the distinction between vacation vs generic off
+        primaryRequests.push({
+          date: row.date,
+          shiftCode: row.shiftCode,
+          priority: row.priority,
+          reason: row.holidayModifier
+            ? `Holiday: ${row.holidayModifier}`
+            : "Off day",
+        });
         offRequests.push(row.date);
       } else {
         primaryRequests.push({
@@ -790,6 +878,9 @@ function rowsToSubmissions(
 export function usePreferenceImport() {
   const [status, setStatus] = useState<ImportStatus>("idle");
   const [result, setResult] = useState<ImportResult | null>(null);
+  const [referenceYear, setReferenceYear] = useState<number | undefined>(
+    undefined,
+  );
   const [columnMapping, setColumnMapping] = useState<ColumnMapping>({
     employeeId: null,
     nurseName: null,
@@ -824,7 +915,11 @@ export function usePreferenceImport() {
 
   // ── Parse Excel/CSV file ──
   const parseFile = useCallback(
-    async (file: File): Promise<void> => {
+    async (file: File, yearHint?: number): Promise<void> => {
+      // Store the year hint for date parsing
+      if (yearHint) setReferenceYear(yearHint);
+      const effectiveYear = yearHint || referenceYear;
+
       setStatus("parsing");
       const warnings: string[] = [];
       const errors: string[] = [];
@@ -895,7 +990,7 @@ export function usePreferenceImport() {
         }
 
         // Try grid format first (eEspresso-style: nurse × dates)
-        const gridResult = tryParseGridFormat(rows, warnings);
+        const gridResult = tryParseGridFormat(rows, warnings, effectiveYear);
         if (gridResult) {
           const submissions = rowsToSubmissions(gridResult);
           setResult({
@@ -962,12 +1057,16 @@ export function usePreferenceImport() {
         setStatus("error");
       }
     },
-    [parseCSVString, columnMapping],
+    [parseCSVString, columnMapping, referenceYear],
   );
 
   // ── Parse pasted text (clipboard from spreadsheet / CSV) ──
   const parsePastedText = useCallback(
-    (text: string) => {
+    (text: string, yearHint?: number) => {
+      // Store the year hint for date parsing
+      if (yearHint) setReferenceYear(yearHint);
+      const effectiveYear = yearHint || referenceYear;
+
       setStatus("parsing");
       const warnings: string[] = [];
       const errors: string[] = [];
@@ -990,7 +1089,7 @@ export function usePreferenceImport() {
         }
 
         // Try grid format first
-        const gridResult = tryParseGridFormat(rows, warnings);
+        const gridResult = tryParseGridFormat(rows, warnings, effectiveYear);
         if (gridResult) {
           const submissions = rowsToSubmissions(gridResult);
           setResult({
@@ -1056,10 +1155,8 @@ export function usePreferenceImport() {
         setStatus("error");
       }
     },
-    [parseCSVString, columnMapping],
-  );
-
-  // ── Create submissions from manual entry data ──
+    [parseCSVString, columnMapping, referenceYear],
+  ); // ── Create submissions from manual entry data ──
   const fromManualEntries = useCallback((entries: ParsedPreferenceRow[]) => {
     const warnings: string[] = [];
     const submissions = rowsToSubmissions(entries);

@@ -13,7 +13,6 @@ import {
 } from "@clerk/nextjs";
 import { useOrganization } from "../context/OrganizationContext";
 import { OrganizationSwitcherWrapper } from "./OrganizationSwitcherWrapper";
-import { clearSensitiveData } from "../lib/sessionCleanup";
 import { FEATURES } from "../lib/featureFlags";
 
 const DEFAULT_LOGO = "/logo-placeholder.png";
@@ -140,15 +139,7 @@ export function AppHeader() {
                 appearance={{
                   elements: { userButtonAvatarBox: "w-8 h-8" },
                 }}
-              >
-                <UserButton.MenuItems>
-                  <UserButton.Action
-                    label="Sign out"
-                    labelIcon={<span>🚪</span>}
-                    onClick={() => clearSensitiveData()}
-                  />
-                </UserButton.MenuItems>
-              </UserButton>
+              />
             </SignedIn>
           </>
         ) : (

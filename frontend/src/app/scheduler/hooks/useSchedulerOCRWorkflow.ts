@@ -6,12 +6,15 @@ import { GridRow, ManualNurse, OCRWarning, ShiftEntry, Step } from "../types";
 import {
   cleanNurseName,
   deduplicateGridGhosts,
+  deduplicateNurseCandidates,
+  deduplicateOCRGrid,
   detectOCRIssues,
   extractNurseMetadata,
   getPotentialMatches,
   matchNursesWithDatabase,
   normalizeNurseName,
   parseShiftCode,
+  sanitizeOCRShiftCell,
 } from "./utils";
 
 type SetState<T> = (value: T | ((prev: T) => T)) => void;
@@ -23,6 +26,8 @@ interface UseSchedulerOCRWorkflowOptions {
   userId: string;
   /** Already-loaded nurses from the parent — avoids a redundant un-authenticated API call */
   organizationNurses: Nurse[];
+  /** All nurses including those on leave - used for name matching only */
+  allOrganizationNurses: Nurse[];
   getDefaultMaxWeeklyHours: (employmentType?: "FT" | "PT") => number;
   /** Bi-weekly target hours for new nurses (e.g., 75h FT, 63.75h PT) */
   fullTimeBiWeeklyTarget: number;
@@ -45,6 +50,7 @@ export function useSchedulerOCRWorkflow({
   endDate,
   userId,
   organizationNurses,
+  allOrganizationNurses,
   getDefaultMaxWeeklyHours,
   fullTimeBiWeeklyTarget,
   partTimeBiWeeklyTarget,
@@ -76,7 +82,11 @@ export function useSchedulerOCRWorkflow({
           shifts: Record<string, ShiftEntry>;
         }
       > = {};
-      const extractedComments: string[] = [];
+      // Map keyed by "normalizedName|date" → comment text (deduplicates across screenshots)
+      const extractedCommentsMap = new Map<
+        string,
+        { normalizedName: string; date: string; comment: string }
+      >();
 
       for (const file of screenshots) {
         const result = await parseImageWithFastAPI(file, startDate, endDate);
@@ -84,6 +94,13 @@ export function useSchedulerOCRWorkflow({
         if (result.dates) {
           result.dates.forEach((d: string) => allDates.add(d));
         }
+
+        // Use the dates from THIS specific screenshot for index mapping
+        // This is critical for multi-period screenshots (e.g., 6 screenshots covering 6 weeks)
+        const screenshotDates: string[] = result.dates || [];
+        console.log(
+          `[OCR] Processing screenshot: ${file.name}, dates: [${screenshotDates.slice(0, 3).join(", ")}...${screenshotDates.slice(-1)}] (${screenshotDates.length} dates)`,
+        );
 
         if (result.grid && Array.isArray(result.grid)) {
           for (const row of result.grid) {
@@ -112,11 +129,12 @@ export function useSchedulerOCRWorkflow({
               }
             }
 
-            const dates = Array.from(allDates).sort();
+            // Use screenshot-specific dates for index mapping, not accumulated allDates
             if (row.shifts && Array.isArray(row.shifts)) {
               row.shifts.forEach((shift: string, idx: number) => {
-                if (idx < dates.length) {
-                  const date = dates[idx];
+                if (idx < screenshotDates.length) {
+                  const date = screenshotDates[idx];
+                  const sanitizedShift = sanitizeOCRShiftCell(shift);
                   const existingShift =
                     combinedGrid[normalizedName].shifts[date];
                   const isExistingEmpty =
@@ -124,19 +142,28 @@ export function useSchedulerOCRWorkflow({
 
                   if (shift && shift.includes("*")) {
                     const cleanShift = shift.replace(/\*/g, "").trim();
-                    extractedComments.push(
-                      `${cleanedName}|${date}|${cleanShift} (marker note)`,
-                    );
-                    if (isExistingEmpty || cleanShift) {
-                      const parsed = parseShiftCode(cleanShift, date);
+                    const sanitizedCleanShift =
+                      sanitizeOCRShiftCell(cleanShift);
+                    const commentKey = `${normalizedName}|${date}`;
+                    if (!extractedCommentsMap.has(commentKey)) {
+                      extractedCommentsMap.set(commentKey, {
+                        normalizedName,
+                        date,
+                        comment: sanitizedCleanShift || "(preference marker)",
+                      });
+                    }
+                    if (isExistingEmpty || sanitizedCleanShift) {
+                      const parsed = parseShiftCode(sanitizedCleanShift, date);
                       combinedGrid[normalizedName].shifts[date] = {
                         ...parsed,
-                        shift: cleanShift ? cleanShift + " *" : "*",
+                        shift: sanitizedCleanShift
+                          ? sanitizedCleanShift + " *"
+                          : "*",
                       };
                     }
-                  } else if (isExistingEmpty || shift) {
+                  } else if (isExistingEmpty || sanitizedShift) {
                     combinedGrid[normalizedName].shifts[date] = parseShiftCode(
-                      shift,
+                      sanitizedShift,
                       date,
                     );
                   }
@@ -175,23 +202,37 @@ export function useSchedulerOCRWorkflow({
 
             for (const shift of row.shifts) {
               if (shift && shift.date) {
+                const sanitizedShift = sanitizeOCRShiftCell(shift.shift || "");
                 const existingShift =
                   combinedGrid[normalizedName].shifts[shift.date];
                 const isExistingEmpty = !existingShift || !existingShift.shift;
 
                 if (shift.shift && shift.shift.includes("*")) {
                   const cleanShift = shift.shift.replace(/\*/g, "").trim();
-                  extractedComments.push(
-                    `${cleanedName}|${shift.date}|${cleanShift} (marker note)`,
-                  );
-                  if (isExistingEmpty || cleanShift) {
+                  const sanitizedCleanShift = sanitizeOCRShiftCell(cleanShift);
+                  const commentKey = `${normalizedName}|${shift.date}`;
+                  if (!extractedCommentsMap.has(commentKey)) {
+                    extractedCommentsMap.set(commentKey, {
+                      normalizedName,
+                      date: shift.date,
+                      comment: sanitizedCleanShift || "(preference marker)",
+                    });
+                  }
+                  if (isExistingEmpty || sanitizedCleanShift) {
+                    const parsed = parseShiftCode(
+                      sanitizedCleanShift,
+                      shift.date,
+                    );
                     combinedGrid[normalizedName].shifts[shift.date] = {
-                      ...shift,
-                      shift: cleanShift ? cleanShift + " *" : "*",
+                      ...parsed,
+                      shift: sanitizedCleanShift
+                        ? sanitizedCleanShift + " *"
+                        : "*",
                     };
                   }
-                } else if (isExistingEmpty || shift.shift) {
-                  combinedGrid[normalizedName].shifts[shift.date] = shift;
+                } else if (isExistingEmpty || sanitizedShift) {
+                  combinedGrid[normalizedName].shifts[shift.date] =
+                    parseShiftCode(sanitizedShift, shift.date);
                 }
               }
             }
@@ -199,12 +240,29 @@ export function useSchedulerOCRWorkflow({
         }
       }
 
-      if (extractedComments.length > 0) {
-        setAutoComments(extractedComments.join("\n"));
+      // --- Deduplicate near-identical nurse names across screenshots ---
+      const {
+        deduplicatedGrid: cleanGrid,
+        duplicateWarnings,
+        nameResolutionMap,
+      } = deduplicateOCRGrid(combinedGrid, 0.85);
+
+      // Finalize comments: remap names to canonical grid names, deduplicated
+      if (extractedCommentsMap.size > 0) {
+        const commentLines: string[] = [];
+        for (const entry of extractedCommentsMap.values()) {
+          const displayName =
+            nameResolutionMap.get(entry.normalizedName) || entry.normalizedName;
+          commentLines.push(`${displayName}|${entry.date}|${entry.comment}`);
+        }
+        console.log(
+          `[OCR] Comments: ${extractedCommentsMap.size} unique entries (deduped from markers)`,
+        );
+        setAutoComments(commentLines.join("\n"));
       }
 
       const sortedDates = Array.from(allDates).sort();
-      const gridRows: GridRow[] = Object.entries(combinedGrid).map(
+      const gridRows: GridRow[] = Object.entries(cleanGrid).map(
         ([, data], idx) => ({
           id: String(idx),
           nurse: data.displayName,
@@ -226,7 +284,7 @@ export function useSchedulerOCRWorkflow({
 
       gridRows.sort((a, b) => a.nurse.localeCompare(b.nurse));
 
-      const warnings: OCRWarning[] = [];
+      const warnings: OCRWarning[] = [...duplicateWarnings];
       for (const row of gridRows) {
         const issue = detectOCRIssues(row.nurse);
         if (issue) {
@@ -239,12 +297,12 @@ export function useSchedulerOCRWorkflow({
       // De-Duplication Command: remove ghost Z23 tails before displaying the OCR grid.
       // Without this, overnight shifts show phantom entries in two calendar columns.
 
-      // Use already-loaded nurses from the parent to avoid a redundant
-      // un-authenticated API call that may return empty due to org filtering.
-      const existingNurses = organizationNurses;
+      // Use ALL nurses (including those on leave) for matching to prevent
+      // nurses on leave from showing as "new nurses" in import
+      const existingNurses = allOrganizationNurses;
 
       console.log(
-        "[OCR Workflow] Existing nurses count:",
+        "[OCR Workflow] Existing nurses count (including on leave):",
         existingNurses.length,
       );
       if (existingNurses.length > 0) {
@@ -443,11 +501,19 @@ export function useSchedulerOCRWorkflow({
                 };
               });
 
+              // Deduplicate candidates with similar names (e.g., "Alyssa Reniva" vs "Alyssa Renival")
+              const deduplicatedCandidates = deduplicateNurseCandidates(
+                candidatesWithMatches,
+              );
+
               console.log(
                 "[OCR Workflow] Setting candidates:",
+                deduplicatedCandidates.length,
+                "(before dedup:",
                 candidatesWithMatches.length,
+                ")",
               );
-              setNewNurseCandidates(candidatesWithMatches);
+              setNewNurseCandidates(deduplicatedCandidates);
               setShowCreateNursesModal(true);
             }
           }
@@ -469,6 +535,7 @@ export function useSchedulerOCRWorkflow({
     endDate,
     userId,
     organizationNurses,
+    allOrganizationNurses,
     getDefaultMaxWeeklyHours,
     fullTimeBiWeeklyTarget,
     partTimeBiWeeklyTarget,

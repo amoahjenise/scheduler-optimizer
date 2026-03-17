@@ -11,7 +11,7 @@ from typing import Dict, List, Union, Set, Tuple, Any, Optional
 import math
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Body, Depends, HTTPException, Header
 from pydantic import UUID4, BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -24,6 +24,7 @@ from app.core.config import settings
 from app.core.auth import get_optional_auth, AuthContext
 from app.models.optimized_schedule import OptimizedSchedule
 from app.models.system_prompt import SystemPrompt
+from app.models.nurse import Nurse
 from app.schemas.optimized_schedule import OptimizeRequest, OptimizeResponse, RefineRequest, InsightsRequest
 from app.api.routes.system_prompts import get_system_prompt, DEFAULT_PROMPT_CONTENT, build_default_prompt_content
 from app.services.deletion_activity import record_deletion_activity
@@ -249,7 +250,8 @@ class RobustScheduler:
     def __init__(self, nurses: List[Dict], date_list: List[str], 
                  day_shift_codes: List[str], night_shift_codes: List[str],
                  shifts_info: Dict, day_req: int, night_req: int,
-                 max_consecutive: int = 3, preferences: Dict = None):
+                 max_consecutive: int = 3, preferences: Dict = None,
+                 nurse_defaults: Dict[str, Dict] = None):
         # Initialize shift code rotation indices
         self._day_code_index = 0
         self._night_code_index = 0
@@ -266,6 +268,57 @@ class RobustScheduler:
             logger.info("PRE-CLEANING OCR PREFERENCES (removing ghost tails at source)")
             preferences = RobustScheduler._preprocess_ocr_preferences(preferences, shifts_info)
             logger.info("=" * 80)
+
+        # CRITICAL FIX: Ensure all nurses from preferences are included in the nurses array.
+        # This fixes the bug where nurses with empty OCR cells were excluded from scheduling
+        # because they weren't being sent in the nurses array from the frontend.
+        self.nurse_defaults = nurse_defaults or {}
+        nurse_names_in_array = {n.get("name", "").strip().lower() for n in nurses if n.get("name")}
+        if preferences:
+            for pref_nurse_name in preferences.keys():
+                if pref_nurse_name.strip().lower() not in nurse_names_in_array:
+                    # Look up nurse defaults from database config
+                    db_defaults = self.nurse_defaults.get(pref_nurse_name.strip().lower(), {})
+                    logger.warning(f"Adding missing nurse from preferences: {pref_nurse_name} (db config found: {bool(db_defaults)})")
+                    
+                    # Build nurse dict - only include fields we have from DB
+                    # Let get_max_hours() and get_target_biweekly_hours() use their built-in defaults
+                    nurse_entry = {
+                        "name": pref_nurse_name,
+                        "employmentType": db_defaults.get("employmentType", "full-time"),
+                        "offRequests": db_defaults.get("offRequests", []),
+                        "isChemoCertified": db_defaults.get("isChemoCertified", False),
+                        "isTransplantCertified": db_defaults.get("isTransplantCertified", False),
+                        "isRenalCertified": db_defaults.get("isRenalCertified", False),
+                        "isChargeCertified": db_defaults.get("isChargeCertified", False),
+                    }
+                    # Only include bi-weekly target if we have it from DB (this is the key scheduling parameter)
+                    if "targetBiWeeklyHours" in db_defaults:
+                        nurse_entry["targetBiWeeklyHours"] = db_defaults["targetBiWeeklyHours"]
+                    
+                    nurses.append(nurse_entry)
+                    nurse_names_in_array.add(pref_nurse_name.strip().lower())
+
+        # ── LEAVE STATUS FILTER ─────────────────────────────────────
+        # Track nurses who are on maternity leave, sick leave, or
+        # sabbatical.  They should not be assigned any shifts by the
+        # scheduling steps (gap-fill, force-fill, balance).  They remain
+        # in the nurses array so they appear in the output (all OFF).
+        self.nurses_on_leave: Set[str] = set()
+        for nurse in nurses:
+            on_leave = (
+                bool(nurse.get("isOnMaternityLeave"))
+                or bool(nurse.get("isOnSickLeave"))
+                or bool(nurse.get("isOnSabbatical"))
+            )
+            if on_leave:
+                self.nurses_on_leave.add(nurse["name"])
+                logger.info(f"  LEAVE FILTER: '{nurse['name']}' will be all-OFF "
+                            f"(maternity={nurse.get('isOnMaternityLeave')}, "
+                            f"sick={nurse.get('isOnSickLeave')}, "
+                            f"sabbatical={nurse.get('isOnSabbatical')})")
+        if self.nurses_on_leave:
+            logger.info(f"  LEAVE FILTER: {len(self.nurses_on_leave)} nurses on leave")
 
         # Track which (nurse, date) tuples have OCR shifts - these are BINDING and should NEVER be removed
         self.ocr_assignments: Set[Tuple[str, str]] = set()
@@ -441,18 +494,18 @@ class RobustScheduler:
         return max(7.5, min(11.25, avg_hours))
     
     def has_reached_hours_limit(self, nurse_name: str, date: str) -> bool:
-        """Check if nurse has reached their hours limit for the week containing this date"""
-        max_hours = self.get_max_hours(nurse_name)
+        """Check if nurse has reached their hours limit for the week containing this date."""
+        raw_max = self.get_max_hours(nurse_name)
         week_key = self.date_to_week.get(date, "unknown")
         current_hours = self.nurse_weekly_hours.get(nurse_name, {}).get(week_key, 0)
-        return current_hours >= max_hours
+        return current_hours >= raw_max
     
     def get_remaining_hours(self, nurse_name: str, date: str) -> float:
         """Get remaining hours a nurse can work in the week containing this date"""
-        max_hours = self.get_max_hours(nurse_name)
+        raw_max = self.get_max_hours(nurse_name)
         week_key = self.date_to_week.get(date, "unknown")
         current_hours = self.nurse_weekly_hours.get(nurse_name, {}).get(week_key, 0)
-        return max(0, max_hours - current_hours)
+        return max(0, raw_max - current_hours)
 
     def get_target_weekly_hours(self, nurse_name: str) -> float:
         """Get weekly target hours used for delta balancing (not hard max capacity)."""
@@ -742,13 +795,19 @@ class RobustScheduler:
             n for n in candidates if self.get_target_delta(n, date) < 0 and self.get_target_remaining_hours(n, date) >= hours
         ]
         if under_with_capacity:
-            # Choose the most under-target first
-            return min(under_with_capacity, key=lambda n: self.get_target_delta(n, date))
+            # Prefer FT before PT, then choose most under-target.
+            return min(
+                under_with_capacity,
+                key=lambda n: (not self._is_full_time(n), self.get_target_delta(n, date)),
+            )
 
         # Next prefer any under-target nurse (even if remaining < hours)
         under = [n for n in candidates if self.get_target_delta(n, date) < 0]
         if under:
-            return min(under, key=lambda n: self.get_target_delta(n, date))
+            return min(
+                under,
+                key=lambda n: (not self._is_full_time(n), self.get_target_delta(n, date)),
+            )
 
         # Otherwise fall back to any candidate who has weekly capacity remaining
         with_capacity = [n for n in candidates if self.get_remaining_hours(n, date) >= hours]
@@ -1195,6 +1254,13 @@ class RobustScheduler:
         # STEP 1: Process OCR data for each nurse
         for nurse_name in self.nurse_names:
             self.schedule[nurse_name] = []
+
+            # Nurses on leave get ALL days as OFF — no shifts assigned
+            if nurse_name in self.nurses_on_leave:
+                for day_idx, date in enumerate(self.date_list):
+                    self.schedule[nurse_name].append(self.assign_off(nurse_name, date))
+                logger.info(f"  {nurse_name}: ALL OFF (on leave)")
+                continue
             
             for day_idx, date in enumerate(self.date_list):
                 # CRITICAL: Check off requests FIRST (vacation days)
@@ -1456,6 +1522,11 @@ class RobustScheduler:
             for nurse_name in self.nurse_names:
                 shift = self.schedule[nurse_name][day_idx]
                 if shift is None:
+                    # Skip nurses on leave — they should never be assigned
+                    if nurse_name in self.nurses_on_leave:
+                        self.schedule[nurse_name][day_idx] = self.assign_off(nurse_name, date)
+                        continue
+
                     # For OCR baseline nurses: skip blank days UNLESS the nurse
                     # is significantly under their period target (needs more shifts
                     # to reach FTE). This ensures preferred schedules are preserved
@@ -1703,11 +1774,22 @@ class RobustScheduler:
             available_nurses.sort(
                 key=lambda n: (
                     self.get_target_delta(n, date),  # most negative (under-target) first
+                    not self._is_full_time(n),      # FT before PT when deltas are similar
                     sum(self.nurse_period_hours.get(n, {}).values()),
                 )
             )
 
             for nurse in list(available_nurses):
+                # FT-first policy: while any FT nurse is still meaningfully
+                # under target, do not consume optional extra slots on PT nurses.
+                ft_under_target_exists = any(
+                    self._is_full_time(n)
+                    and self.get_target_remaining_hours(n, date) >= 7.0
+                    for n in self.nurse_names
+                )
+                if ft_under_target_exists and not self._is_full_time(nurse):
+                    continue
+
                 # Soft-stop once aggregate period target is exceeded by 10%.
                 # We no longer hard-stop at 100% because individual nurses may
                 # still be significantly under target even when the aggregate
@@ -1923,8 +2005,11 @@ class RobustScheduler:
         logger.info(f"  Vacation credits injected: {vacation_credits_total} off-day credits (7.5h each)")
 
         # Build sorted list of under-target nurses (FT first, then PT, by delta)
+        # Exclude nurses on leave — they should not receive additional shifts.
         under_target_nurses = []
         for nurse_name in self.nurse_names:
+            if nurse_name in self.nurses_on_leave:
+                continue
             delta = self.get_target_delta(nurse_name, self.date_list[0]) if self.date_list else 0
             if delta < -3.0:  # At least 3h under target
                 is_ft = self._is_full_time(nurse_name)
@@ -1938,6 +2023,20 @@ class RobustScheduler:
             logger.info(f"    {name} ({'FT' if is_ft else 'PT'}): {delta:+.1f}h")
 
         for nurse_name, delta, is_ft in under_target_nurses:
+            # STRICT FT-FIRST: do not force-fill PT while any FT nurse is
+            # still materially under target in the current schedule state.
+            if not is_ft:
+                ft_still_under = any(
+                    self._is_full_time(n)
+                    and self.get_target_delta(n, self.date_list[0]) < -3.0
+                    for n in self.nurse_names
+                ) if self.date_list else False
+                if ft_still_under:
+                    logger.info(
+                        f"    {nurse_name}: PT force-fill deferred (FT nurses still under target)"
+                    )
+                    continue
+
             # How many more shifts does this nurse need?
             shifts_needed = max(1, int(abs(delta) / self.reference_shift_hours + 0.5))
 
@@ -1995,18 +2094,29 @@ class RobustScheduler:
                             elif s.get("shiftType") == "night":
                                 night_staff += 1
 
+                    # STRICT ANTI-OVERSTAFF GUARD:
+                    # Force-fill is for closing true coverage gaps, not for
+                    # inflating headcount on already-covered days.
+                    day_deficit = max(0, self.day_req - day_staff)
+                    night_deficit = max(0, self.night_req - night_staff)
+                    if day_deficit <= 0 and night_deficit <= 0:
+                        continue
+
+                    # Also respect adaptive daily cap during force-fill.
+                    daily_staff_cap = self._get_dynamic_daily_staff_cap(date)
+                    if (day_staff + night_staff) >= daily_staff_cap:
+                        continue
+
                     # Score: prefer days with less total coverage (understaffed days first)
                     total_staff = day_staff + night_staff
                     # Prefer the type that's most understaffed
-                    day_deficit = max(0, self.day_req - day_staff)
-                    night_deficit = max(0, self.night_req - night_staff)
 
                     if came_off_night:
                         # Can only work night
                         if night_deficit > 0:
                             score = -night_deficit  # More deficit = lower (better) score
                         else:
-                            score = total_staff  # Less preferred if night is already met
+                            continue  # Can't help coverage on this day
                     else:
                         # Prefer the side with the bigger deficit
                         score = -(day_deficit + night_deficit) if (day_deficit + night_deficit) > 0 else total_staff
@@ -2084,9 +2194,22 @@ class RobustScheduler:
                                   self.schedule[n][best_day_idx].get("shiftType") == "night" and
                                   self.schedule[n][best_day_idx].get("hours", 0) > 0)
 
+                day_deficit = max(0, self.day_req - day_staff)
+                night_deficit = max(0, self.night_req - night_staff)
+                if day_deficit <= 0 and night_deficit <= 0:
+                    logger.info(
+                        f"    {nurse_name}: selected day {date} no longer has coverage deficit; skipping"
+                    )
+                    break
+
                 if came_off_night:
+                    if night_deficit <= 0:
+                        logger.info(
+                            f"    {nurse_name}: cannot place day-after-night and no night deficit on {date}; skipping"
+                        )
+                        break
                     shift_type = "night"
-                elif (self.night_req - night_staff) > (self.day_req - day_staff):
+                elif night_deficit > day_deficit:
                     shift_type = "night"
                 else:
                     shift_type = "day"
@@ -3105,10 +3228,14 @@ class ScheduleOptimizer:
             raise
 
     @staticmethod
-    def optimize_schedule_with_ortools(assignments, constraints):
+    def optimize_schedule_with_ortools(assignments, constraints, nurse_defaults: Dict[str, Dict] = None):
         """
         Main scheduling method - uses RobustScheduler which GUARANTEES full coverage.
         OR-Tools is no longer used as it was too unreliable.
+        
+        Args:
+            nurse_defaults: Dict mapping nurse names (lowercase) to their database config
+                           (employmentType, maxWeeklyHours, targetBiWeeklyHours, etc.)
         """
         logging.info("=" * 60)
         logging.info("STARTING SCHEDULE OPTIMIZATION")
@@ -3236,7 +3363,8 @@ class ScheduleOptimizer:
             day_req=day_req,
             night_req=night_req,
             max_consecutive=max_consecutive,
-            preferences=assignments  # OCR preferences
+            preferences=assignments,  # OCR preferences
+            nurse_defaults=nurse_defaults  # Database config for missing nurses
         )
         
         schedule = scheduler.build_schedule()
@@ -3474,20 +3602,44 @@ class ScheduleOptimizer:
                 model.AddAtMostOne(shifts[(n, d, s)] for s in range(len(all_shift_codes)))
         logging.info("Added constraint: each nurse at most one shift per day")
 
-        # CRITICAL: Staffing requirements per day - HARD CONSTRAINTS (no slack)
-        # Every day MUST have minimum coverage
+        # CRITICAL: Staffing requirements per day - HARD CONSTRAINTS
+        # Every day MUST have minimum coverage.
+        # Also track per-day excess so the objective can strongly penalize
+        # overstaffing above the minimum requirement.
+        day_excess_vars = []
+        night_excess_vars = []
         for d in range(num_days):
-            # Day shift - MUST have at least day_req nurses
-            day_sum = sum(shifts[(n, d, s)] for n in range(num_nurses) for s, sc in enumerate(all_shift_codes) if sc in day_shift_codes)
+            # Day shift
+            day_sum = sum(
+                shifts[(n, d, s)]
+                for n in range(num_nurses)
+                for s, sc in enumerate(all_shift_codes)
+                if sc in day_shift_codes
+            )
             model.Add(day_sum >= day_req)
-            
-            # Night shift - MUST have at least night_req nurses  
-            night_sum = sum(shifts[(n, d, s)] for n in range(num_nurses) for s, sc in enumerate(all_shift_codes) if sc in night_shift_codes)
+            day_excess = model.NewIntVar(0, num_nurses, f"day_excess_d{d}")
+            model.Add(day_excess == day_sum - day_req)
+            day_excess_vars.append(day_excess)
+
+            # Night shift
+            night_sum = sum(
+                shifts[(n, d, s)]
+                for n in range(num_nurses)
+                for s, sc in enumerate(all_shift_codes)
+                if sc in night_shift_codes
+            )
             model.Add(night_sum >= night_req)
-            
-            logging.debug(f"Day {d} ({date_list[d]}): requiring >= {day_req} day staff, >= {night_req} night staff")
-            
-        logging.info(f"Added HARD staffing constraints: {day_req} day nurses, {night_req} night nurses per day")
+            night_excess = model.NewIntVar(0, num_nurses, f"night_excess_d{d}")
+            model.Add(night_excess == night_sum - night_req)
+            night_excess_vars.append(night_excess)
+
+            logging.debug(
+                f"Day {d} ({date_list[d]}): requiring >= {day_req} day staff, >= {night_req} night staff"
+            )
+
+        logging.info(
+            f"Added HARD staffing constraints: {day_req} day nurses, {night_req} night nurses per day"
+        )
 
         # Respect off requests - parse from nurses data
         off_count = 0
@@ -3515,54 +3667,79 @@ class ScheduleOptimizer:
                 model.Add(consecutive_sum <= max_consecutive)
         logging.info(f"Added max consecutive working days constraint ({max_consecutive} days)")
 
-        # IMPORTANT: Treat OCR assignments as PREFERENCES (soft constraints), not hard constraints!
-        # The OCR data shows what nurses PREFER, but ALL nurses can be assigned to ANY shift
-        # We will add a bonus to the objective function for honoring preferences
+        # IMPORTANT: OCR assignments are preferences (soft), not hard constraints.
+        # We reward matching OCR-coded shifts, but penalize adding shifts on
+        # non-OCR-empty cells and penalize overstaffing above minimum coverage.
         preference_bonus = []
         total_preferences = 0
         skipped_codes = set()
-        
+
+        # Track days that had an OCR work code for each nurse.
+        # Used to penalize "added" shifts that were not in OCR baseline.
+        has_ocr_work_slot: Set[Tuple[int, int]] = set()
+
         for nurse_name, shift_list in assignments.items():
             normalized_name = normalize_name(nurse_name)
             n = nurse_name_to_idx.get(normalized_name) or nurse_name_to_idx.get(nurse_name)
             if n is None:
-                logging.warning(f"Nurse '{nurse_name}' (normalized: '{normalized_name}') not found in nurse list, skipping")
+                logging.warning(
+                    f"Nurse '{nurse_name}' (normalized: '{normalized_name}') not found in nurse list, skipping"
+                )
                 continue
+
             for d, shift_code in enumerate(shift_list):
                 if d >= num_days:
                     continue
-                # Skip empty, OFF, or invalid codes
-                if not shift_code or shift_code.upper() in ["", "OFF", "C"]:
+
+                raw_code = (shift_code or "").strip()
+                code_upper = raw_code.upper()
+                if not raw_code or code_upper in ["", "OFF", "C"] or code_upper.startswith("CF"):
                     continue
-                if shift_code not in all_shift_codes:
-                    skipped_codes.add(shift_code)
+
+                if raw_code not in all_shift_codes:
+                    skipped_codes.add(raw_code)
                     continue
-                    
-                s = all_shift_codes.index(shift_code)
-                # Add this as a PREFERENCE (bonus in objective), not a hard constraint
+
+                has_ocr_work_slot.add((n, d))
+                s = all_shift_codes.index(raw_code)
                 preference_bonus.append(shifts[(n, d, s)])
                 total_preferences += 1
-        
+
         if skipped_codes:
             logging.warning(f"Skipped unknown shift codes in assignments: {skipped_codes}")
         logging.info(f"Added {total_preferences} nurse preferences as soft constraints (bonuses)")
 
-        # Objective: MAXIMIZE coverage + honor preferences
-        # Primary goal: Fill ALL shifts (weight: 100 per shift)
-        # Secondary goal: Honor nurse preferences (weight: 10 per preference)
-        coverage_score = sum(
-            100 * shifts[(n, d, s)]
-            for n in range(num_nurses)
-            for d in range(num_days)
-            for s in range(len(all_shift_codes))
+        # Penalize assignments on non-OCR blank days to keep schedules lean.
+        non_ocr_added = []
+        total_assigned = []
+        for n in range(num_nurses):
+            for d in range(num_days):
+                day_vars = [shifts[(n, d, s)] for s in range(len(all_shift_codes))]
+                day_assigned = model.NewIntVar(0, 1, f"assigned_n{n}_d{d}")
+                model.Add(day_assigned == sum(day_vars))
+                total_assigned.append(day_assigned)
+                if (n, d) not in has_ocr_work_slot:
+                    non_ocr_added.append(day_assigned)
+
+        # Objective (MINIMIZE):
+        #  1) Overstaffing above required minimum (very high weight)
+        #  2) Added shifts on non-OCR days (high weight)
+        #  3) Total assignments (small regularizer)
+        #  4) Reward OCR preference matches (subtract reward)
+        overstaff_penalty = sum(day_excess_vars) + sum(night_excess_vars)
+        non_ocr_add_penalty = sum(non_ocr_added) if non_ocr_added else 0
+        total_assignment_penalty = sum(total_assigned) if total_assigned else 0
+        preference_reward = sum(preference_bonus) if preference_bonus else 0
+
+        model.Minimize(
+            10000 * overstaff_penalty
+            + 250 * non_ocr_add_penalty
+            + 5 * total_assignment_penalty
+            - 80 * preference_reward
         )
-        
-        # Add preference bonus (weight each preference match at 10 points)
-        preference_score = sum(10 * pref for pref in preference_bonus) if preference_bonus else 0
-        
-        # Combined objective
-        model.Maximize(coverage_score + preference_score)
-        logging.info(f"Objective: maximize coverage (weight 100) + preferences (weight 10, {len(preference_bonus)} prefs)")
+        logging.info(
+            "Objective: minimize overstaff(10000) + nonOCRAdds(250) + totalAssignments(5) - OCRPreferenceMatch(80)"
+        )
 
         # Solve
         solver = cp_model.CpSolver()
@@ -3676,6 +3853,14 @@ class ScheduleOptimizer:
         # Build lookup for nurse metadata by name (exact match)
         nurse_map = {n.get("name"): n for n in nurses}
 
+        # Build set of nurses on leave — exclude from all balancing moves
+        nurses_on_leave: Set[str] = set()
+        for n in nurses:
+            if (bool(n.get("isOnMaternityLeave")) or
+                bool(n.get("isOnSickLeave")) or
+                bool(n.get("isOnSabbatical"))):
+                nurses_on_leave.add(n.get("name", ""))
+
         # Build set of (nurse_name, date) tuples that are OCR-binding (must not be moved)
         ocr_binding: Set[Tuple[str, str]] = set()
         if ocr_assignments:
@@ -3686,26 +3871,34 @@ class ScheduleOptimizer:
                         if code not in ("C", "OFF", "*", "") and not code.startswith("CF"):
                             ocr_binding.add((nurse_name, date_list[day_idx]))
 
-        # Compute target hours (bi-weekly) per nurse, reduced by off days
+        # Compute target hours per nurse, SCALED to the actual period length,
+        # then reduced by off days.
+        #
+        # CRITICAL: targetBiWeeklyHours is the 14-day (bi-weekly) target.
+        # For longer periods we must scale: target = biweekly × (total_days / 14).
+        # Without this, a 41-day period would use the raw 75h bi-weekly target
+        # instead of the correct ~220h, causing the balancer to aggressively
+        # strip shifts from every nurse.
         targets: Dict[str, float] = {}
+        total_days = len(date_list) if date_list else 14
+        period_scale = total_days / 14.0  # How many bi-weekly periods in this schedule
         for name in schedule.keys():
             meta = nurse_map.get(name, {})
             tbw = meta.get("targetBiWeeklyHours")
             tw = meta.get("targetWeeklyHours")
             mw = meta.get("maxWeeklyHours")
             if tbw is not None:
-                raw_target = float(tbw)
+                raw_target = float(tbw) * period_scale
             elif tw is not None:
-                raw_target = float(tw) * 2.0
+                raw_target = float(tw) * 2.0 * period_scale
             elif mw is not None:
-                raw_target = float(mw) * 2.0
+                raw_target = float(mw) * 2.0 * period_scale
             else:
                 raw_target = 0.0
 
             # Reduce target by off days (offRequests + OCR off codes) to credit
             # vacation.  Each off day reduces the target proportionally AND
             # contributes a virtual 7.5h credit toward scheduled hours.
-            total_days = len(date_list) if date_list else 14
             off_requests = set(meta.get("offRequests", []) or [])
             off_day_count = 0
             row = schedule.get(name, [])
@@ -3747,8 +3940,23 @@ class ScheduleOptimizer:
                     pass
             return hrs
 
-        # Initial deltas
-        deltas: Dict[str, float] = {name: scheduled_hours_for(name) - targets.get(name, 0.0) for name in schedule.keys()}
+        # Initial deltas (exclude nurses on leave from balancing)
+        deltas: Dict[str, float] = {
+            name: scheduled_hours_for(name) - targets.get(name, 0.0)
+            for name in schedule.keys()
+            if name not in nurses_on_leave
+        }
+
+        # Log targets for verification
+        logging.info(f"  Period scale: {period_scale:.3f} ({total_days} days / 14)")
+        for name in sorted(deltas.keys()):
+            logging.info(
+                f"  {name}: target={targets.get(name, 0):.1f}h, "
+                f"scheduled={scheduled_hours_for(name):.1f}h, "
+                f"delta={deltas[name]:+.1f}h"
+            )
+        if nurses_on_leave:
+            logging.info(f"  Excluded from balancing (on leave): {sorted(nurses_on_leave)}")
 
         def total_abs_delta(dmap: Dict[str, float]) -> float:
             return sum(abs(v) for v in dmap.values())
@@ -3841,6 +4049,14 @@ class ScheduleOptimizer:
         This is the LAST LINE OF DEFENSE - ensures no empty days EVER.
         """
         logging.info("PATCHING COVERAGE GAPS...")
+
+        # Build set of nurses on leave — they should never be picked for patching
+        on_leave_names = {
+            n["name"] for n in nurses
+            if (bool(n.get("isOnMaternityLeave")) or
+                bool(n.get("isOnSickLeave")) or
+                bool(n.get("isOnSabbatical")))
+        }
         
         for d_idx, date in enumerate(date_list):
             # Count current coverage
@@ -3850,6 +4066,8 @@ class ScheduleOptimizer:
             
             for nurse in nurses:
                 name = nurse["name"]
+                if name in on_leave_names:
+                    continue  # Skip nurses on leave
                 if d_idx < len(result[name]):
                     shift = result[name][d_idx]
                     if shift["shiftType"] == "day":
@@ -4561,6 +4779,17 @@ IMPORTANT:
             return None
         
         changes_applied = []
+        changes_rejected = []
+        
+        # Build a lookup of which dates each nurse has WORKING shifts on (not off days)
+        nurse_work_dates = {}
+        for nurse_name, shifts in refined_schedule.items():
+            work_dates = set()
+            for s in shifts:
+                if s.get('shiftType') != 'off' and s.get('shift', '') not in ['', 'OFF', 'C', 'CF']:
+                    work_dates.add(str(s.get('date', '')).strip())
+            nurse_work_dates[nurse_name] = work_dates
+        
         if "changes" in ai_suggestions and isinstance(ai_suggestions["changes"], list):
             logger.info(f"Processing {len(ai_suggestions['changes'])} suggested changes...")
             for change in ai_suggestions["changes"]:
@@ -4574,9 +4803,23 @@ IMPORTANT:
                 nurse_key = find_matching_nurse(nurse_suggested)
                 if not nurse_key:
                     logger.warning(f"    Skipped: Nurse '{nurse_suggested}' not found. Available: {list(refined_schedule.keys())[:5]}")
+                    changes_rejected.append({"change": change, "reason": f"Nurse '{nurse_suggested}' not found"})
                     continue
                 
                 logger.info(f"    Matched nurse: '{nurse_suggested}' -> '{nurse_key}'")
+                
+                # VALIDATION: For remove_shift, verify the nurse actually has a WORKING shift on this date
+                if action == "remove_shift":
+                    work_dates_for_nurse = nurse_work_dates.get(nurse_key, set())
+                    target_date = str(date).strip() if date else ""
+                    if target_date not in work_dates_for_nurse:
+                        logger.warning(f"    REJECTED: Cannot remove shift from {nurse_key} on {date} - no working shift exists on that date")
+                        logger.warning(f"    {nurse_key}'s working dates: {sorted(list(work_dates_for_nurse))[:10]}...")
+                        changes_rejected.append({
+                            "change": change, 
+                            "reason": f"Nurse {nurse_key} has no working shift on {date}. Working dates: {sorted(list(work_dates_for_nurse))[:5]}"
+                        })
+                        continue
                 
                 # Handle add_shift actions - adds a new entry
                 if action in ["add_shift", "add_shift_8h", "add_day_8h", "add_night_8h"]:
@@ -4717,10 +4960,18 @@ IMPORTANT:
                 else:
                     if action not in ["add_shift"]:
                         logger.warning(f"    Skipped: Date '{date}' not found for nurse '{nurse_key}'")
+                        changes_rejected.append({
+                            "change": change,
+                            "reason": f"Date '{date}' not found in nurse's schedule"
+                        })
         else:
             logger.warning("No 'changes' array found in AI suggestions")
         
         logger.info(f"Successfully applied {len(changes_applied)} changes to schedule")
+        if changes_rejected:
+            logger.warning(f"Rejected {len(changes_rejected)} invalid changes")
+            for rejected in changes_rejected:
+                logger.warning(f"  - {rejected}")
         
         # Log final schedule state
         logger.info("=" * 80)
@@ -4733,7 +4984,9 @@ IMPORTANT:
             "suggestions": ai_suggestions,
             "refined_schedule": refined_schedule,
             "changes_applied": len(changes_applied),
-            "message": "AI refinement applied successfully.",
+            "changes_rejected": len(changes_rejected),
+            "rejected_details": changes_rejected[:10] if changes_rejected else [],  # Limit to first 10
+            "message": f"AI refinement applied: {len(changes_applied)} changes applied, {len(changes_rejected)} rejected.",
             "raw_ai_response": raw_ai_response
         }
     
@@ -4962,11 +5215,11 @@ async def optimize_with_preferences(
 
 @router.post("/optimize-with-constraints")
 async def optimize_with_constraints(
-    constraints: Dict[str, Any],
-    assignments: Optional[Dict[str, List[str]]] = None,
-    nurses: Optional[List[Dict[str, Any]]] = None,  # ADD nurses parameter
-    schedule_id: Optional[str] = None,
-    save_to_db: bool = False,  # NEW: Only save to DB if explicitly requested
+    constraints: Dict[str, Any] = Body(...),
+    assignments: Optional[Dict[str, List[str]]] = Body(default=None),
+    nurses: Optional[List[Dict[str, Any]]] = Body(default=None),
+    schedule_id: Optional[str] = Body(default=None),
+    save_to_db: bool = Body(default=False),
     auth: AuthContext = Depends(get_optional_auth),
     db: Session = Depends(get_db)
 ):
@@ -4978,6 +5231,13 @@ async def optimize_with_constraints(
         logger.info("=" * 80)
         logger.info("OPTIMIZE WITH CONFIRMED CONSTRAINTS")
         logger.info("=" * 80)
+        
+        # CRITICAL DEBUG: Log assignments received
+        logger.info(f"Assignments received: {len(assignments) if assignments else 0} nurses")
+        if assignments:
+            for nurse_name, shifts in list(assignments.items())[:3]:  # Sample first 3
+                non_empty = [s for s in shifts if s and s.strip()]
+                logger.info(f"  Sample - {nurse_name}: {len(non_empty)} non-empty shifts out of {len(shifts)}")
         
         # CRITICAL: If nurses are provided in request body, override constraints.nurses
         if nurses:
@@ -5005,9 +5265,27 @@ async def optimize_with_constraints(
         
         ScheduleOptimizer.validate_constraints_structure(constraints)
         
+        # Build nurse_defaults from database for any nurses missing from the frontend payload
+        nurse_defaults = {}
+        org_id = auth.organization_id if auth.is_authenticated else None
+        if org_id:
+            db_nurses = db.query(Nurse).filter(Nurse.organization_id == org_id).all()
+            for db_nurse in db_nurses:
+                nurse_defaults[db_nurse.name.strip().lower()] = {
+                    "employmentType": db_nurse.employment_type or "full-time",
+                    "maxWeeklyHours": db_nurse.max_weekly_hours or 60,
+                    "targetBiWeeklyHours": db_nurse.bi_weekly_target_hours or 75,
+                    "isChemoCertified": db_nurse.is_chemo_certified or False,
+                    "isTransplantCertified": db_nurse.is_transplant_certified or False,
+                    "isRenalCertified": db_nurse.is_renal_certified or False,
+                    "isChargeCertified": db_nurse.is_charge_certified or False,
+                }
+            logger.info(f"Loaded {len(nurse_defaults)} nurse defaults from database")
+        
         schedule = ScheduleOptimizer.optimize_schedule_with_ortools(
             assignments=assignments or {},
             constraints=constraints,
+            nurse_defaults=nurse_defaults,
         )
         
         # Only save to DB if explicitly requested (e.g., on finalize)
@@ -5278,9 +5556,26 @@ async def optimize_schedule(
         logger.info("=" * 60)
 
         # Use RobustScheduler which GUARANTEES full coverage
+        # Build nurse_defaults from database for any nurses missing from the frontend payload
+        nurse_defaults = {}
+        if auth.is_authenticated and auth.organization_id:
+            db_nurses = db.query(Nurse).filter(Nurse.organization_id == auth.organization_id).all()
+            for db_nurse in db_nurses:
+                nurse_defaults[db_nurse.name.strip().lower()] = {
+                    "employmentType": db_nurse.employment_type or "full-time",
+                    "maxWeeklyHours": db_nurse.max_weekly_hours or 60,
+                    "targetBiWeeklyHours": db_nurse.bi_weekly_target_hours or 75,
+                    "isChemoCertified": db_nurse.is_chemo_certified or False,
+                    "isTransplantCertified": db_nurse.is_transplant_certified or False,
+                    "isRenalCertified": db_nurse.is_renal_certified or False,
+                    "isChargeCertified": db_nurse.is_charge_certified or False,
+                }
+            logger.info(f"Loaded {len(nurse_defaults)} nurse defaults from database")
+        
         schedule = ScheduleOptimizer.optimize_schedule_with_ortools(
             assignments=req.assignments or {},
             constraints=constraints,
+            nurse_defaults=nurse_defaults,
         )
         
         # Skip AI refinement - RobustScheduler already produces a complete schedule
@@ -5746,6 +6041,58 @@ Rules:
                 "issues": [],
                 "suggestions": [],
             }
+
+        # ── Deterministic score calculation (overrides AI score) ────────
+        # We compute a weighted score based on actual metrics, not AI guesswork.
+        # Components:
+        #   - Coverage (40%): % of days with adequate staffing
+        #   - Fairness (30%): How close nurses are to their target hours
+        #   - Off-request respect (20%): % of off-requests honored
+        #   - Balance (10%): Spread of overworked vs underworked
+        deterministic_score = 100.0
+        score_breakdown = {}
+
+        # 1. Coverage component (40 points max)
+        if coverage_pct is not None:
+            coverage_score = min(40.0, coverage_pct * 0.4)
+            score_breakdown["coverage"] = round(coverage_score, 1)
+            deterministic_score = deterministic_score - 40 + coverage_score
+        
+        # 2. Fairness component (30 points max) - based on average absolute delta
+        if avg_delta is not None:
+            # Perfect: avg_delta = 0 -> 30 points
+            # Acceptable: avg_delta <= 5h -> ~25 points  
+            # Poor: avg_delta > 15h -> ~10 points
+            fairness_score = max(0, 30.0 - (avg_delta * 2))
+            fairness_score = min(30.0, fairness_score)
+            score_breakdown["fairness"] = round(fairness_score, 1)
+            deterministic_score = deterministic_score - 30 + fairness_score
+        
+        # 3. Off-request respect (20 points max)
+        if off_respect_pct is not None:
+            off_score = min(20.0, off_respect_pct * 0.2)
+            score_breakdown["offRequests"] = round(off_score, 1)
+            deterministic_score = deterministic_score - 20 + off_score
+        
+        # 4. Balance component (10 points max) - penalize if many overworked/underworked
+        total_nurses = len(request.schedule)
+        if total_nurses > 0:
+            imbalanced_ratio = (len(overworked) + len(underworked)) / total_nurses
+            balance_score = max(0, 10.0 - (imbalanced_ratio * 20))
+            score_breakdown["balance"] = round(balance_score, 1)
+            deterministic_score = deterministic_score - 10 + balance_score
+
+        deterministic_score = max(0, min(100, round(deterministic_score)))
+        
+        # Override AI score with deterministic calculation
+        ai_score = insights.get("score")
+        insights["score"] = deterministic_score
+        insights["scoreBreakdown"] = score_breakdown
+        if ai_score is not None:
+            insights["aiSuggestedScore"] = ai_score  # Keep for reference
+            logger.info(f"Score override: AI suggested {ai_score}, deterministic calculation = {deterministic_score}")
+        
+        logger.info(f"Deterministic score: {deterministic_score} (breakdown: {score_breakdown})")
 
         # ── Deterministic gap-fill suggestions ──────────────────────────
         # For each date, compute staffing coverage and find underworked

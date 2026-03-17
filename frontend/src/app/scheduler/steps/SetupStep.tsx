@@ -6,7 +6,12 @@ import { SchedulePeriodInput } from "../components";
 import { PreferenceImportPanel } from "../components/PreferenceImportPanel";
 import { TemplatePicker } from "../components/ScheduleTemplateManager";
 import UploadInput from "../../components/UploadInput";
-import { AlertTriangle, Camera, FileSpreadsheet, LayoutTemplate } from "lucide-react";
+import {
+  AlertTriangle,
+  Camera,
+  FileSpreadsheet,
+  LayoutTemplate,
+} from "lucide-react";
 import { NurseScheduleSubmission } from "../types";
 import type { ScheduleTemplate } from "../hooks/useScheduleTemplates";
 

@@ -622,9 +622,15 @@ function DroppableDay({
   const [selectedShift, setSelectedShift] = useState("");
 
   // Get nurses already assigned on this day
-  const assignedNurses = shifts.map((s) => s.nurse);
+  // IMPORTANT: ignore blank placeholder cells (shift="") so they don't
+  // incorrectly block adding a nurse for this day.
+  const assignedNurses = new Set(
+    shifts
+      .filter((s) => String(s.shiftEntry.shift || "").trim() !== "")
+      .map((s) => s.nurse),
+  );
   const unassignedNurses = availableNurses.filter(
-    (n) => !assignedNurses.includes(n),
+    (n) => !assignedNurses.has(n),
   );
 
   const handleAddSubmit = () => {
@@ -1126,7 +1132,12 @@ export default function SchedulePreview({
     setShiftMap((prev) => {
       const newMap = cloneShiftMap(prev);
       const shifts = [...(newMap.get(date) || [])];
-      shifts.push({ nurse, shiftEntry: newShiftEntry });
+      const existingIdx = shifts.findIndex((entry) => entry.nurse === nurse);
+      if (existingIdx >= 0) {
+        shifts[existingIdx] = { nurse, shiftEntry: newShiftEntry };
+      } else {
+        shifts.push({ nurse, shiftEntry: newShiftEntry });
+      }
       newMap.set(date, shifts);
       return newMap;
     });

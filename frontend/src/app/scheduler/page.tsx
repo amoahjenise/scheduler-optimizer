@@ -35,7 +35,6 @@ import { saveAs } from "file-saver";
 
 // Import reusable scheduler components
 import {
-  ClearCacheButton,
   ProgressSteps,
   SchedulePeriodInput,
   StaffRequirementsInput,
@@ -74,6 +73,9 @@ import {
   getDefaultDates,
   deduplicateNightShifts,
   deduplicateGridGhosts,
+  deduplicateNurseCandidates,
+  matchNursesWithDatabase,
+  getPotentialMatches,
 } from "./hooks";
 
 const SCREENSHOT_DB_NAME = "scheduler_uploads_db";
@@ -181,6 +183,10 @@ export default function SchedulerPage() {
   >([]);
   const [manualNurses, setManualNurses] = useState<ManualNurse[]>([]);
   const [organizationNurses, setOrganizationNurses] = useState<Nurse[]>([]);
+  // All nurses including those on leave - used for name matching only
+  const [allOrganizationNurses, setAllOrganizationNurses] = useState<Nurse[]>(
+    [],
+  );
   const [organizationNursesLoading, setOrganizationNursesLoading] =
     useState(false);
   const [showNurseModal, setShowNurseModal] = useState(false);
@@ -246,10 +252,23 @@ export default function SchedulerPage() {
   const [showSuggestionsModal, setShowSuggestionsModal] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<any>(null);
   const [changesAppliedCount, setChangesAppliedCount] = useState(0);
+  const [changesRejectedCount, setChangesRejectedCount] = useState(0);
+  const [rejectedDetails, setRejectedDetails] = useState<any[]>([]);
   const [rawAiResponse, setRawAiResponse] = useState<string>("");
   const [showDebugInfo, setShowDebugInfo] = useState(false);
   const [showHoursBreakdown, setShowHoursBreakdown] = useState(false);
+  const [optimizationNotice, setOptimizationNotice] = useState<string | null>(
+    null,
+  );
+  const [confirmOptimizePending, setConfirmOptimizePending] = useState(false);
   const [excludedNurses, setExcludedNurses] = useState<Set<string>>(new Set());
+  // Undo state for AI refinement
+  const [preRefinementGrid, setPreRefinementGrid] = useState<GridRow[] | null>(
+    null,
+  );
+  const [preRefinementDates, setPreRefinementDates] = useState<string[] | null>(
+    null,
+  );
 
   // ── Self-scheduling / Preference Import ──
   type PreferenceSource = "ocr" | "import" | "template";
@@ -263,6 +282,12 @@ export default function SchedulerPage() {
   // ── Schedule Templates ──
   const scheduleTemplates = useScheduleTemplates();
   const [showSaveTemplateDialog, setShowSaveTemplateDialog] = useState(false);
+  const [
+    hasSavedTemplateForCurrentResult,
+    setHasSavedTemplateForCurrentResult,
+  ] = useState(false);
+  const [showManageTemplatesModal, setShowManageTemplatesModal] =
+    useState(false);
 
   // AI Schedule Insights
   const [showInsightsPanel, setShowInsightsPanel] = useState(false);
@@ -300,8 +325,8 @@ export default function SchedulerPage() {
     currentOrganization?.full_time_weekly_target ?? 75;
   const partTimeBiWeeklyTarget =
     currentOrganization?.part_time_weekly_target ?? 63.75;
-  const defaultFullTimeMaxWeeklyHours = 120;
-  const defaultPartTimeMaxWeeklyHours = 80;
+  const defaultFullTimeMaxWeeklyHours = 75;
+  const defaultPartTimeMaxWeeklyHours = 63.75;
 
   const getDefaultMaxWeeklyHours = useCallback(
     (employmentType?: "FT" | "PT") =>
@@ -320,10 +345,18 @@ export default function SchedulerPage() {
     }),
     [],
   );
+
+  useEffect(() => {
+    if (searchParams.get("manageTemplates") === "1") {
+      setShowManageTemplatesModal(true);
+    }
+  }, [searchParams]);
+
   const shouldRestoreLocalDraftForScreenshots =
     !!currentOrganization?.id &&
     searchParams.get("new") !== "1" &&
-    !searchParams.get("scheduleId");
+    !searchParams.get("scheduleId") &&
+    !searchParams.get("draft");
   const screenshotStorageKey = useMemo(
     () => `scheduler_upload_screenshots_${currentOrganization?.id || "global"}`,
     [currentOrganization?.id],
@@ -351,6 +384,11 @@ export default function SchedulerPage() {
     return `${value.toFixed(1)}%`;
   }, []);
 
+  // Scroll to top when step changes
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [currentStep]);
+
   useEffect(() => {
     if (!userId) return;
 
@@ -361,7 +399,24 @@ export default function SchedulerPage() {
       try {
         const { nurses } = await listNursesAPI(userId, 1, 1000);
         if (!cancelled) {
-          setOrganizationNurses(Array.isArray(nurses) ? nurses : []);
+          const allNurses = Array.isArray(nurses) ? nurses : [];
+          // Store ALL nurses for name matching (including those on leave)
+          setAllOrganizationNurses(allNurses);
+
+          // Filter out nurses on leave - they should not be available for scheduling
+          const availableNurses = allNurses.filter(
+            (nurse) =>
+              !nurse.is_on_maternity_leave &&
+              !nurse.is_on_sick_leave &&
+              !nurse.is_on_sabbatical,
+          );
+          const onLeaveCount = allNurses.length - availableNurses.length;
+          if (onLeaveCount > 0) {
+            console.log(
+              `[Scheduler] Filtered out ${onLeaveCount} nurse(s) on leave from scheduling`,
+            );
+          }
+          setOrganizationNurses(availableNurses);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -375,6 +430,7 @@ export default function SchedulerPage() {
         }
         if (!cancelled) {
           setOrganizationNurses([]);
+          setAllOrganizationNurses([]);
         }
       } finally {
         if (!cancelled) {
@@ -446,7 +502,11 @@ export default function SchedulerPage() {
   const uniqueNurses = useMemo(() => {
     const nurseMap = new Map<
       string,
-      { name: string; source: "ocr" | "manual" | "both"; isManual: boolean }
+      {
+        name: string;
+        source: "ocr" | "manual" | "both" | "preference";
+        isManual: boolean;
+      }
     >();
 
     // Add OCR nurses first
@@ -475,8 +535,36 @@ export default function SchedulerPage() {
       }
     }
 
+    // Add nurses from preference submissions
+    for (const submission of preferenceSubmissions) {
+      const key = normalizeNurseName(submission.nurseName);
+      const existing = nurseMap.get(key);
+      if (!existing) {
+        nurseMap.set(key, {
+          name: submission.nurseName,
+          source: "preference",
+          isManual: false,
+        });
+      }
+    }
+
     return Array.from(nurseMap.values());
-  }, [ocrGrid, manualNurses]);
+  }, [ocrGrid, manualNurses, preferenceSubmissions]);
+
+  // Calculate number of days in the schedule period
+  const scheduleDays = useMemo(() => {
+    if (!startDate || !endDate) return ocrDates.length;
+
+    // If we have ocrDates, use that
+    if (ocrDates.length > 0) return ocrDates.length;
+
+    // Otherwise calculate from date range
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    const diffTime = Math.abs(end.getTime() - start.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // +1 to include both start and end dates
+    return diffDays;
+  }, [startDate, endDate, ocrDates.length]);
 
   const nurseMetadataByName = useMemo(() => {
     const metadata = new Map<string, ManualNurse>();
@@ -513,15 +601,15 @@ export default function SchedulerPage() {
         isHeadNurse: existing?.isHeadNurse,
         offRequests: existing?.offRequests,
         maxHours: resolvedMaxHours,
-        targetWeeklyHours:
-          typeof nurse.target_weekly_hours === "number"
-            ? nurse.target_weekly_hours
-            : existing?.targetWeeklyHours,
         preferredShiftLengthHours:
           typeof nurse.preferred_shift_length_hours === "number"
             ? nurse.preferred_shift_length_hours
             : existing?.preferredShiftLengthHours,
         employmentType: isPartTime ? "PT" : "FT",
+        // Include leave status from DB
+        isOnMaternityLeave: nurse.is_on_maternity_leave,
+        isOnSickLeave: nurse.is_on_sick_leave,
+        isOnSabbatical: nurse.is_on_sabbatical,
       });
     }
 
@@ -671,10 +759,12 @@ export default function SchedulerPage() {
         const nurseMetadata = nurseMetadataByName.get(
           normalizeNurseName(row.nurse),
         );
+        // Use maxHours (from max_weekly_hours DB field) as bi-weekly target;
+        // target_weekly_hours is deprecated. Fall back to employment type defaults.
         const biWeeklyHours =
-          typeof nurseMetadata?.targetWeeklyHours === "number" &&
-          nurseMetadata.targetWeeklyHours > 0
-            ? nurseMetadata.targetWeeklyHours
+          typeof nurseMetadata?.maxHours === "number" &&
+          nurseMetadata.maxHours > 0
+            ? nurseMetadata.maxHours
             : nurseMetadata?.employmentType === "PT"
               ? partTimeBiWeeklyTarget
               : fullTimeBiWeeklyTarget;
@@ -869,6 +959,14 @@ export default function SchedulerPage() {
           continue;
         }
 
+        const normalizedCode = String(shift.shift || "")
+          .replace(/\s*\*\s*$/, "")
+          .trim()
+          .toUpperCase();
+        if (normalizedCode.startsWith("CF")) {
+          continue;
+        }
+
         const parsed = parseShiftCode(shift.shift || "", shift.date);
         const normalizedShiftType =
           shift.shiftType === "day" || shift.shiftType === "night"
@@ -1018,6 +1116,7 @@ export default function SchedulerPage() {
       grid,
       scheduleId,
       assignments,
+      rawResponse,
     }: {
       grid: GridRow[];
       scheduleId?: string;
@@ -1082,11 +1181,7 @@ export default function SchedulerPage() {
           // Re-parsing raw OCR codes via parseShiftCode would
           // clobber hours (e.g. Z07→11.25h becomes 07→7.5h).
           const existingBackend = byDate.get(date);
-          if (
-            existingBackend &&
-            existingBackend.shift &&
-            existingBackend.hours > 0
-          ) {
+          if (existingBackend && String(existingBackend.shift || "").trim()) {
             continue; // keep backend shift — it already has correct metadata
           }
 
@@ -1111,7 +1206,20 @@ export default function SchedulerPage() {
 
       newGrid = Array.from(gridByNorm.values());
 
+      if (rawResponse?.__timed_out || rawResponse?.timeout) {
+        setOptimizationNotice(
+          "Optimization timed out. Showing OCR baseline/fallback schedule.",
+        );
+      } else if (rawResponse?.fallback || rawResponse?.error) {
+        setOptimizationNotice(
+          "Optimization request failed. Showing OCR baseline/fallback schedule.",
+        );
+      } else {
+        setOptimizationNotice(null);
+      }
+
       setOptimizedGrid(newGrid);
+      setHasSavedTemplateForCurrentResult(false);
       if (scheduleId) {
         setSavedScheduleId(scheduleId);
       }
@@ -1146,6 +1254,26 @@ export default function SchedulerPage() {
     endDate,
     onOptimized: handleOptimizedSchedule,
   });
+
+  const showStandardOptimizationOverlay =
+    (optimizing || confirmOptimizePending) &&
+    currentStep === "optimize" &&
+    preferenceSource !== "import";
+  const [optimizationElapsedSeconds, setOptimizationElapsedSeconds] =
+    useState(0);
+
+  useEffect(() => {
+    if (!showStandardOptimizationOverlay) {
+      setOptimizationElapsedSeconds(0);
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setOptimizationElapsedSeconds((prev) => prev + 1);
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [showStandardOptimizationOverlay]);
 
   // Memoized callback for SchedulePreview onChange to prevent infinite loops
   const handleSchedulePreviewChange = useCallback(
@@ -1258,6 +1386,63 @@ export default function SchedulerPage() {
       setAutoComments(newAutoComments);
     },
     [autoComments],
+  );
+
+  const handleAsteriskToggled = useCallback(
+    (nurse: string, date: string, hasAsterisk: boolean) => {
+      const nurseKey = nurse.trim().toLowerCase();
+      const dateKey = date.trim();
+
+      setAutoComments((prev) => {
+        const entries = prev
+          .split("\n")
+          .filter((line) => line.trim())
+          .map((line) => {
+            const [name = "", dateStr = "", comment = ""] = line.split("|");
+            return {
+              name: name.trim(),
+              date: dateStr.trim(),
+              comment: comment.trim(),
+            };
+          });
+
+        const sameEntry = (entry: { name: string; date: string }) =>
+          entry.name.trim().toLowerCase() === nurseKey &&
+          entry.date === dateKey;
+
+        if (hasAsterisk) {
+          const exists = entries.some(sameEntry);
+          if (!exists) {
+            entries.push({
+              name: nurse,
+              date,
+              comment: "OFF Time Off Request",
+            });
+          }
+        } else {
+          // Only remove auto-generated placeholder comments.
+          // Keep user-authored comments intact.
+          const AUTO_PLACEHOLDER = /^OFF\s+Time\s+Off\s+Request$/i;
+          const filtered = entries.filter((entry) => {
+            if (!sameEntry(entry)) return true;
+            return !AUTO_PLACEHOLDER.test(entry.comment);
+          });
+
+          entries.length = 0;
+          entries.push(...filtered);
+        }
+
+        entries.sort((a, b) => {
+          const dateCompare = a.date.localeCompare(b.date);
+          return dateCompare !== 0 ? dateCompare : a.name.localeCompare(b.name);
+        });
+
+        return entries
+          .map((entry) => `${entry.name}|${entry.date}|${entry.comment}`)
+          .join("\n");
+      });
+    },
+    [],
   );
 
   // Redirect non-admins away from scheduler
@@ -1389,13 +1574,19 @@ export default function SchedulerPage() {
     setShowSuggestionsModal(false);
     setAiSuggestions(null);
     setChangesAppliedCount(0);
+    setChangesRejectedCount(0);
+    setRejectedDetails([]);
     setRawAiResponse("");
     setShowDebugInfo(false);
     setShowHoursBreakdown(false);
+    setHasSavedTemplateForCurrentResult(false);
+    setShowManageTemplatesModal(false);
     setExcludedNurses(new Set());
     setShowInsightsPanel(false);
     setInsightsData(null);
     setInsightsLoading(false);
+    setPreRefinementGrid(null);
+    setPreRefinementDates(null);
 
     clearPersistedScreenshots(screenshotStorageKey).catch((error) => {
       console.error("Failed to clear persisted screenshot attachments:", error);
@@ -1403,7 +1594,7 @@ export default function SchedulerPage() {
     hasRestoredScreenshotsRef.current = false;
   }, [screenshotStorageKey]);
 
-  const { resetSchedulerState } = useDraftRouteLifecycle({
+  const { resetSchedulerState, deleteDraftAndReset } = useDraftRouteLifecycle({
     organizationId: currentOrganization?.id || null,
     getToken,
     searchParams,
@@ -1420,14 +1611,31 @@ export default function SchedulerPage() {
     resetLocalState: resetLocalDraftState,
   });
 
-  // Clear saved state when user explicitly starts new
+  // Clear local state and navigate to a fresh scheduler (draft is preserved on backend)
   function clearSavedState() {
     resetSchedulerState();
-
-    // Remove query params (e.g., scheduleId/new) so reload won't rehydrate stale step.
     router.replace("/scheduler");
+    console.log("Scheduler local state cleared - draft preserved on backend");
+  }
 
-    console.log("Scheduler saved state cleared - all data reset");
+  // Start a brand new schedule — clears local state, navigates to new draft route
+  function startNewSchedule() {
+    resetSchedulerState();
+    router.replace("/scheduler?new=1");
+    console.log("Starting new schedule");
+  }
+
+  // Explicitly delete the current draft from the backend and clear local state
+  async function discardDraft() {
+    if (
+      !confirm(
+        "Are you sure you want to delete this draft? This cannot be undone.",
+      )
+    )
+      return;
+    await deleteDraftAndReset();
+    router.replace("/schedules");
+    console.log("Draft deleted and redirected to schedule list");
   }
 
   const { runOCR } = useSchedulerOCRWorkflow({
@@ -1436,6 +1644,7 @@ export default function SchedulerPage() {
     endDate,
     userId,
     organizationNurses,
+    allOrganizationNurses,
     getDefaultMaxWeeklyHours,
     fullTimeBiWeeklyTarget,
     partTimeBiWeeklyTarget,
@@ -1500,6 +1709,12 @@ export default function SchedulerPage() {
       alert("Please enter refinement instructions");
       return;
     }
+
+    // Save current state for undo capability
+    setPreRefinementGrid([
+      ...optimizedGrid.map((row) => ({ ...row, shifts: [...row.shifts] })),
+    ]);
+    setPreRefinementDates([...ocrDates]);
 
     setRefining(true);
     try {
@@ -1583,8 +1798,9 @@ export default function SchedulerPage() {
           console.log(`  ${row.nurse}: ${row.shifts.length} shifts`);
         });
 
-        // CRITICAL: Update ocrDates to include any new dates from the refined schedule
-        // This ensures the UI shows columns for newly added shifts
+        // IMPORTANT: Preserve the original date range, don't recalculate from shifts
+        // This ensures we don't lose dates when shifts are removed (set to off)
+        // The ocrDates should remain stable across refinements
         const allDatesFromRefined = new Set<string>();
         refinedGrid.forEach((row) => {
           row.shifts.forEach((shift: any) => {
@@ -1593,12 +1809,24 @@ export default function SchedulerPage() {
             }
           });
         });
-        const sortedDates = Array.from(allDatesFromRefined).sort();
+
+        // Merge with existing dates to ensure we don't lose any columns
+        const existingDates = new Set(ocrDates);
+        const mergedDates = new Set([...existingDates, ...allDatesFromRefined]);
+        const sortedDates = Array.from(mergedDates).sort();
+
         console.log("=== UPDATING ocrDates ===");
         console.log("Old ocrDates count:", ocrDates.length);
-        console.log("New dates from refined schedule:", sortedDates.length);
-        console.log("New dates:", sortedDates);
-        setOcrDates(sortedDates);
+        console.log(
+          "New dates from refined schedule:",
+          allDatesFromRefined.size,
+        );
+        console.log("Merged dates count:", sortedDates.length);
+
+        // Only update dates if we're adding new ones, never remove dates
+        if (sortedDates.length >= ocrDates.length) {
+          setOcrDates(sortedDates);
+        }
 
         setOptimizedGrid(refinedGrid);
         console.log("=== setOptimizedGrid CALLED ===");
@@ -1607,17 +1835,33 @@ export default function SchedulerPage() {
       // Show suggestions in modal instead of alert
       setAiSuggestions(data.suggestions);
       setChangesAppliedCount(data.changes_applied || 0);
+      setChangesRejectedCount(data.changes_rejected || 0);
+      setRejectedDetails(data.rejected_details || []);
       setRawAiResponse(data.raw_ai_response || "");
       setShowSuggestionsModal(true);
       setShowRefineModal(false);
       setRefineRequest("");
     } catch (err) {
+      // On error, clear the pre-refinement state since nothing was applied
+      setPreRefinementGrid(null);
+      setPreRefinementDates(null);
       alert(
         "Refinement failed: " +
           (err instanceof Error ? err.message : "Unknown error"),
       );
     } finally {
       setRefining(false);
+    }
+  }
+
+  // Undo AI refinement - restore previous state
+  function undoRefinement() {
+    if (preRefinementGrid && preRefinementDates) {
+      setOptimizedGrid(preRefinementGrid);
+      setOcrDates(preRefinementDates);
+      setPreRefinementGrid(null);
+      setPreRefinementDates(null);
+      setShowSuggestionsModal(false);
     }
   }
 
@@ -1783,7 +2027,21 @@ export default function SchedulerPage() {
     const toLink = newNurseCandidates.filter(
       (n) => n.matchAction === "link" && n.selectedMatchId,
     );
+    const toSkip = newNurseCandidates.filter((n) => n.matchAction === "skip");
 
+    // Handle skipped nurses first - remove them from the OCR grid
+    if (toSkip.length > 0) {
+      const skippedNames = new Set(
+        toSkip.map((n) => (n.originalName || n.name).toLowerCase().trim()),
+      );
+      setOcrGrid((prevGrid) =>
+        prevGrid.filter(
+          (row) => !skippedNames.has(row.nurse.toLowerCase().trim()),
+        ),
+      );
+    }
+
+    // If only skips (no creates or links), close modal and return
     if (toCreate.length === 0 && toLink.length === 0) {
       setShowCreateNursesModal(false);
       setNewNurseCandidates([]);
@@ -1799,15 +2057,6 @@ export default function SchedulerPage() {
       try {
         const employmentType =
           candidate.employmentType === "FT" ? "full-time" : "part-time";
-        const resolvedTargetWeeklyHours =
-          employmentType === "part-time" &&
-          Number.isFinite(candidate.maxHours) &&
-          candidate.maxHours > 0 &&
-          candidate.maxHours <= 60
-            ? candidate.maxHours
-            : employmentType === "part-time"
-              ? partTimeBiWeeklyTarget
-              : fullTimeBiWeeklyTarget;
 
         const nurseData: NurseCreate = {
           name: candidate.name,
@@ -1815,7 +2064,6 @@ export default function SchedulerPage() {
           seniority: candidate.seniority,
           employment_type: employmentType,
           max_weekly_hours: candidate.maxHours,
-          target_weekly_hours: resolvedTargetWeeklyHours,
           preferred_shift_length_hours: 11.25,
           is_chemo_certified: candidate.isChemoCertified,
           is_transplant_certified: candidate.isTransplantCertified,
@@ -1832,12 +2080,6 @@ export default function SchedulerPage() {
           renalCertified: candidate.isRenalCertified,
           chargeCertified: candidate.isChargeCertified,
           maxHours: candidate.maxHours,
-          targetWeeklyHours:
-            candidate.employmentType === "PT" && candidate.maxHours <= 60
-              ? candidate.maxHours
-              : candidate.employmentType === "PT"
-                ? partTimeBiWeeklyTarget
-                : fullTimeBiWeeklyTarget,
           preferredShiftLengthHours: 11.25,
           employmentType: candidate.employmentType,
         });
@@ -1882,7 +2124,6 @@ export default function SchedulerPage() {
           renalCertified: selectedMatch.dbNurse.is_renal_certified || false,
           chargeCertified: selectedMatch.dbNurse.is_charge_certified || false,
           maxHours: selectedMatch.dbNurse.max_weekly_hours,
-          targetWeeklyHours: selectedMatch.dbNurse.target_weekly_hours,
           preferredShiftLengthHours:
             selectedMatch.dbNurse.preferred_shift_length_hours,
           employmentType:
@@ -2206,8 +2447,71 @@ export default function SchedulerPage() {
                 currentStepIndex={progressStepIndex}
               />
 
-              {/* Clear Cache Button - moved to header */}
-              <ClearCacheButton onClick={clearSavedState} />
+              {/* Schedule Actions Menu */}
+              <div className="group relative">
+                <button
+                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all duration-200 border border-transparent hover:border-gray-200"
+                  title="Schedule actions"
+                >
+                  <svg
+                    className="w-5 h-5"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"
+                    />
+                  </svg>
+                </button>
+                <div className="absolute right-0 mt-1 w-52 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50">
+                  <div className="bg-white border border-gray-200 rounded-lg shadow-lg py-1">
+                    <button
+                      onClick={startNewSchedule}
+                      className="w-full px-4 py-2 text-sm text-left text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                    >
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M12 4v16m8-8H4"
+                        />
+                      </svg>
+                      Start New Schedule
+                    </button>
+                    {savedScheduleId && !isFinalized && (
+                      <button
+                        onClick={discardDraft}
+                        className="w-full px-4 py-2 text-sm text-left text-red-600 hover:bg-red-50 flex items-center gap-2"
+                      >
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                          />
+                        </svg>
+                        Delete This Draft
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -2291,9 +2595,296 @@ export default function SchedulerPage() {
             preferenceSource={preferenceSource}
             onPreferenceSourceChange={setPreferenceSource}
             onPreferenceSubmissions={(submissions) => {
-              setPreferenceSubmissions(submissions);
-              // Auto-advance to review step after import
-              setCurrentStep("review");
+              // Don't set preferenceSubmissions here - the grid will contain all the data
+              // and setting it causes duplicate nurses (CSV names vs DB names)
+              // setPreferenceSubmissions(submissions);
+
+              // Extract all unique dates from submissions
+              const dateSet = new Set<string>();
+              submissions.forEach((sub) => {
+                sub.primaryRequests.forEach((req) => dateSet.add(req.date));
+                sub.offRequests.forEach((date) => dateSet.add(date));
+              });
+
+              let dates: string[] = [];
+
+              if (dateSet.size === 0) {
+                // No dates in submissions, use startDate/endDate range
+                const current = new Date(startDate);
+                const end = new Date(endDate);
+                while (current <= end) {
+                  dates.push(current.toISOString().split("T")[0]);
+                  current.setDate(current.getDate() + 1);
+                }
+              } else {
+                // Fill in complete date range from min to max date to preserve continuity
+                const sortedDates = Array.from(dateSet).sort();
+                const minDate = new Date(sortedDates[0]);
+                const maxDate = new Date(sortedDates[sortedDates.length - 1]);
+
+                const current = new Date(minDate);
+                while (current <= maxDate) {
+                  dates.push(current.toISOString().split("T")[0]);
+                  current.setDate(current.getDate() + 1);
+                }
+
+                // CRITICAL: Update schedule date range to match CSV data
+                // This ensures the optimizer uses the same dates as the imported preferences
+                const csvStartDate = sortedDates[0];
+                const csvEndDate = sortedDates[sortedDates.length - 1];
+                console.log(
+                  "[CSV Import] Updating schedule dates to match CSV:",
+                  {
+                    originalStartDate: startDate,
+                    originalEndDate: endDate,
+                    csvStartDate,
+                    csvEndDate,
+                  },
+                );
+                setStartDate(csvStartDate);
+                setEndDate(csvEndDate);
+              }
+
+              setOcrDates(dates);
+
+              // Build a map of normalized names to organization nurse records
+              // Use ALL nurses (including those on leave) for matching purposes
+              const normalizedOrgNurses = new Map<
+                string,
+                { name: string; id: string }
+              >();
+              allOrganizationNurses.forEach((nurse) => {
+                normalizedOrgNurses.set(normalizeNurseName(nurse.name), {
+                  name: nurse.name,
+                  id: nurse.employee_id || nurse.id,
+                });
+              });
+
+              // Convert preference submissions to OCR grid format
+              const gridRows: GridRow[] = submissions.map((sub) => {
+                // Try to match this CSV nurse to a database nurse
+                const normalizedSubName = normalizeNurseName(sub.nurseName);
+                const matchedNurse = normalizedOrgNurses.get(normalizedSubName);
+
+                // Use database name if matched, otherwise use CSV name
+                const nurseName = matchedNurse?.name || sub.nurseName;
+                const nurseId = matchedNurse?.id || sub.nurseId;
+
+                const shifts: ShiftEntry[] = dates.map((date) => {
+                  // Find preference for this date
+                  const pref = sub.primaryRequests.find((p) => p.date === date);
+                  const shiftCode = pref?.shiftCode || "";
+                  // Parse shift code to get hours, shiftType, startTime, endTime
+                  // This matches the OCR workflow behavior
+                  return parseShiftCode(shiftCode, date);
+                });
+                return {
+                  id: nurseId,
+                  nurse: nurseName,
+                  shifts,
+                };
+              });
+
+              // Gather date info from CSV for comparison
+              const csvDates = new Set<string>();
+              submissions.forEach((sub) => {
+                sub.primaryRequests.forEach((pref) => {
+                  if (pref.date) csvDates.add(pref.date);
+                });
+              });
+              const sortedCsvDates = Array.from(csvDates).sort();
+
+              console.log("CSV Import Debug:", {
+                totalDates: dates.length,
+                scheduleDates: dates,
+                csvDatesCount: sortedCsvDates.length,
+                csvDates: sortedCsvDates,
+                dateOverlap: dates.filter((d) => csvDates.has(d)),
+                nursesImported: gridRows.length,
+                sampleNurse: gridRows[0]
+                  ? {
+                      name: gridRows[0].nurse,
+                      shiftsCount: gridRows[0].shifts.length,
+                      nonEmptyShifts: gridRows[0].shifts.filter(
+                        (s) => s.shift && s.shift.trim() !== "",
+                      ).length,
+                      shifts: gridRows[0].shifts,
+                    }
+                  : null,
+              });
+
+              // Apply same nurse matching logic as OCR workflow
+              // Use ALL nurses for matching (including those on leave)
+              if (allOrganizationNurses.length === 0) {
+                // No nurses loaded - show raw grid
+                console.warn(
+                  "[CSV Import] No nurses loaded - skipping matching",
+                );
+                setOcrGrid(deduplicateGridGhosts(gridRows));
+                setPreferenceSource("ocr");
+                setCurrentStep("review");
+              } else {
+                try {
+                  const csvNurseNames = gridRows.map((r) => r.nurse);
+                  console.log("[CSV Import] Names to match:", csvNurseNames);
+
+                  const { matched, unmatched } = matchNursesWithDatabase(
+                    csvNurseNames,
+                    allOrganizationNurses,
+                    0.65,
+                  );
+
+                  console.log(
+                    "[CSV Import] Matched:",
+                    matched.length,
+                    "Unmatched:",
+                    unmatched.length,
+                  );
+
+                  // Update grid with matched DB names
+                  for (const match of matched) {
+                    const gridRow = gridRows.find(
+                      (r) => r.nurse === match.ocrName,
+                    );
+                    if (gridRow) {
+                      gridRow.nurse = match.dbNurse.name;
+                      gridRow.employeeId =
+                        match.dbNurse.employee_id || gridRow.employeeId;
+                    }
+                  }
+
+                  setOcrGrid(deduplicateGridGhosts([...gridRows]));
+                  setPreferenceSource("ocr");
+                  setCurrentStep("review");
+
+                  // Update manualNurses with DB info for matched nurses
+                  if (matched.length > 0) {
+                    setManualNurses((prev) => {
+                      const next = [...prev];
+                      for (const match of matched) {
+                        const dbNurse = match.dbNurse;
+                        const dbKey = normalizeNurseName(dbNurse.name);
+                        const ocrKey = normalizeNurseName(match.ocrName);
+                        const existingIndex = next.findIndex((nurse) => {
+                          const key = normalizeNurseName(nurse.name);
+                          return key === dbKey || key === ocrKey;
+                        });
+
+                        const matchedNurse: ManualNurse = {
+                          name: dbNurse.name,
+                          employeeId: dbNurse.employee_id,
+                          seniority: dbNurse.seniority,
+                          chemoCertified: dbNurse.is_chemo_certified,
+                          transplantCertified:
+                            dbNurse.is_transplant_certified || false,
+                          renalCertified: dbNurse.is_renal_certified || false,
+                          chargeCertified: dbNurse.is_charge_certified || false,
+                          maxHours: dbNurse.max_weekly_hours,
+                          employmentType:
+                            dbNurse.employment_type === "part-time"
+                              ? "PT"
+                              : "FT",
+                        };
+
+                        if (existingIndex >= 0) {
+                          const existing = next[existingIndex];
+                          next[existingIndex] = {
+                            ...matchedNurse,
+                            isHeadNurse: existing.isHeadNurse,
+                            offRequests: existing.offRequests,
+                          };
+                        } else {
+                          next.push(matchedNurse);
+                        }
+                      }
+                      return next;
+                    });
+                  }
+
+                  // Show modal for unmatched nurses
+                  if (unmatched.length > 0) {
+                    const newNurseRows = gridRows.filter((r) =>
+                      unmatched.some((name) => {
+                        const cleaned = cleanNurseName(name);
+                        return (
+                          normalizeNurseName(r.nurse) ===
+                            normalizeNurseName(cleaned) ||
+                          normalizeNurseName(name) ===
+                            normalizeNurseName(r.nurse)
+                        );
+                      }),
+                    );
+
+                    if (newNurseRows.length > 0) {
+                      const candidatesWithMatches = newNurseRows.map((row) => {
+                        const potentialMatches = getPotentialMatches(
+                          row.nurse,
+                          allOrganizationNurses,
+                          0.4,
+                        ).map((m) => ({
+                          dbNurse: {
+                            id: m.nurse.id,
+                            name: m.nurse.name,
+                            employee_id: m.nurse.employee_id,
+                            seniority: m.nurse.seniority,
+                            employment_type: m.nurse.employment_type,
+                            max_weekly_hours: m.nurse.max_weekly_hours,
+                            is_chemo_certified: m.nurse.is_chemo_certified,
+                            is_transplant_certified:
+                              m.nurse.is_transplant_certified,
+                            is_renal_certified: m.nurse.is_renal_certified,
+                            is_charge_certified: m.nurse.is_charge_certified,
+                          },
+                          score: m.score,
+                        }));
+
+                        return {
+                          originalName: row.nurse,
+                          name: row.nurse,
+                          employeeId: row.employeeId,
+                          seniority: row.seniority,
+                          selected: true,
+                          employmentType: "FT" as const,
+                          isChemoCertified: false,
+                          isTransplantCertified: false,
+                          isRenalCertified: false,
+                          isChargeCertified: false,
+                          maxHours: fullTimeBiWeeklyTarget,
+                          potentialMatches,
+                          selectedMatchId: undefined,
+                          matchAction:
+                            potentialMatches.length > 0
+                              ? ("link" as const)
+                              : ("create" as const),
+                        };
+                      });
+
+                      console.log(
+                        "[CSV Import] Setting candidates:",
+                        candidatesWithMatches.length,
+                      );
+                      // Deduplicate candidates with similar names (e.g., "Alyssa Reniva" vs "Alyssa Renival")
+                      const deduplicatedCandidates = deduplicateNurseCandidates(
+                        candidatesWithMatches,
+                      );
+                      console.log(
+                        "[CSV Import] After deduplication:",
+                        deduplicatedCandidates.length,
+                      );
+                      setNewNurseCandidates(deduplicatedCandidates);
+                      setShowCreateNursesModal(true);
+                    }
+                  }
+                } catch (error) {
+                  console.error(
+                    "[CSV Import] Error during nurse matching:",
+                    error,
+                  );
+                  setOcrGrid(deduplicateGridGhosts([...gridRows]));
+                  setPreferenceSource("ocr");
+                  setCurrentStep("review");
+                }
+              }
             }}
             availableNurses={organizationNurses.map((n) => ({
               id: n.employee_id || n.id,
@@ -2307,8 +2898,33 @@ export default function SchedulerPage() {
                 endDate,
               );
               if (loaded) {
-                setOcrGrid(loaded.grid);
+                const normalizedTemplateGrid = loaded.grid.map((row) => {
+                  const shiftByDate = new Map(
+                    row.shifts.map((shift) => [shift.date, shift]),
+                  );
+
+                  return {
+                    ...row,
+                    shifts: loaded.dates.map(
+                      (date) =>
+                        shiftByDate.get(date) || {
+                          date,
+                          shift: "",
+                          shiftType: "day" as const,
+                          hours: 0,
+                          startTime: "",
+                          endTime: "",
+                        },
+                    ),
+                  };
+                });
+
+                setOcrGrid(normalizedTemplateGrid);
                 setOcrDates(loaded.dates);
+                // Review screen currently renders the editable review UI under
+                // the OCR branch. After applying a template, route through the
+                // same branch so Step 2 is not blank.
+                setPreferenceSource("ocr");
                 setCurrentStep("review");
               }
             }}
@@ -2323,134 +2939,7 @@ export default function SchedulerPage() {
             animate={{ opacity: 1, y: 0 }}
             className="space-y-6"
           >
-            {/* ── Imported Preferences Summary (when source = import) ── */}
-            {preferenceSource === "import" &&
-              preferenceSubmissions.length > 0 && (
-                <div className="bg-white rounded-xl border border-green-200 p-6">
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-                      <span className="text-xl">📥</span> Imported Preferences
-                    </h2>
-                    <span className="px-3 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800">
-                      {preferenceSubmissions.length} nurse
-                      {preferenceSubmissions.length !== 1 ? "s" : ""}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-4 mb-4">
-                    <div className="bg-blue-50 rounded-lg p-3 text-center">
-                      <div className="text-xl font-bold text-blue-700">
-                        {preferenceSubmissions.reduce(
-                          (sum, s) => sum + s.primaryRequests.length,
-                          0,
-                        )}
-                      </div>
-                      <div className="text-xs text-blue-600">
-                        Shift Preferences
-                      </div>
-                    </div>
-                    <div className="bg-gray-50 rounded-lg p-3 text-center">
-                      <div className="text-xl font-bold text-gray-700">
-                        {preferenceSubmissions.reduce(
-                          (sum, s) => sum + s.offRequests.length,
-                          0,
-                        )}
-                      </div>
-                      <div className="text-xs text-gray-600">Off Requests</div>
-                    </div>
-                    <div className="bg-indigo-50 rounded-lg p-3 text-center">
-                      <div className="text-xl font-bold text-indigo-700">
-                        {startDate} → {endDate}
-                      </div>
-                      <div className="text-xs text-indigo-600">Period</div>
-                    </div>
-                  </div>
-                  <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
-                    {preferenceSubmissions.map((sub) => (
-                      <div
-                        key={sub.nurseId}
-                        className="px-4 py-2.5 flex items-center justify-between"
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="text-sm font-medium text-gray-800">
-                            {sub.nurseName}
-                          </span>
-                          {sub.nurseId !== sub.nurseName && (
-                            <span className="text-xs text-gray-400">
-                              ID: {sub.nurseId}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2 text-xs">
-                          <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-700">
-                            {sub.primaryRequests.length} shifts
-                          </span>
-                          {sub.offRequests.length > 0 && (
-                            <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-600">
-                              {sub.offRequests.length} off
-                            </span>
-                          )}
-                          <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-500">
-                            {sub.preferredShiftLength} ·{" "}
-                            {sub.shiftTypePreference}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-4 flex items-center gap-3">
-                    <button
-                      onClick={() => setCurrentStep("setup")}
-                      className="px-4 py-2 text-sm text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-                    >
-                      ← Re-import
-                    </button>
-                    <button
-                      onClick={() => {
-                        // Build dates array for the period
-                        const dates: string[] = [];
-                        const d = new Date(startDate);
-                        const end = new Date(endDate);
-                        while (d <= end) {
-                          dates.push(d.toISOString().split("T")[0]);
-                          d.setDate(d.getDate() + 1);
-                        }
-
-                        // Build staffing requirements from requiredStaff
-                        const staffingReqs: Record<
-                          string,
-                          { day: number; night: number }
-                        > = {};
-                        for (const [date, shifts] of Object.entries(
-                          requiredStaff,
-                        )) {
-                          staffingReqs[date] = {
-                            day:
-                              Object.entries(shifts)
-                                .filter(([k]) => k.startsWith("day"))
-                                .reduce((s, [, v]) => s + v, 0) || 4,
-                            night:
-                              Object.entries(shifts)
-                                .filter(([k]) => k.startsWith("night"))
-                                .reduce((s, [, v]) => s + v, 0) || 2,
-                          };
-                        }
-
-                        selfScheduling.optimizeWithSubmissions(
-                          preferenceSubmissions,
-                          dates,
-                          staffingReqs,
-                        );
-                        setCurrentStep("optimize");
-                      }}
-                      className="px-5 py-2.5 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
-                    >
-                      Run Self-Scheduling Optimizer →
-                    </button>
-                  </div>
-                </div>
-              )}
-
-            {/* ── OCR Review (original flow) ── */}
+            {/* ── OCR/CSV Review ── */}
             {preferenceSource === "ocr" && (
               <>
                 <div className="bg-white rounded-xl border border-gray-200 p-6">
@@ -2574,12 +3063,111 @@ export default function SchedulerPage() {
                     </div>
                   )}
 
+                  {/* Import Missing Nurses Button */}
+                  <div className="mb-4 flex items-center gap-3">
+                    <button
+                      onClick={() => {
+                        // Normalize name by sorting words alphabetically (handles "Last, First" vs "First Last")
+                        const normalizeName = (name: string) => {
+                          return name
+                            .toLowerCase()
+                            .replace(/,/g, "") // Remove commas
+                            .trim()
+                            .split(/\s+/) // Split by whitespace
+                            .filter((w) => w.length > 0) // Remove empty strings
+                            .sort() // Sort alphabetically
+                            .join(" ");
+                        };
+
+                        // Get nurses already in the grid
+                        const existingNurseNames = new Set(
+                          ocrGrid.map((row) => normalizeName(row.nurse)),
+                        );
+
+                        console.log(
+                          "Existing nurses in grid (normalized):",
+                          Array.from(existingNurseNames),
+                        );
+                        console.log(
+                          "Organization nurses (normalized):",
+                          organizationNurses.map((n) => normalizeName(n.name)),
+                        );
+
+                        // Find nurses from org database not in grid
+                        const missingNurses = organizationNurses.filter(
+                          (orgNurse) => {
+                            const normalizedOrgName = normalizeName(
+                              orgNurse.name,
+                            );
+                            return !existingNurseNames.has(normalizedOrgName);
+                          },
+                        );
+
+                        console.log(
+                          "Missing nurses:",
+                          missingNurses.map((n) => n.name),
+                        );
+
+                        if (missingNurses.length === 0) {
+                          alert(
+                            "All nurses from the database are already in the schedule.",
+                          );
+                          return;
+                        }
+
+                        // Add missing nurses to the grid with empty shifts
+                        const newRows: GridRow[] = missingNurses.map(
+                          (nurse) => ({
+                            id: nurse.employee_id || nurse.id,
+                            nurse: nurse.name,
+                            shifts: ocrDates.map((date) => ({
+                              date,
+                              shift: "",
+                              hours: 0,
+                              shiftType: "day" as const,
+                              startTime: "",
+                              endTime: "",
+                            })),
+                          }),
+                        );
+
+                        setOcrGrid([...ocrGrid, ...newRows]);
+                        alert(
+                          `Added ${missingNurses.length} nurse${missingNurses.length !== 1 ? "s" : ""} from database to the schedule.`,
+                        );
+                      }}
+                      disabled={organizationNurses.length === 0}
+                      className="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M12 4v16m8-8H4"
+                        />
+                      </svg>
+                      Import Missing Nurses from Database
+                    </button>
+                    <span className="text-xs text-gray-500">
+                      {organizationNurses.length} total in database ·{" "}
+                      {ocrGrid.length} in schedule
+                    </span>
+                  </div>
+
                   <div className="overflow-x-auto">
                     <EditableOCRGrid
                       ocrDates={ocrDates}
-                      ocrGrid={ocrGrid}
-                      setOcrGrid={handleSetOcrGrid}
+                      ocrGrid={ocrGrid as any}
+                      setOcrGrid={handleSetOcrGrid as any}
                       marker={marker}
+                      onAsteriskDetected={handleAsteriskDetected}
+                      onAsteriskToggled={handleAsteriskToggled}
                     />
                   </div>
                 </div>
@@ -2596,14 +3184,12 @@ export default function SchedulerPage() {
                   />
                 </div>
 
-                {/* Auto-detected marker comments from OCR */}
-                {autoComments && (
-                  <AutoCommentsBox
-                    autoComments={autoComments}
-                    setAutoComments={setAutoComments}
-                    validationErrors={commentValidationErrors}
-                  />
-                )}
+                {/* Employee Notes & Time-Off Requests */}
+                <AutoCommentsBox
+                  autoComments={autoComments}
+                  setAutoComments={setAutoComments}
+                  validationErrors={commentValidationErrors}
+                />
 
                 <div className="flex justify-between">
                   <button
@@ -2689,7 +3275,7 @@ export default function SchedulerPage() {
                 </div>
                 <div>
                   <span className="text-gray-500">Days:</span>
-                  <p className="font-medium">{ocrDates.length}</p>
+                  <p className="font-medium">{scheduleDays}</p>
                 </div>
               </div>
 
@@ -2720,19 +3306,25 @@ export default function SchedulerPage() {
             <div className="flex justify-between">
               <button
                 onClick={() => setCurrentStep("review")}
+                disabled={optimizing}
                 className="px-6 py-2 text-gray-600 font-medium hover:text-gray-900"
               >
                 ← Back
               </button>
               <button
                 onClick={previewConstraints}
-                disabled={loadingConstraints}
+                disabled={loadingConstraints || optimizing}
                 className="px-6 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 flex items-center gap-2"
               >
                 {loadingConstraints ? (
                   <>
                     <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
                     Analyzing...
+                  </>
+                ) : optimizing ? (
+                  <>
+                    <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
+                    Optimizing... Please wait
                   </>
                 ) : (
                   <>
@@ -2754,6 +3346,215 @@ export default function SchedulerPage() {
                 )}
               </button>
             </div>
+
+            {optimizing && (
+              <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                <div className="flex items-center gap-2">
+                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-blue-300 border-t-blue-700" />
+                  Optimization is running. Please wait — do not click Preview &
+                  Optimize again.
+                </div>
+              </div>
+            )}
+          </motion.div>
+        )}
+
+        {/* Step 4: Self-Scheduling Optimize */}
+        {currentStep === "optimize" && preferenceSource === "import" && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="space-y-6"
+          >
+            {selfScheduling.isOptimizing ? (
+              <div className="bg-white rounded-xl border border-gray-200 p-8">
+                <div className="text-center space-y-4">
+                  <div className="flex justify-center">
+                    <div className="w-16 h-16 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+                  </div>
+                  <h2 className="text-xl font-semibold text-gray-900">
+                    Running Self-Scheduling Optimizer...
+                  </h2>
+                  <p className="text-gray-600">
+                    Processing nurse preferences and generating optimal
+                    schedule. This may take a moment.
+                  </p>
+                </div>
+              </div>
+            ) : selfScheduling.error ? (
+              <div className="bg-white rounded-xl border border-gray-200 p-6">
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                  <div className="flex items-start gap-3">
+                    <svg
+                      className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                      />
+                    </svg>
+                    <div className="flex-1">
+                      <h3 className="font-semibold text-red-800">
+                        Optimization Failed
+                      </h3>
+                      <p className="text-sm text-red-700 mt-1">
+                        {selfScheduling.error}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-between">
+                  <button
+                    onClick={() => setCurrentStep("review")}
+                    className="px-6 py-2 text-gray-600 font-medium hover:text-gray-900"
+                  >
+                    ← Back to Review
+                  </button>
+                  <button
+                    onClick={() => {
+                      selfScheduling.reset();
+                      setCurrentStep("review");
+                    }}
+                    className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700"
+                  >
+                    Try Again
+                  </button>
+                </div>
+              </div>
+            ) : selfScheduling.results && selfScheduling.grid ? (
+              <div className="bg-white rounded-xl border border-gray-200 p-6">
+                <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3 mb-6">
+                  <svg
+                    className="w-6 h-6 text-green-600"
+                    fill="currentColor"
+                    viewBox="0 0 20 20"
+                  >
+                    <path
+                      fillRule="evenodd"
+                      d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-green-800">
+                      Self-Scheduling Complete!
+                    </h3>
+                    <p className="text-sm text-green-700">
+                      {selfScheduling.summary
+                        ? `${selfScheduling.summary.total_preferences_honored} of ${selfScheduling.summary.total_preferences_submitted} preferences honored (${Math.round(selfScheduling.summary.preference_fulfillment_rate)}% fulfillment rate)`
+                        : "Schedule generated successfully"}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Summary Stats */}
+                {selfScheduling.summary && (
+                  <div className="grid grid-cols-3 gap-4 mb-6">
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <span className="text-xs text-gray-500">
+                        Total Nurses
+                      </span>
+                      <p className="text-2xl font-bold text-blue-600">
+                        {selfScheduling.summary.total_nurses}
+                      </p>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <span className="text-xs text-gray-500">
+                        Fulfillment Rate
+                      </span>
+                      <p className="text-2xl font-bold text-green-600">
+                        {Math.round(
+                          selfScheduling.summary.preference_fulfillment_rate,
+                        )}
+                        %
+                      </p>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <span className="text-xs text-gray-500">
+                        Conflicts Resolved
+                      </span>
+                      <p className="text-2xl font-bold text-purple-600">
+                        {selfScheduling.summary.total_conflicts_resolved}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Schedule Preview */}
+                <div className="mt-6">
+                  <h3 className="font-semibold text-gray-900 mb-3">
+                    Generated Schedule
+                  </h3>
+                  <div className="border border-gray-200 rounded-lg overflow-hidden">
+                    <SchedulePreview
+                      ocrGrid={selfScheduling.grid}
+                      ocrDates={
+                        selfScheduling.summary?.date_range.start &&
+                        selfScheduling.summary?.date_range.end
+                          ? (() => {
+                              const dates: string[] = [];
+                              const start = new Date(
+                                selfScheduling.summary.date_range.start,
+                              );
+                              const end = new Date(
+                                selfScheduling.summary.date_range.end,
+                              );
+                              let current = new Date(start);
+                              while (current <= end) {
+                                dates.push(current.toISOString().split("T")[0]);
+                                current.setDate(current.getDate() + 1);
+                              }
+                              return dates;
+                            })()
+                          : []
+                      }
+                      nurseMetadata={manualNurses}
+                      onChange={() => {}}
+                      onAsteriskDetected={() => {}}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-between mt-6">
+                  <button
+                    onClick={() => setCurrentStep("review")}
+                    className="px-6 py-2 text-gray-600 font-medium hover:text-gray-900"
+                  >
+                    ← Back
+                  </button>
+                  <button
+                    onClick={() => {
+                      // Move self-scheduling results to the main optimizedGrid
+                      if (selfScheduling.grid) {
+                        setOptimizedGrid(selfScheduling.grid);
+                        setCurrentStep("result");
+                      }
+                    }}
+                    className="px-6 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 flex items-center gap-2"
+                  >
+                    Continue to Finalize
+                    <svg
+                      className="w-5 h-5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M9 5l7 7-7 7"
+                      />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </motion.div>
         )}
 
@@ -2796,9 +3597,18 @@ export default function SchedulerPage() {
                     </span>
                     <button
                       onClick={() => setShowSaveTemplateDialog(true)}
-                      className="px-3 py-1 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors"
+                      disabled={hasSavedTemplateForCurrentResult}
+                      className="px-3 py-1 text-sm font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      💾 Save as Template
+                      {hasSavedTemplateForCurrentResult
+                        ? "✅ Template Saved"
+                        : "💾 Save as Template"}
+                    </button>
+                    <button
+                      onClick={() => setShowManageTemplatesModal(true)}
+                      className="px-3 py-1 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 transition-colors"
+                    >
+                      🗂 Manage Templates
                     </button>
                   </>
                 ) : (
@@ -2828,6 +3638,11 @@ export default function SchedulerPage() {
 
             {/* Debug: Show optimization stats */}
             <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
+              {optimizationNotice && (
+                <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  {optimizationNotice}
+                </div>
+              )}
               <div className="flex items-center justify-between mb-3">
                 <h3 className="font-semibold text-gray-700">
                   Optimization Results
@@ -3376,6 +4191,28 @@ export default function SchedulerPage() {
                 ← Back to Optimize
               </button>
               <div className="flex gap-3">
+                {/* Undo Refinement Button - only shows when there's something to undo */}
+                {preRefinementGrid && (
+                  <button
+                    onClick={undoRefinement}
+                    className="px-5 py-2 text-amber-600 font-medium border border-amber-300 rounded-lg hover:bg-amber-50 flex items-center gap-2"
+                  >
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
+                      />
+                    </svg>
+                    Undo Refinement
+                  </button>
+                )}
                 <button
                   onClick={() => {
                     if (isFinalized) {
@@ -3482,7 +4319,7 @@ export default function SchedulerPage() {
                 </button>
                 <button
                   onClick={() => {
-                    clearSavedState();
+                    startNewSchedule();
                   }}
                   className="px-6 py-2 text-gray-600 font-medium border border-gray-300 rounded-lg hover:bg-gray-50"
                 >
@@ -4335,15 +5172,7 @@ export default function SchedulerPage() {
                 </button>
                 <button
                   onClick={handleCreateSelectedNurses}
-                  disabled={
-                    creatingNurses ||
-                    (newNurseCandidates.filter(
-                      (n) => n.matchAction === "create",
-                    ).length === 0 &&
-                      newNurseCandidates.filter(
-                        (n) => n.matchAction === "link" && n.selectedMatchId,
-                      ).length === 0)
-                  }
+                  disabled={creatingNurses}
                   className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 flex items-center gap-2"
                 >
                   {creatingNurses ? (
@@ -4383,10 +5212,13 @@ export default function SchedulerPage() {
       {showConstraintsModal && parsedConstraints && (
         <ConstraintsConfirmation
           constraints={parsedConstraints}
+          isOptimizing={optimizing || confirmOptimizePending}
           onConfirm={async (edited) => {
+            setConfirmOptimizePending(true);
             try {
               await optimizeWithConfirmedConstraints(edited);
             } finally {
+              setConfirmOptimizePending(false);
               // Ensure UI advances even if hook fallback handled the result.
               setCurrentStep("result");
               setShowConstraintsModal(false);
@@ -4396,6 +5228,34 @@ export default function SchedulerPage() {
           onEdit={() => {}}
           fullTimeBiWeeklyTarget={fullTimeBiWeeklyTarget}
           partTimeBiWeeklyTarget={partTimeBiWeeklyTarget}
+          onNursesUpdated={(updatedNurses) => {
+            // Sync updated maxWeeklyHours back to organizationNurses so
+            // nurseHoursStats (Hour Target) reflects the new values
+            setOrganizationNurses((prev) =>
+              prev.map((n) => {
+                const updated = updatedNurses.find(
+                  (u) =>
+                    u.name.toLowerCase().trim() === n.name.toLowerCase().trim(),
+                );
+                if (updated) {
+                  return {
+                    ...n,
+                    max_weekly_hours: updated.maxWeeklyHours,
+                    employment_type:
+                      updated.employmentType === "PT"
+                        ? "part-time"
+                        : "full-time",
+                    is_chemo_certified: updated.isChemoCertified ?? false,
+                    is_transplant_certified:
+                      updated.isTransplantCertified ?? false,
+                    is_renal_certified: updated.isRenalCertified ?? false,
+                    is_charge_certified: updated.isChargeCertified ?? false,
+                  } as Nurse;
+                }
+                return n;
+              }),
+            );
+          }}
         />
       )}
 
@@ -4874,6 +5734,35 @@ export default function SchedulerPage() {
                 </div>
               </div>
 
+              {/* Rejected Changes Warning */}
+              {changesRejectedCount > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-2xl text-red-600">⚠</span>
+                    <span className="font-semibold text-red-900">
+                      {changesRejectedCount} change
+                      {changesRejectedCount !== 1 ? "s" : ""} rejected (invalid
+                      dates or nurses)
+                    </span>
+                  </div>
+                  {rejectedDetails.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {rejectedDetails.map((detail: any, idx: number) => (
+                        <div
+                          key={idx}
+                          className="text-sm text-red-700 bg-red-100 rounded px-2 py-1"
+                        >
+                          <span className="font-medium">
+                            {detail.change?.nurse}
+                          </span>{" "}
+                          on {detail.change?.date}: {detail.reason}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Suggested Changes List */}
               {aiSuggestions.changes && aiSuggestions.changes.length > 0 && (
                 <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
@@ -4961,7 +5850,32 @@ export default function SchedulerPage() {
               )}
             </div>
 
-            <div className="sticky bottom-0 bg-gray-50 border-t border-gray-200 px-6 py-4 flex justify-end">
+            <div className="sticky bottom-0 bg-gray-50 border-t border-gray-200 px-6 py-4 flex justify-between">
+              {/* Undo Button */}
+              {preRefinementGrid && (
+                <button
+                  onClick={() => {
+                    undoRefinement();
+                  }}
+                  className="px-5 py-2 bg-amber-500 text-white font-medium rounded-lg hover:bg-amber-600 flex items-center gap-2"
+                >
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
+                    />
+                  </svg>
+                  Undo Refinement
+                </button>
+              )}
+              {!preRefinementGrid && <div />}
               <button
                 onClick={() => {
                   setShowSuggestionsModal(false);
@@ -5217,7 +6131,7 @@ export default function SchedulerPage() {
         open={showSaveTemplateDialog}
         onClose={() => setShowSaveTemplateDialog(false)}
         onSave={(name, notes) => {
-          scheduleTemplates.saveTemplate(
+          const saved = scheduleTemplates.saveTemplate(
             name,
             optimizedGrid,
             startDate,
@@ -5225,10 +6139,126 @@ export default function SchedulerPage() {
             undefined,
             notes,
           );
-          alert("Template saved! You can load it next time from the Setup step.");
+          if (!saved) {
+            return;
+          }
+          setHasSavedTemplateForCurrentResult(true);
+          setShowSaveTemplateDialog(false);
+          alert(
+            "Template saved! You can load it next time from the Setup step.",
+          );
         }}
         defaultName={`${startDate} to ${endDate}`}
       />
+
+      {showManageTemplatesModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-3xl rounded-2xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+              <h3 className="text-lg font-semibold text-gray-900">
+                Manage Templates
+              </h3>
+              <button
+                onClick={() => setShowManageTemplatesModal(false)}
+                className="rounded-lg px-3 py-1 text-sm text-gray-600 hover:bg-gray-100"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="max-h-[70vh] overflow-y-auto p-6">
+              {scheduleTemplates.templates.length === 0 ? (
+                <p className="text-sm text-gray-500">No templates saved yet.</p>
+              ) : (
+                <div className="space-y-3">
+                  {scheduleTemplates.templates.map((tpl) => (
+                    <div
+                      key={tpl.id}
+                      className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-gray-900">
+                          {tpl.name}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          {tpl.nurses.length} nurses • {tpl.periodDays} days •{" "}
+                          {new Date(tpl.createdAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            const next = window.prompt(
+                              "Rename template",
+                              tpl.name,
+                            );
+                            if (next && next.trim()) {
+                              scheduleTemplates.renameTemplate(
+                                tpl.id,
+                                next.trim(),
+                              );
+                            }
+                          }}
+                          className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100"
+                        >
+                          Rename
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                `Delete template "${tpl.name}"? This cannot be undone.`,
+                              )
+                            ) {
+                              scheduleTemplates.deleteTemplate(tpl.id);
+                            }
+                          }}
+                          className="rounded-lg border border-red-200 bg-red-50 px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Blocking overlay while standard optimization is running */}
+      {showStandardOptimizationOverlay && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl border border-gray-200 p-6">
+            <div className="flex items-start gap-4">
+              <div className="mt-0.5 h-10 w-10 rounded-full border-4 border-blue-200 border-t-blue-600 animate-spin" />
+              <div className="min-w-0">
+                <h3 className="text-lg font-semibold text-gray-900">
+                  Optimizing Schedule
+                </h3>
+                <p className="mt-1 text-sm text-gray-600">
+                  Your optimization is in progress. Please wait — this can take
+                  up to 45 seconds.
+                </p>
+                <p className="mt-2 text-sm font-semibold text-gray-800">
+                  Elapsed:{" "}
+                  {Math.floor(optimizationElapsedSeconds / 60)
+                    .toString()
+                    .padStart(2, "0")}
+                  :
+                  {(optimizationElapsedSeconds % 60)
+                    .toString()
+                    .padStart(2, "0")}
+                </p>
+                <p className="mt-2 text-xs font-medium text-blue-700">
+                  Please do not click Preview & Optimize again.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

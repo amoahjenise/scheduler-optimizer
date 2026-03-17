@@ -241,7 +241,9 @@ export function useDraftRouteLifecycle({
   const loadedScheduleIdRef = useRef<string | null>(null);
 
   const isNewDraftRoute = searchParams.get("new") === "1";
-  const scheduleIdFromRoute = searchParams.get("scheduleId");
+  // Support both ?scheduleId= and ?draft= for loading existing schedules
+  const scheduleIdFromRoute =
+    searchParams.get("scheduleId") || searchParams.get("draft");
 
   useEffect(() => {
     if (!isNewDraftRoute) {
@@ -255,22 +257,41 @@ export function useDraftRouteLifecycle({
     }
   }, [scheduleIdFromRoute]);
 
+  /**
+   * Clear local state only — the backend draft is preserved.
+   * Use this when the user navigates away ("Start New", clear cache, etc.).
+   */
   const resetSchedulerState = useCallback(async () => {
     isResettingRef.current = true;
-    const draftIdToReset = state.savedScheduleId || scheduleIdFromRoute;
 
     clearLocalDraftState();
     resetLocalState();
 
-    if (draftIdToReset && !state.isFinalized) {
+    setTimeout(() => {
+      isResettingRef.current = false;
+    }, 0);
+  }, [clearLocalDraftState, isResettingRef, resetLocalState]);
+
+  /**
+   * Explicitly delete the backend draft AND clear local state.
+   * Use this only when the user intentionally discards / deletes a draft.
+   */
+  const deleteDraftAndReset = useCallback(async () => {
+    isResettingRef.current = true;
+    const draftIdToDelete = state.savedScheduleId || scheduleIdFromRoute;
+
+    clearLocalDraftState();
+    resetLocalState();
+
+    if (draftIdToDelete && !state.isFinalized) {
       try {
         const token = await getToken();
         const authHeaders = token
           ? { Authorization: `Bearer ${token}` }
           : undefined;
-        await deleteScheduleAPI(draftIdToReset, authHeaders);
+        await deleteScheduleAPI(draftIdToDelete, authHeaders);
       } catch (error) {
-        console.error("Failed to delete draft during reset:", error);
+        console.error("Failed to delete draft:", error);
       }
     }
 
@@ -415,5 +436,6 @@ export function useDraftRouteLifecycle({
 
   return {
     resetSchedulerState,
+    deleteDraftAndReset,
   };
 }

@@ -126,7 +126,8 @@ export function useDraftPersistence({
   const shouldRestoreLocalDraft =
     !!organizationId &&
     searchParams.get("new") !== "1" &&
-    !searchParams.get("scheduleId");
+    !searchParams.get("scheduleId") &&
+    !searchParams.get("draft");
 
   const restoreLocalDraftState = useCallback((parsed: any) => {
     if (!parsed || typeof parsed !== "object") return;

@@ -127,10 +127,44 @@ export function deduplicateGridGhosts(rows: GridRow[]): GridRow[] {
 }
 
 /**
+ * Sanitize OCR shift cell content before parsing.
+ *
+ * Treat punctuation-only placeholders as empty cells:
+ * ".", "-", "—", "_" and repeated variants like "---", "___", "..".
+ */
+export function sanitizeOCRShiftCell(cell: string): string {
+  if (!cell) return "";
+
+  const trimmed = cell.trim();
+  if (!trimmed) return "";
+
+  // Punctuation-only placeholders should be treated as empty.
+  if (/^[._\-—–]+$/u.test(trimmed)) {
+    return "";
+  }
+
+  return trimmed;
+}
+
+/**
  * Parse a shift code string into a ShiftEntry object
  */
 export function parseShiftCode(shiftCode: string, date: string): ShiftEntry {
-  const code = shiftCode.trim().toUpperCase();
+  const sanitizedShiftCode = sanitizeOCRShiftCell(shiftCode);
+  const code = sanitizedShiftCode.toUpperCase();
+
+  // CF-* (e.g. "CF-3", "CF-3 07", "CF 01") are paid leave/training
+  // markers and MUST NOT count as worked coverage shifts.
+  if (code.startsWith("CF")) {
+    return {
+      date,
+      shift: sanitizedShiftCode,
+      shiftType: "off",
+      hours: 0,
+      startTime: "",
+      endTime: "",
+    };
+  }
 
   // Find matching shift code from our reference.
   // IMPORTANT: Try exact match first, then fall back to substring matching
@@ -149,7 +183,7 @@ export function parseShiftCode(shiftCode: string, date: string): ShiftEntry {
   if (matchedShift) {
     return {
       date,
-      shift: shiftCode.trim(),
+      shift: sanitizedShiftCode,
       shiftType: matchedShift.type,
       hours: matchedShift.hours,
       startTime: matchedShift.start,
@@ -157,17 +191,28 @@ export function parseShiftCode(shiftCode: string, date: string): ShiftEntry {
     };
   }
 
-  // Handle common codes
-  if (
-    !shiftCode ||
-    shiftCode.trim() === "" ||
-    shiftCode.toLowerCase() === "off" ||
-    shiftCode === "c"
-  ) {
+  // Handle common off-day codes (vacation, off, etc.)
+  const offDayCodes = [
+    "off",
+    "c",
+    "vac",
+    "vacation",
+    "vacances",
+    "conge",
+    "congé",
+    "v",
+    "abs",
+    "maladie",
+    "mal",
+    "fer",
+  ];
+  const codeLower = sanitizedShiftCode.toLowerCase();
+
+  if (!sanitizedShiftCode || offDayCodes.includes(codeLower)) {
     return {
       date,
-      shift: shiftCode.trim() || "",
-      shiftType: "day",
+      shift: sanitizedShiftCode && codeLower !== "" ? "OFF" : "",
+      shiftType: "off",
       hours: 0,
       startTime: "",
       endTime: "",
@@ -175,7 +220,7 @@ export function parseShiftCode(shiftCode: string, date: string): ShiftEntry {
   }
 
   // Detect night shifts by code pattern
-  const codeUpper = shiftCode.trim().toUpperCase();
+  const codeUpper = sanitizedShiftCode.toUpperCase();
   const isNightShift =
     codeUpper.startsWith("N") ||
     codeUpper.startsWith("ZN") ||
@@ -188,7 +233,7 @@ export function parseShiftCode(shiftCode: string, date: string): ShiftEntry {
   // Default for unknown codes
   return {
     date,
-    shift: shiftCode.trim(),
+    shift: sanitizedShiftCode,
     shiftType: isNightShift ? "night" : "day",
     hours: 8,
     startTime: isNightShift ? "19:00" : "07:00",
@@ -405,6 +450,253 @@ export function detectOCRIssues(name: string): OCRWarning | null {
 }
 
 /**
+ * Calculate string similarity using Levenshtein distance
+ */
+function levenshteinDistance(a: string, b: string): number {
+  const matrix: number[][] = [];
+
+  for (let i = 0; i <= b.length; i++) {
+    matrix[i] = [i];
+  }
+  for (let j = 0; j <= a.length; j++) {
+    matrix[0][j] = j;
+  }
+
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1,
+        );
+      }
+    }
+  }
+
+  return matrix[b.length][a.length];
+}
+
+/**
+ * Calculate similarity score between two strings (0-1, where 1 is identical)
+ */
+function stringSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return 1;
+  return 1 - levenshteinDistance(a, b) / maxLen;
+}
+
+/**
+ * Deduplicate nurse candidates with similar names (e.g., "Alyssa Reniva" and "Alyssa Renival")
+ * Keeps the first occurrence and merges information from duplicates
+ */
+export function deduplicateNurseCandidates<
+  T extends { name: string; originalName?: string },
+>(candidates: T[], similarityThreshold: number = 0.85): T[] {
+  if (candidates.length <= 1) return candidates;
+
+  const deduplicated: T[] = [];
+  const processedIndices = new Set<number>();
+
+  for (let i = 0; i < candidates.length; i++) {
+    if (processedIndices.has(i)) continue;
+
+    const current = candidates[i];
+    const currentNormalized = normalizeNurseName(
+      current.originalName || current.name,
+    );
+
+    // Find all similar candidates
+    const similarIndices: number[] = [i];
+
+    for (let j = i + 1; j < candidates.length; j++) {
+      if (processedIndices.has(j)) continue;
+
+      const other = candidates[j];
+      const otherNormalized = normalizeNurseName(
+        other.originalName || other.name,
+      );
+
+      // Check similarity
+      const similarity = stringSimilarity(currentNormalized, otherNormalized);
+
+      // Also check if one name starts with the other (handles truncation)
+      const oneStartsWithOther =
+        currentNormalized.startsWith(otherNormalized) ||
+        otherNormalized.startsWith(currentNormalized);
+
+      if (similarity >= similarityThreshold || oneStartsWithOther) {
+        similarIndices.push(j);
+        console.log(
+          `[Dedup] Merging similar names: "${current.name}" and "${other.name}" (similarity: ${similarity.toFixed(2)})`,
+        );
+      }
+    }
+
+    // Mark all similar indices as processed
+    similarIndices.forEach((idx) => processedIndices.add(idx));
+
+    // Keep the first (or longest name) candidate
+    if (similarIndices.length > 1) {
+      // Pick the candidate with the longest name (likely most complete)
+      let bestCandidate = current;
+      for (const idx of similarIndices) {
+        const candidate = candidates[idx];
+        const candidateName = candidate.originalName || candidate.name;
+        const bestName = bestCandidate.originalName || bestCandidate.name;
+        if (candidateName.length > bestName.length) {
+          bestCandidate = candidate;
+        }
+      }
+      deduplicated.push(bestCandidate);
+    } else {
+      deduplicated.push(current);
+    }
+  }
+
+  return deduplicated;
+}
+
+/**
+ * Represents a nurse entry in the combined OCR grid before it becomes a GridRow.
+ */
+type CombinedGridEntry = {
+  displayName: string;
+  employeeId?: string;
+  seniority?: string;
+  shifts: Record<string, ShiftEntry>;
+};
+
+/**
+ * Deduplicate the OCR combined grid by merging entries whose *display names*
+ * (after normalisation) are very similar – i.e. likely the same person scanned
+ * from two different screenshots with slightly different OCR outputs.
+ *
+ * Returns the cleaned grid *and* any duplicate-related warnings that should be
+ * shown to the user.
+ */
+export function deduplicateOCRGrid(
+  grid: Record<string, CombinedGridEntry>,
+  similarityThreshold: number = 0.85,
+): {
+  deduplicatedGrid: Record<string, CombinedGridEntry>;
+  duplicateWarnings: OCRWarning[];
+  /** Maps every original normalizedName key → the canonical displayName it ended up as */
+  nameResolutionMap: Map<string, string>;
+} {
+  const keys = Object.keys(grid);
+  if (keys.length <= 1) {
+    const nameMap = new Map<string, string>();
+    for (const k of keys) nameMap.set(k, grid[k].displayName);
+    return {
+      deduplicatedGrid: grid,
+      duplicateWarnings: [],
+      nameResolutionMap: nameMap,
+    };
+  }
+
+  const warnings: OCRWarning[] = [];
+  const mergedInto = new Map<string, string>(); // sourceKey → targetKey
+
+  // Build a list of (normalizedKey, entry) sorted by key for determinism
+  const entries = keys.map((k) => ({
+    key: k,
+    normalized: normalizeNurseName(grid[k].displayName),
+    entry: grid[k],
+  }));
+
+  // O(n²) pairwise comparison – fine for typical nurse lists (<200)
+  for (let i = 0; i < entries.length; i++) {
+    if (mergedInto.has(entries[i].key)) continue;
+
+    for (let j = i + 1; j < entries.length; j++) {
+      if (mergedInto.has(entries[j].key)) continue;
+
+      const a = entries[i];
+      const b = entries[j];
+
+      const similarity = stringSimilarity(a.normalized, b.normalized);
+
+      // Also check if one name is a prefix of the other (OCR truncation)
+      const oneIsPrefix =
+        a.normalized.length >= 4 &&
+        b.normalized.length >= 4 &&
+        (a.normalized.startsWith(b.normalized) ||
+          b.normalized.startsWith(a.normalized));
+
+      if (similarity >= similarityThreshold || oneIsPrefix) {
+        // Decide which entry to keep: prefer the one with the longer (more complete) name
+        const keepA = a.entry.displayName.length >= b.entry.displayName.length;
+        const [target, source] = keepA ? [a, b] : [b, a];
+
+        console.log(
+          `[OCR Dedup] Merging "${source.entry.displayName}" into "${target.entry.displayName}" (similarity: ${similarity.toFixed(2)})`,
+        );
+
+        // Merge shifts: source fills in any dates the target is missing
+        for (const [date, shift] of Object.entries(source.entry.shifts)) {
+          const existing = target.entry.shifts[date];
+          if (!existing || !existing.shift) {
+            target.entry.shifts[date] = shift;
+          }
+        }
+
+        // Carry over metadata if target is missing it
+        if (source.entry.employeeId && !target.entry.employeeId) {
+          target.entry.employeeId = source.entry.employeeId;
+        }
+        if (source.entry.seniority && !target.entry.seniority) {
+          target.entry.seniority = source.entry.seniority;
+        }
+
+        mergedInto.set(source.key, target.key);
+
+        warnings.push({
+          name: target.entry.displayName,
+          issue: `Duplicate detected — "${source.entry.displayName}" was merged into "${target.entry.displayName}" (${Math.round(similarity * 100)}% similar)`,
+          severity: "warning",
+        });
+      }
+    }
+  }
+
+  // Build the de-duplicated grid (exclude merged sources)
+  const deduplicatedGrid: Record<string, CombinedGridEntry> = {};
+  for (const { key, entry } of entries) {
+    if (!mergedInto.has(key)) {
+      deduplicatedGrid[key] = entry;
+    }
+  }
+
+  // Build a name resolution map: every original key → canonical displayName
+  // This includes merged sources (mapped to the target's displayName)
+  const nameResolutionMap = new Map<string, string>();
+  for (const { key, entry } of entries) {
+    if (mergedInto.has(key)) {
+      // This key was merged into another — resolve to the target's displayName
+      const targetKey = mergedInto.get(key)!;
+      const targetEntry = entries.find((e) => e.key === targetKey);
+      if (targetEntry) {
+        nameResolutionMap.set(key, targetEntry.entry.displayName);
+      }
+    } else {
+      nameResolutionMap.set(key, entry.displayName);
+    }
+  }
+
+  if (mergedInto.size > 0) {
+    console.log(
+      `[OCR Dedup] Merged ${mergedInto.size} duplicate(s). Grid: ${keys.length} → ${Object.keys(deduplicatedGrid).length} nurses`,
+    );
+  }
+
+  return { deduplicatedGrid, duplicateWarnings: warnings, nameResolutionMap };
+}
+
+/**
  * Normalize nurse names for deduplication
  */
 export function normalizeNurseName(name: string): string {
@@ -413,6 +705,15 @@ export function normalizeNurseName(name: string): string {
 
   // Normalize: lowercase, collapse whitespace
   let normalized = cleaned.toLowerCase().replace(/\s+/g, " ").trim();
+
+  // Handle "Last, First" vs "First Last" format by converting to consistent format
+  if (normalized.includes(",")) {
+    // Split on comma and reverse: "zatylny, alexandra" -> "alexandra zatylny"
+    const parts = normalized.split(",").map((p) => p.trim());
+    if (parts.length === 2) {
+      normalized = `${parts[1]} ${parts[0]}`;
+    }
+  }
 
   // Remove any remaining trailing numeric suffixes
   const parts = normalized.split(" ");
@@ -534,18 +835,37 @@ export function findBestNurseMatch(
   const cleanedOcrName = cleanNurseName(ocrName);
   if (!cleanedOcrName) return null;
 
+  // CRITICAL: Handle "Last, First" CSV format by converting to "First Last"
+  // e.g., "Langeo, Elizabeth" -> "Elizabeth Langeo"
+  let normalizedOcrName = cleanedOcrName;
+  if (cleanedOcrName.includes(",")) {
+    const parts = cleanedOcrName.split(",").map((p) => p.trim());
+    if (parts.length === 2 && parts[0] && parts[1]) {
+      normalizedOcrName = `${parts[1]} ${parts[0]}`;
+    }
+  }
+
   let bestMatch: (typeof existingNurses)[0] | null = null;
   let bestScore = 0;
 
-  const ocrLower = cleanedOcrName.toLowerCase();
-  const ocrParts = cleanedOcrName.split(" ");
+  const ocrLower = normalizedOcrName.toLowerCase();
+  const ocrParts = normalizedOcrName.split(" ");
 
   for (const nurse of existingNurses) {
-    const nurseLower = nurse.name.toLowerCase();
-    const nurseParts = nurse.name.split(" ");
+    // Also normalize DB nurse name in case it has comma format
+    let normalizedDbName = nurse.name;
+    if (nurse.name.includes(",")) {
+      const parts = nurse.name.split(",").map((p) => p.trim());
+      if (parts.length === 2 && parts[0] && parts[1]) {
+        normalizedDbName = `${parts[1]} ${parts[0]}`;
+      }
+    }
 
-    // Try full name match
-    let score = calculateSimilarity(cleanedOcrName, nurse.name);
+    const nurseLower = normalizedDbName.toLowerCase();
+    const nurseParts = normalizedDbName.split(" ");
+
+    // Try full name match (using normalized versions)
+    let score = calculateSimilarity(normalizedOcrName, normalizedDbName);
 
     // IMPORTANT: Check if OCR name is a single word that matches any part of DB name
     // e.g., "Khoi" should match "Trong Khoi Tran" (Khoi is the middle name)
@@ -710,13 +1030,23 @@ export function getPotentialMatches<
 ): Array<{ nurse: T; score: number }> {
   const matches: Array<{ nurse: T; score: number }> = [];
   const cleanedOcrName = cleanNurseName(ocrName);
-  const ocrParts = cleanedOcrName
+
+  // CRITICAL: Handle "Last, First" CSV format by converting to "First Last"
+  let normalizedOcrName = cleanedOcrName;
+  if (cleanedOcrName.includes(",")) {
+    const parts = cleanedOcrName.split(",").map((p) => p.trim());
+    if (parts.length === 2 && parts[0] && parts[1]) {
+      normalizedOcrName = `${parts[1]} ${parts[0]}`;
+    }
+  }
+
+  const ocrParts = normalizedOcrName
     .toLowerCase()
     .split(/\s+/)
     .filter((p) => p.length > 0);
 
   console.log(
-    `[getPotentialMatches] Matching OCR name: "${ocrName}" -> cleaned: "${cleanedOcrName}"`,
+    `[getPotentialMatches] Matching OCR name: "${ocrName}" -> normalized: "${normalizedOcrName}"`,
   );
   console.log(`[getPotentialMatches] OCR parts:`, ocrParts);
   console.log(
@@ -726,15 +1056,25 @@ export function getPotentialMatches<
   for (const nurse of existingNurses) {
     let score = 0;
     const cleanedDbName = cleanNurseName(nurse.name);
-    const nurseParts = cleanedDbName
+
+    // Also normalize DB nurse name in case it has comma format
+    let normalizedDbName = cleanedDbName;
+    if (cleanedDbName.includes(",")) {
+      const parts = cleanedDbName.split(",").map((p) => p.trim());
+      if (parts.length === 2 && parts[0] && parts[1]) {
+        normalizedDbName = `${parts[1]} ${parts[0]}`;
+      }
+    }
+
+    const nurseParts = normalizedDbName
       .toLowerCase()
       .split(/\s+/)
       .filter((p) => p.length > 0);
 
-    // Full name similarity
+    // Full name similarity (using normalized versions)
     score = calculateSimilarity(
-      cleanedOcrName.toLowerCase(),
-      cleanedDbName.toLowerCase(),
+      normalizedOcrName.toLowerCase(),
+      normalizedDbName.toLowerCase(),
     );
 
     const debugScores: string[] = [`base=${score.toFixed(3)}`];

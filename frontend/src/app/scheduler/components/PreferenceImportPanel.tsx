@@ -87,6 +87,7 @@ export function PreferenceImportPanel({
   const [activeTab, setActiveTab] = useState<ImportSource>("upload");
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previewSectionRef = useRef<HTMLDivElement>(null);
   const [pasteText, setPasteText] = useState("");
   const [showPreview, setShowPreview] = useState(true);
 
@@ -106,13 +107,31 @@ export function PreferenceImportPanel({
     reset,
   } = usePreferenceImport();
 
+  // Auto-scroll to preview when data is parsed
+  React.useEffect(() => {
+    if (status === "preview" && previewSectionRef.current) {
+      setTimeout(() => {
+        previewSectionRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      }, 100);
+    }
+  }, [status]);
+
   // ── File drop / select handlers ──
   const handleFiles = useCallback(
     (files: FileList | File[]) => {
       const file = files[0];
-      if (file) parseFile(file);
+      if (file) {
+        // Extract year from startDate to use for date parsing
+        const yearHint = startDate
+          ? new Date(startDate).getFullYear()
+          : undefined;
+        parseFile(file, yearHint);
+      }
     },
-    [parseFile],
+    [parseFile, startDate],
   );
 
   const handleDrop = useCallback(
@@ -307,7 +326,12 @@ Employee ID\tName\tDate\tShift Code
             />
             <div className="mt-3 flex gap-2">
               <button
-                onClick={() => parsePastedText(pasteText)}
+                onClick={() => {
+                  const yearHint = startDate
+                    ? new Date(startDate).getFullYear()
+                    : undefined;
+                  parsePastedText(pasteText, yearHint);
+                }}
                 disabled={!pasteText.trim() || status === "parsing"}
                 className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
@@ -549,7 +573,7 @@ Employee ID\tName\tDate\tShift Code
 
         {/* ────────── PREVIEW STATE ────────── */}
         {status === "preview" && result && (
-          <div className="mt-4">
+          <div ref={previewSectionRef} className="mt-4">
             {/* Warnings */}
             {result.warnings.length > 0 && (
               <div className="mb-3 space-y-1">

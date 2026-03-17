@@ -10,7 +10,13 @@ import {
   ChevronDown,
   ChevronUp,
 } from "lucide-react";
-import { createNurseAPI, NurseCreate } from "../lib/api";
+import {
+  createNurseAPI,
+  NurseCreate,
+  updateNurseAPI,
+  NurseUpdate,
+  listNursesAPI,
+} from "../lib/api";
 import { useUser } from "@clerk/nextjs";
 import { loadStaffingDefaults } from "./StaffRequirementsEditor";
 
@@ -26,6 +32,10 @@ interface Nurse {
   offRequests: string[];
   seniority?: number;
   employeeId?: string;
+  // Leave status fields
+  isOnMaternityLeave?: boolean;
+  isOnSickLeave?: boolean;
+  isOnSabbatical?: boolean;
 }
 
 interface ShiftRequirement {
@@ -52,6 +62,10 @@ interface Props {
   onEdit: () => void;
   fullTimeBiWeeklyTarget?: number;
   partTimeBiWeeklyTarget?: number;
+  /** Called when nurses are saved to DB, to sync updated maxWeeklyHours back to parent state */
+  onNursesUpdated?: (updatedNurses: Nurse[]) => void;
+  /** True while optimization is running after Confirm & Optimize is clicked */
+  isOptimizing?: boolean;
 }
 
 export default function ConstraintsConfirmation({
@@ -61,6 +75,8 @@ export default function ConstraintsConfirmation({
   onEdit,
   fullTimeBiWeeklyTarget = 75,
   partTimeBiWeeklyTarget = 63.75,
+  onNursesUpdated,
+  isOptimizing = false,
 }: Props) {
   const { user } = useUser();
 
@@ -111,6 +127,9 @@ export default function ConstraintsConfirmation({
     "overview" | "nurses" | "requirements"
   >("overview");
 
+  // Track which nurses have been edited
+  const [editedNurseIds, setEditedNurseIds] = useState<Set<string>>(new Set());
+
   // Per-category staffing requirements (07, 15, 19, 23)
   // Initialize from saved Settings page values (localStorage), falling back to defaults
   const [staffingCategories, setStaffingCategories] = useState<
@@ -144,38 +163,147 @@ export default function ConstraintsConfirmation({
     });
   };
 
-  const handleDayCountChange = (value: number) => {
-    setConstraints({
-      ...constraints,
-      shiftRequirements: {
-        ...constraints.shiftRequirements,
-        dayShift: { ...constraints.shiftRequirements.dayShift, count: value },
-      },
-    });
-  };
+  const handleNurseUpdate = (index: number, updates: Partial<Nurse>) => {
+    setConstraints((prev) => {
+      const updatedNurses = [...prev.nurses];
+      updatedNurses[index] = { ...updatedNurses[index], ...updates };
 
-  const handleNightCountChange = (value: number) => {
-    setConstraints({
-      ...constraints,
-      shiftRequirements: {
-        ...constraints.shiftRequirements,
-        nightShift: {
-          ...constraints.shiftRequirements.nightShift,
-          count: value,
-        },
-      },
-    });
-  };
+      // Mark this nurse as edited
+      setEditedNurseIds(
+        (prevEdited) => new Set([...prevEdited, updatedNurses[index].id]),
+      );
 
-  const handleNurseUpdate = (index: number, field: keyof Nurse, value: any) => {
-    const updatedNurses = [...constraints.nurses];
-    updatedNurses[index] = { ...updatedNurses[index], [field]: value };
-    setConstraints({ ...constraints, nurses: updatedNurses });
+      return { ...prev, nurses: updatedNurses };
+    });
   };
 
   const handleRemoveNurse = (index: number) => {
     const updatedNurses = constraints.nurses.filter((_, i) => i !== index);
     setConstraints({ ...constraints, nurses: updatedNurses });
+  };
+
+  const handleSaveAllNurses = async () => {
+    if (!user?.id) {
+      alert("Please sign in to save nurses");
+      return;
+    }
+    setSavingNurses(true);
+    const userId = user.id;
+    let savedCount = 0;
+    let updatedCount = 0;
+    let skippedCount = 0;
+    const errors: string[] = [];
+
+    try {
+      // Fetch existing nurses to map names to database IDs
+      const existingNursesResponse = await listNursesAPI(userId, 1, 500);
+      const existingNursesMap = new Map<string, string>();
+      existingNursesResponse.nurses.forEach((n) => {
+        // Use lowercase name as key for case-insensitive matching
+        existingNursesMap.set(n.name.toLowerCase().trim(), n.id);
+      });
+
+      for (const nurse of constraints.nurses) {
+        try {
+          const employmentType =
+            nurse.employmentType === "part-time" ? "part-time" : "full-time";
+          const resolvedMaxWeeklyHours =
+            nurse.maxWeeklyHours ||
+            (employmentType === "part-time"
+              ? partTimeBiWeeklyTarget
+              : fullTimeBiWeeklyTarget);
+          const resolvedTargetWeeklyHours =
+            employmentType === "part-time" &&
+            resolvedMaxWeeklyHours > 0 &&
+            resolvedMaxWeeklyHours <= 60
+              ? resolvedMaxWeeklyHours
+              : employmentType === "part-time"
+                ? partTimeBiWeeklyTarget
+                : fullTimeBiWeeklyTarget;
+
+          const wasEdited = editedNurseIds.has(nurse.id);
+          const existingNurseId = existingNursesMap.get(
+            nurse.name.toLowerCase().trim(),
+          );
+
+          // Skip if already saved and not edited
+          if (savedNurseIds.has(nurse.id) && !wasEdited) {
+            skippedCount++;
+            continue;
+          }
+
+          if (existingNurseId) {
+            // Nurse exists in database - update it
+            const nurseUpdateData: NurseUpdate = {
+              name: nurse.name,
+              employee_id: nurse.employeeId,
+              employment_type: employmentType,
+              max_weekly_hours: resolvedMaxWeeklyHours,
+              target_weekly_hours: resolvedTargetWeeklyHours,
+              preferred_shift_length_hours: 11.25,
+              is_chemo_certified: nurse.isChemoCertified || false,
+              is_transplant_certified: nurse.isTransplantCertified || false,
+              is_renal_certified: nurse.isRenalCertified || false,
+              is_charge_certified: nurse.isChargeCertified || false,
+            };
+
+            await updateNurseAPI(existingNurseId, userId, nurseUpdateData);
+            setSavedNurseIds((prev) => new Set([...prev, nurse.id]));
+            updatedCount++;
+          } else {
+            // New nurse - create it
+            const nurseData: NurseCreate = {
+              name: nurse.name,
+              employee_id: nurse.employeeId,
+              employment_type: employmentType,
+              max_weekly_hours: resolvedMaxWeeklyHours,
+              target_weekly_hours: resolvedTargetWeeklyHours,
+              preferred_shift_length_hours: 11.25,
+              is_chemo_certified: nurse.isChemoCertified || false,
+              is_transplant_certified: nurse.isTransplantCertified || false,
+              is_renal_certified: nurse.isRenalCertified || false,
+              is_charge_certified: nurse.isChargeCertified || false,
+            };
+
+            await createNurseAPI(userId, nurseData);
+            setSavedNurseIds((prev) => new Set([...prev, nurse.id]));
+            savedCount++;
+          }
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          console.warn(`Failed to save nurse ${nurse.name}:`, errorMsg);
+          errors.push(`${nurse.name}: ${errorMsg}`);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to fetch existing nurses:", err);
+      alert("Failed to fetch existing nurses. Please try again.");
+      setSavingNurses(false);
+      return;
+    }
+
+    setSavingNurses(false);
+
+    // Clear edited tracking after save
+    setEditedNurseIds(new Set());
+
+    // Notify parent of updated nurses so Hour Target stats refresh
+    if (onNursesUpdated && (savedCount > 0 || updatedCount > 0)) {
+      onNursesUpdated(constraints.nurses);
+    }
+
+    const message = [];
+    if (savedCount > 0) message.push(`${savedCount} new nurse(s) created`);
+    if (updatedCount > 0) message.push(`${updatedCount} nurse(s) updated`);
+    if (skippedCount > 0) message.push(`${skippedCount} skipped (no changes)`);
+
+    let alertMessage =
+      message.length > 0 ? message.join(", ") : "No changes to save";
+    if (errors.length > 0) {
+      alertMessage += "\n\nErrors:\n" + errors.join("\n");
+    }
+
+    alert(alertMessage);
   };
 
   return (
@@ -398,84 +526,6 @@ export default function ConstraintsConfirmation({
 
           {activeTab === "nurses" && (
             <div className="space-y-3">
-              {/* Save All to DB Button */}
-              <div className="flex items-center justify-between mb-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
-                <div>
-                  <p className="text-sm font-medium text-blue-900">
-                    Save nurses to your database
-                  </p>
-                  <p className="text-xs text-blue-700">
-                    Click to save all {constraints.nurses.length} nurses for
-                    future schedules
-                  </p>
-                </div>
-                <button
-                  onClick={async () => {
-                    if (!user?.id) {
-                      alert("Please sign in to save nurses");
-                      return;
-                    }
-                    setSavingNurses(true);
-                    const userId = user.id;
-                    let savedCount = 0;
-                    for (const nurse of constraints.nurses) {
-                      if (savedNurseIds.has(nurse.id)) continue;
-                      try {
-                        const employmentType =
-                          nurse.employmentType === "part-time"
-                            ? "part-time"
-                            : "full-time";
-                        const resolvedMaxWeeklyHours =
-                          nurse.maxWeeklyHours ||
-                          (employmentType === "part-time"
-                            ? partTimeBiWeeklyTarget
-                            : fullTimeBiWeeklyTarget);
-                        const resolvedTargetWeeklyHours =
-                          employmentType === "part-time" &&
-                          resolvedMaxWeeklyHours > 0 &&
-                          resolvedMaxWeeklyHours <= 60
-                            ? resolvedMaxWeeklyHours
-                            : employmentType === "part-time"
-                              ? partTimeBiWeeklyTarget
-                              : fullTimeBiWeeklyTarget;
-
-                        const nurseData: NurseCreate = {
-                          name: nurse.name,
-                          employee_id: nurse.employeeId,
-                          employment_type: employmentType,
-                          max_weekly_hours: resolvedMaxWeeklyHours,
-                          target_weekly_hours: resolvedTargetWeeklyHours,
-                          preferred_shift_length_hours: 11.25,
-                          is_chemo_certified: nurse.isChemoCertified || false,
-                          is_transplant_certified:
-                            nurse.isTransplantCertified || false,
-                          is_renal_certified: nurse.isRenalCertified || false,
-                          is_charge_certified: nurse.isChargeCertified || false,
-                        };
-                        await createNurseAPI(userId, nurseData);
-                        setSavedNurseIds(
-                          (prev) => new Set([...prev, nurse.id]),
-                        );
-                        savedCount++;
-                      } catch (err) {
-                        // Nurse might already exist, skip
-                        console.warn(
-                          `Failed to save nurse ${nurse.name}:`,
-                          err,
-                        );
-                      }
-                    }
-                    setSavingNurses(false);
-                    alert(`Saved ${savedCount} new nurses to database`);
-                  }}
-                  disabled={savingNurses}
-                  className="px-4 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 disabled:opacity-50"
-                >
-                  <Save className="w-4 h-4" />
-                  {savingNurses ? "Saving..." : "Save All to DB"}
-                </button>
-              </div>
-
               {constraints.nurses.map((nurse, idx) => {
                 const isExpanded = expandedNurses.has(nurse.id);
                 const isEditing = editingNurseId === nurse.id;
@@ -507,7 +557,7 @@ export default function ConstraintsConfirmation({
                               value={nurse.name}
                               onClick={(e) => e.stopPropagation()}
                               onChange={(e) =>
-                                handleNurseUpdate(idx, "name", e.target.value)
+                                handleNurseUpdate(idx, { name: e.target.value })
                               }
                               className="font-semibold text-gray-900 px-2 py-1 border border-blue-300 rounded focus:ring-2 focus:ring-blue-500"
                             />
@@ -547,6 +597,22 @@ export default function ConstraintsConfirmation({
                               ? "PT • Part-Time"
                               : "FT • Full-Time"}
                           </span>
+                          {/* Leave status badges */}
+                          {nurse.isOnMaternityLeave && (
+                            <span className="px-2 py-0.5 bg-pink-100 text-pink-700 text-xs rounded-full font-medium">
+                              🤱 Maternity Leave
+                            </span>
+                          )}
+                          {nurse.isOnSickLeave && (
+                            <span className="px-2 py-0.5 bg-red-100 text-red-700 text-xs rounded-full font-medium">
+                              🏥 Sick Leave
+                            </span>
+                          )}
+                          {nurse.isOnSabbatical && (
+                            <span className="px-2 py-0.5 bg-violet-100 text-violet-700 text-xs rounded-full font-medium">
+                              📚 Sabbatical
+                            </span>
+                          )}
                           {savedNurseIds.has(nurse.id) && (
                             <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded-full">
                               ✓ Saved
@@ -615,11 +681,9 @@ export default function ConstraintsConfirmation({
                               type="text"
                               value={nurse.employeeId || ""}
                               onChange={(e) =>
-                                handleNurseUpdate(
-                                  idx,
-                                  "employeeId",
-                                  e.target.value,
-                                )
+                                handleNurseUpdate(idx, {
+                                  employeeId: e.target.value,
+                                })
                               }
                               disabled={!isEditing}
                               placeholder="Enter employee ID"
@@ -633,33 +697,29 @@ export default function ConstraintsConfirmation({
                             <select
                               value={nurse.employmentType}
                               onChange={(e) => {
-                                handleNurseUpdate(
-                                  idx,
-                                  "employmentType",
-                                  e.target.value,
-                                );
-                                // Auto-populate maxWeeklyHours when changing to part-time
+                                const newType = e.target.value;
+                                const updates: Partial<Nurse> = {
+                                  employmentType: newType,
+                                };
+
+                                // Auto-populate maxWeeklyHours when changing employment type
                                 if (
-                                  e.target.value === "part-time" &&
+                                  newType === "part-time" &&
                                   nurse.maxWeeklyHours ===
                                     fullTimeBiWeeklyTarget
                                 ) {
-                                  handleNurseUpdate(
-                                    idx,
-                                    "maxWeeklyHours",
-                                    partTimeBiWeeklyTarget,
-                                  );
+                                  updates.maxWeeklyHours =
+                                    partTimeBiWeeklyTarget;
                                 } else if (
-                                  e.target.value === "full-time" &&
+                                  newType === "full-time" &&
                                   nurse.maxWeeklyHours ===
                                     partTimeBiWeeklyTarget
                                 ) {
-                                  handleNurseUpdate(
-                                    idx,
-                                    "maxWeeklyHours",
-                                    fullTimeBiWeeklyTarget,
-                                  );
+                                  updates.maxWeeklyHours =
+                                    fullTimeBiWeeklyTarget;
                                 }
+
+                                handleNurseUpdate(idx, updates);
                               }}
                               disabled={!isEditing}
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500"
@@ -676,11 +736,10 @@ export default function ConstraintsConfirmation({
                               type="number"
                               value={nurse.maxWeeklyHours}
                               onChange={(e) =>
-                                handleNurseUpdate(
-                                  idx,
-                                  "maxWeeklyHours",
-                                  parseFloat(e.target.value) || 0,
-                                )
+                                handleNurseUpdate(idx, {
+                                  maxWeeklyHours:
+                                    parseFloat(e.target.value) || 0,
+                                })
                               }
                               disabled={!isEditing}
                               min={0}
@@ -699,11 +758,9 @@ export default function ConstraintsConfirmation({
                                   type="checkbox"
                                   checked={!!nurse.isChemoCertified}
                                   onChange={(e) =>
-                                    handleNurseUpdate(
-                                      idx,
-                                      "isChemoCertified",
-                                      e.target.checked,
-                                    )
+                                    handleNurseUpdate(idx, {
+                                      isChemoCertified: e.target.checked,
+                                    })
                                   }
                                   disabled={!isEditing}
                                   className="rounded border-gray-300"
@@ -717,11 +774,9 @@ export default function ConstraintsConfirmation({
                                   type="checkbox"
                                   checked={!!nurse.isTransplantCertified}
                                   onChange={(e) =>
-                                    handleNurseUpdate(
-                                      idx,
-                                      "isTransplantCertified",
-                                      e.target.checked,
-                                    )
+                                    handleNurseUpdate(idx, {
+                                      isTransplantCertified: e.target.checked,
+                                    })
                                   }
                                   disabled={!isEditing}
                                   className="rounded border-gray-300"
@@ -735,11 +790,9 @@ export default function ConstraintsConfirmation({
                                   type="checkbox"
                                   checked={!!nurse.isRenalCertified}
                                   onChange={(e) =>
-                                    handleNurseUpdate(
-                                      idx,
-                                      "isRenalCertified",
-                                      e.target.checked,
-                                    )
+                                    handleNurseUpdate(idx, {
+                                      isRenalCertified: e.target.checked,
+                                    })
                                   }
                                   disabled={!isEditing}
                                   className="rounded border-gray-300"
@@ -753,11 +806,9 @@ export default function ConstraintsConfirmation({
                                   type="checkbox"
                                   checked={!!nurse.isChargeCertified}
                                   onChange={(e) =>
-                                    handleNurseUpdate(
-                                      idx,
-                                      "isChargeCertified",
-                                      e.target.checked,
-                                    )
+                                    handleNurseUpdate(idx, {
+                                      isChargeCertified: e.target.checked,
+                                    })
                                   }
                                   disabled={!isEditing}
                                   className="rounded border-gray-300"
@@ -815,13 +866,42 @@ export default function ConstraintsConfirmation({
             >
               ← Go Back
             </button>
-            <button
-              onClick={() => onConfirm(constraints)}
-              className="px-8 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-medium rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all flex items-center gap-2 shadow-lg"
-            >
-              <Check className="w-5 h-5" />
-              Confirm & Optimize
-            </button>
+
+            <div className="flex items-center gap-3">
+              {/* Save All Nurses Button */}
+              <button
+                onClick={handleSaveAllNurses}
+                disabled={savingNurses}
+                className="px-6 py-2 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2 disabled:opacity-50 shadow-md"
+                title="Save all nurses to your database for future schedules"
+              >
+                <Save className="w-4 h-4" />
+                {savingNurses
+                  ? "Saving..."
+                  : editedNurseIds.size > 0
+                    ? `Save ${editedNurseIds.size} Change${editedNurseIds.size > 1 ? "s" : ""}`
+                    : "Save All to DB"}
+              </button>
+
+              {/* Confirm & Optimize Button */}
+              <button
+                onClick={() => onConfirm(constraints)}
+                disabled={isOptimizing}
+                className="px-8 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-medium rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all flex items-center gap-2 shadow-lg disabled:opacity-70 disabled:cursor-wait"
+              >
+                {isOptimizing ? (
+                  <>
+                    <span className="animate-spin rounded-full h-5 w-5 border-b-2 border-white" />
+                    Optimizing...
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-5 h-5" />
+                    Confirm & Optimize
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       </div>
