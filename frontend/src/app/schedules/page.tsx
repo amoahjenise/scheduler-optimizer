@@ -115,13 +115,21 @@ export default function SchedulesPage() {
               </p>
             </div>
             {isAdmin && (
-              <Link
-                href="/scheduler?new=1"
-                className="inline-flex items-center gap-2 px-4 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
-              >
-                <Calendar className="w-4 h-4" />
-                Create New Schedule
-              </Link>
+              <div className="flex items-center gap-2">
+                <Link
+                  href="/scheduler?manageTemplates=1"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-white text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
+                >
+                  🗂 Manage Templates
+                </Link>
+                <Link
+                  href="/scheduler?new=1"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+                >
+                  <Calendar className="w-4 h-4" />
+                  Create New Schedule
+                </Link>
+              </div>
             )}
           </div>
         </div>
@@ -147,13 +155,21 @@ export default function SchedulesPage() {
                 : "No finalized schedules have been published yet"}
             </p>
             {isAdmin && (
-              <Link
-                href="/scheduler?new=1"
-                className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
-              >
-                <Calendar className="w-4 h-4" />
-                Create Schedule
-              </Link>
+              <div className="flex items-center justify-center gap-2">
+                <Link
+                  href="/scheduler?manageTemplates=1"
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
+                >
+                  🗂 Manage Templates
+                </Link>
+                <Link
+                  href="/scheduler?new=1"
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+                >
+                  <Calendar className="w-4 h-4" />
+                  Create Schedule
+                </Link>
+              </div>
             )}
           </div>
         ) : (
@@ -219,7 +235,7 @@ export default function SchedulesPage() {
                       </Link>
                     ) : isAdmin ? (
                       <Link
-                        href={`/scheduler?draft=${schedule.id}`}
+                        href={`/scheduler?scheduleId=${schedule.id}`}
                         className="flex items-center gap-2 px-4 py-2 text-amber-600 border border-amber-200 rounded-lg hover:bg-amber-50 transition-colors"
                       >
                         <Pencil className="w-4 h-4" />

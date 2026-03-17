@@ -299,7 +299,9 @@ export function useSelfScheduling() {
             : undefined,
         };
 
-        const response = await fetch("/api/optimized_schedules/self-schedule", {
+        const API_BASE =
+          process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+        const response = await fetch(`${API_BASE}/optimize/self-schedule`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(request),
@@ -437,7 +439,9 @@ export function useSelfScheduling() {
             : undefined,
         };
 
-        const response = await fetch("/api/optimized_schedules/self-schedule", {
+        const API_BASE =
+          process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+        const response = await fetch(`${API_BASE}/optimize/self-schedule`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(request),

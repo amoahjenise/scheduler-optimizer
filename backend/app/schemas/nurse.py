@@ -18,6 +18,10 @@ class NurseBase(BaseModel):
     is_renal_certified: bool = False
     is_charge_certified: bool = False
     other_certifications: Optional[str] = None
+    # Leave status - nurses on leave are excluded from scheduling
+    is_on_maternity_leave: bool = False
+    is_on_sick_leave: bool = False
+    is_on_sabbatical: bool = False
 
 
 class NurseCreate(NurseBase):
@@ -39,6 +43,10 @@ class NurseUpdate(BaseModel):
     is_renal_certified: Optional[bool] = None
     is_charge_certified: Optional[bool] = None
     other_certifications: Optional[str] = None
+    # Leave status
+    is_on_maternity_leave: Optional[bool] = None
+    is_on_sick_leave: Optional[bool] = None
+    is_on_sabbatical: Optional[bool] = None
 
 
 class NurseResponse(NurseBase):

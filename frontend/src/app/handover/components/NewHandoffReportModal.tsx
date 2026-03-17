@@ -188,11 +188,24 @@ export default function NewHandoffReportModal({
       <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-md max-h-[85vh] overflow-hidden flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-blue-600 text-white">
-          <div>
-            <h2 className="font-semibold">New Hand-Off Report</h2>
-            <p className="text-xs text-blue-100">
-              Patient info is stored only on this report
-            </p>
+          <div className="flex items-center gap-3">
+            <div
+              className={`w-10 h-10 rounded-lg flex items-center justify-center text-sm font-bold ${
+                shiftType === "day"
+                  ? "bg-amber-500 text-white"
+                  : "bg-indigo-800 text-white"
+              }`}
+            >
+              {shiftType === "day" ? "D" : "N"}
+            </div>
+            <div>
+              <h2 className="font-semibold">
+                New {shiftType === "day" ? "Day" : "Night"} Shift Report
+              </h2>
+              <p className="text-xs text-blue-100">
+                Patient info is stored only on this report
+              </p>
+            </div>
           </div>
           <button onClick={onClose} className="p-1 hover:bg-blue-700 rounded">
             <svg

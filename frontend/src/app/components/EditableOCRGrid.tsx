@@ -38,11 +38,19 @@ export default function EditableOCRGrid({
   ocrGrid,
   setOcrGrid,
   marker,
+  onAsteriskDetected,
+  onAsteriskToggled,
 }: {
   ocrDates: string[];
   ocrGrid: GridRow[];
   setOcrGrid: React.Dispatch<React.SetStateAction<GridRow[]>>;
   marker: string;
+  onAsteriskDetected?: (nurse: string, date: string) => void;
+  onAsteriskToggled?: (
+    nurse: string,
+    date: string,
+    hasAsterisk: boolean,
+  ) => void;
 }) {
   const [colWidths, setColWidths] = React.useState<number[]>(() => {
     const baseWidth = 120;
@@ -94,6 +102,31 @@ export default function EditableOCRGrid({
     colIndex: number,
     value: string,
   ) {
+    const hasAsterisk = value.trim().endsWith("*");
+    const normalized = value.trim();
+    const row = ocrGrid[rowIndex];
+    const shift = row?.shifts?.[colIndex];
+    const previousShiftValue = String(shift?.shift || "");
+    const hadAsterisk = previousShiftValue.trim().endsWith("*");
+
+    if (
+      onAsteriskToggled &&
+      row?.nurse &&
+      shift?.date &&
+      hadAsterisk !== hasAsterisk
+    ) {
+      onAsteriskToggled(row.nurse, shift.date, hasAsterisk);
+    }
+
+    if (
+      onAsteriskDetected &&
+      row?.nurse &&
+      shift?.date &&
+      (normalized === "*" || normalized.endsWith("*"))
+    ) {
+      onAsteriskDetected(row.nurse, shift.date);
+    }
+
     setOcrGrid((prev) => {
       const updated = [...prev];
       const row = { ...updated[rowIndex] };
@@ -260,7 +293,8 @@ export default function EditableOCRGrid({
                       onChange={(e) =>
                         handleShiftChange(rowIndex, colIndex, e.target.value)
                       }
-                      className="w-full text-center bg-transparent focus:outline-none resize-y overflow-auto"
+                      placeholder="—"
+                      className="w-full text-center bg-transparent focus:outline-none resize-y overflow-auto placeholder:text-gray-300"
                     />
                   </td>
                 ))}

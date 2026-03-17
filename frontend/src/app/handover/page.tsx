@@ -1092,6 +1092,21 @@ export default function HandoverPage() {
                                     MRN: {displayPatient.mrn}
                                   </span>
                                 )}
+                                {patientConfig.reportMode === "shift" &&
+                                  currentHandover && (
+                                    <div
+                                      className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                                        currentHandover.shift_type === "day"
+                                          ? "bg-amber-100 text-amber-700"
+                                          : "bg-indigo-100 text-indigo-700"
+                                      }`}
+                                      title={`${currentHandover.shift_type === "day" ? "Day" : "Night"} shift report`}
+                                    >
+                                      {currentHandover.shift_type === "day"
+                                        ? "D"
+                                        : "N"}
+                                    </div>
+                                  )}
                                 {currentHandover && (
                                   <span
                                     className={`px-2 py-0.5 text-xs font-medium rounded-full ${statusColors[currentHandover.status] || statusColors.stable}`}
@@ -1484,30 +1499,36 @@ export default function HandoverPage() {
           onClose={() => setShowNewReport(false)}
           onHandoverCreated={(handover: Handover) => {
             setHandovers((prev) => [...prev, handover]);
-            // Construct a Patient-like object from the handover's embedded fields
-            // so the rest of the page can work with it
-            const embeddedPatient: Patient = {
-              id: handover.patient?.id || handover.id,
-              first_name:
-                handover.p_first_name || handover.patient?.first_name || "",
-              last_name:
-                handover.p_last_name || handover.patient?.last_name || "",
-              room_number:
-                handover.p_room_number || handover.patient?.room_number || "",
-              bed: handover.p_bed || handover.patient?.bed || "",
-              mrn: handover.p_mrn || handover.patient?.mrn || "",
-              diagnosis:
-                handover.p_diagnosis || handover.patient?.diagnosis || "",
-              is_active: true,
-              created_at: handover.created_at,
-              updated_at: handover.updated_at,
-            };
-            setPatients((prev) => [...prev, embeddedPatient]);
+            // No need to manually add to patients - allDisplayPatients useMemo
+            // will automatically synthesize a virtual patient from the new handover
             setShowNewReport(false);
-            // Open the newly created handover
-            setSelectedPatient(embeddedPatient);
-            setSelectedHandover(handover);
-            setViewMode("patient");
+
+            // Let allDisplayPatients compute the patient, then open it
+            // Use setTimeout to allow React to re-render with updated handovers first
+            setTimeout(() => {
+              // The new handover should now be in the handovers array
+              // and allDisplayPatients will have created a virtual patient for it
+              // Find the virtual patient that matches this handover
+              const virtualPatient: Patient = {
+                id: handover.patient?.id || `embedded-${handover.id}`,
+                first_name:
+                  handover.p_first_name || handover.patient?.first_name || "",
+                last_name:
+                  handover.p_last_name || handover.patient?.last_name || "",
+                room_number:
+                  handover.p_room_number || handover.patient?.room_number || "",
+                bed: handover.p_bed || handover.patient?.bed || "",
+                mrn: handover.p_mrn || handover.patient?.mrn || "",
+                diagnosis:
+                  handover.p_diagnosis || handover.patient?.diagnosis || "",
+                is_active: true,
+                created_at: handover.created_at,
+                updated_at: handover.updated_at,
+              };
+              setSelectedPatient(virtualPatient);
+              setSelectedHandover(handover);
+              setViewMode("patient");
+            }, 0);
           }}
           config={patientConfig}
           shiftType={shiftType}

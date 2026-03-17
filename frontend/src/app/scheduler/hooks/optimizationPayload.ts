@@ -16,6 +16,10 @@ export type SchedulerOptimizationNurse = {
   targetBiWeeklyHours?: number;
   preferredShiftLengthHours?: number;
   offRequests: string[];
+  // Leave status
+  isOnMaternityLeave?: boolean;
+  isOnSickLeave?: boolean;
+  isOnSabbatical?: boolean;
 };
 
 export type NurseMetadataLookup = Map<string, ManualNurse>;
@@ -28,49 +32,6 @@ interface BuildSchedulerNursesArgs {
   getDefaultMaxWeeklyHours: (employmentType?: "FT" | "PT") => number;
   fullTimeBiWeeklyTarget: number;
   partTimeBiWeeklyTarget: number;
-}
-
-function resolveTargetWeeklyHours(
-  isPartTime: boolean,
-  maxWeeklyHours: number,
-  explicitTargetWeeklyHours: number | undefined,
-  fullTimeBiWeeklyTarget: number,
-  partTimeBiWeeklyTarget: number,
-): number {
-  if (
-    typeof explicitTargetWeeklyHours === "number" &&
-    Number.isFinite(explicitTargetWeeklyHours) &&
-    explicitTargetWeeklyHours > 0
-  ) {
-    return explicitTargetWeeklyHours;
-  }
-
-  const defaultTarget = isPartTime
-    ? partTimeBiWeeklyTarget
-    : fullTimeBiWeeklyTarget;
-
-  // Support custom PT lines (e.g., 0.6 FTE) when entered as nurse max hours.
-  // Bi-weekly: values up to 60h are plausible PT targets.
-  if (
-    isPartTime &&
-    Number.isFinite(maxWeeklyHours) &&
-    maxWeeklyHours > 0 &&
-    maxWeeklyHours <= 60
-  ) {
-    return maxWeeklyHours;
-  }
-
-  // For FT, allow explicit realistic target override near standard FT range (60-80h bi-weekly).
-  if (
-    !isPartTime &&
-    Number.isFinite(maxWeeklyHours) &&
-    maxWeeklyHours >= 60 &&
-    maxWeeklyHours <= 80
-  ) {
-    return maxWeeklyHours;
-  }
-
-  return defaultTarget;
 }
 
 function getMatchedCommentOffDates(
@@ -149,7 +110,7 @@ function removeGhostTails(shifts: string[]): string[] {
 export function buildSchedulerAssignments(
   ocrGrid: GridRow[],
 ): Record<string, string[]> {
-  return Object.fromEntries(
+  const result = Object.fromEntries(
     ocrGrid.map((row) => [
       row.nurse,
       // De-Duplication Command: clean ghost tails BEFORE data leaves the frontend.
@@ -164,6 +125,28 @@ export function buildSchedulerAssignments(
       ),
     ]),
   );
+
+  // Debug logging
+  const totalShifts = Object.values(result).reduce(
+    (sum, shifts) => sum + shifts.length,
+    0,
+  );
+  const nonEmptyShifts = Object.values(result).reduce(
+    (sum, shifts) =>
+      sum +
+      shifts.filter((s) => s && s.trim() !== "" && s.toUpperCase() !== "OFF")
+        .length,
+    0,
+  );
+  console.log("[buildSchedulerAssignments] Summary:", {
+    nurses: Object.keys(result).length,
+    totalShiftSlots: totalShifts,
+    nonEmptyWorkingShifts: nonEmptyShifts,
+    sampleNurse: Object.keys(result)[0],
+    sampleShifts: result[Object.keys(result)[0]]?.slice(0, 5),
+  });
+
+  return result;
 }
 
 export function buildSchedulerComments(
@@ -211,39 +194,31 @@ export function buildSchedulerNurses({
         ...getOffRequestsFromShiftCodes(row),
         ...(nurseMetadata?.offRequests || []),
       ]);
-      // `maxHours` stored in manual metadata is a bi-weekly value in the
-      // UI/DB; convert to a weekly cap for the optimizer's `maxWeeklyHours`.
+
+      // maxHours from DB/metadata is stored as BI-WEEKLY in our nurse records.
+      // The optimizer expects maxWeeklyHours to be WEEKLY, so convert here.
       const rawMax = nurseMetadata?.maxHours;
+      console.log(
+        `[DEBUG] Nurse: ${row.nurse}, rawMax: ${rawMax}, nurseMetadata:`,
+        nurseMetadata,
+      );
       const maxWeeklyHours =
         typeof rawMax === "number" && rawMax > 0
-          ? Math.max(0, Number(rawMax) / 2.0)
+          ? rawMax / 2.0
           : getDefaultMaxWeeklyHours(isPartTime ? "PT" : "FT");
+      console.log(
+        `[DEBUG] Final maxWeeklyHours for ${row.nurse}: ${maxWeeklyHours}`,
+      );
 
-      // Resolve bi-weekly and weekly target hours consistently.  The
-      // frontend stores organization-level defaults as bi-weekly values
-      // (`fullTimeBiWeeklyTarget`), so expose both fields to the backend
-      // to avoid ambiguity: `targetBiWeeklyHours` (bi-weekly) and
-      // `targetWeeklyHours` (weekly = bi-weekly / 2).
-      const explicitWeeklyTarget = nurseMetadata?.targetWeeklyHours;
-      const explicitBiweeklyTarget = (nurseMetadata as any)
-        ?.targetBiWeeklyHours;
+      // For target hours: use maxHours if available, otherwise use org defaults
+      // maxHours is bi-weekly, so that becomes our targetBiWeeklyHours
+      const targetBiWeeklyHours =
+        typeof rawMax === "number" && rawMax > 0
+          ? rawMax
+          : isPartTime
+            ? partTimeBiWeeklyTarget
+            : fullTimeBiWeeklyTarget;
 
-      let targetBiWeeklyHours: number;
-      if (
-        typeof explicitWeeklyTarget === "number" &&
-        explicitWeeklyTarget > 0
-      ) {
-        targetBiWeeklyHours = explicitWeeklyTarget * 2.0;
-      } else if (
-        typeof explicitBiweeklyTarget === "number" &&
-        explicitBiweeklyTarget > 0
-      ) {
-        targetBiWeeklyHours = explicitBiweeklyTarget;
-      } else {
-        targetBiWeeklyHours = isPartTime
-          ? partTimeBiWeeklyTarget
-          : fullTimeBiWeeklyTarget;
-      }
       const targetWeeklyHours = targetBiWeeklyHours / 2.0;
 
       return {
@@ -261,6 +236,10 @@ export function buildSchedulerNurses({
         targetBiWeeklyHours,
         preferredShiftLengthHours: nurseMetadata?.preferredShiftLengthHours,
         offRequests: Array.from(offRequests),
+        // Leave status
+        isOnMaternityLeave: nurseMetadata?.isOnMaternityLeave,
+        isOnSickLeave: nurseMetadata?.isOnSickLeave,
+        isOnSabbatical: nurseMetadata?.isOnSabbatical,
       };
     },
   );
@@ -268,35 +247,24 @@ export function buildSchedulerNurses({
   const manualNurseObjects: SchedulerOptimizationNurse[] = manualNurses.map(
     (nurse, idx) => {
       const isPartTime = nurse.employmentType === "PT";
-      // Manual nurse entries come from the nurses UI where `maxHours` and
-      // organization defaults are expressed as bi-weekly values. Convert
-      // `maxHours` to a weekly cap and expose both weekly+biweekly targets.
+
+      // Manual nurse maxHours is bi-weekly from the DB; convert to weekly
+      // for optimizer maxWeeklyHours.
       const rawManualMax = nurse.maxHours;
-      const manualMaxWeekly =
+      const maxWeeklyHours =
         typeof rawManualMax === "number" && rawManualMax > 0
-          ? Math.max(0, Number(rawManualMax) / 2.0)
+          ? rawManualMax / 2.0
           : getDefaultMaxWeeklyHours(nurse.employmentType);
 
-      const explicitWeeklyTargetManual = nurse.targetWeeklyHours;
-      const explicitBiweeklyTargetManual = (nurse as any).targetBiWeeklyHours;
+      // Target hours: use maxHours if available, otherwise org defaults
+      const targetBiWeeklyHours =
+        typeof rawManualMax === "number" && rawManualMax > 0
+          ? rawManualMax
+          : isPartTime
+            ? partTimeBiWeeklyTarget
+            : fullTimeBiWeeklyTarget;
 
-      let manualTargetBiweekly: number;
-      if (
-        typeof explicitWeeklyTargetManual === "number" &&
-        explicitWeeklyTargetManual > 0
-      ) {
-        manualTargetBiweekly = explicitWeeklyTargetManual * 2.0;
-      } else if (
-        typeof explicitBiweeklyTargetManual === "number" &&
-        explicitBiweeklyTargetManual > 0
-      ) {
-        manualTargetBiweekly = explicitBiweeklyTargetManual;
-      } else {
-        manualTargetBiweekly = isPartTime
-          ? partTimeBiWeeklyTarget
-          : fullTimeBiWeeklyTarget;
-      }
-      const manualTargetWeekly = manualTargetBiweekly / 2.0;
+      const targetWeeklyHours = targetBiWeeklyHours / 2.0;
 
       return {
         id: `manual-${idx}`,
@@ -308,11 +276,15 @@ export function buildSchedulerNurses({
         isChargeCertified: nurse.chargeCertified || false,
         isHeadNurse: nurse.isHeadNurse || false,
         employmentType: isPartTime ? "part-time" : "full-time",
-        maxWeeklyHours: manualMaxWeekly,
-        targetWeeklyHours: manualTargetWeekly,
-        targetBiWeeklyHours: manualTargetBiweekly,
+        maxWeeklyHours,
+        targetWeeklyHours,
+        targetBiWeeklyHours,
         preferredShiftLengthHours: nurse.preferredShiftLengthHours,
         offRequests: nurse.offRequests || [],
+        // Leave status
+        isOnMaternityLeave: nurse.isOnMaternityLeave,
+        isOnSickLeave: nurse.isOnSickLeave,
+        isOnSabbatical: nurse.isOnSabbatical,
       };
     },
   );

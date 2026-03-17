@@ -49,16 +49,21 @@ def list_deletion_activities(
         name = (activity.performed_by_name or "").strip()
         user_id = activity.performed_by_user_id
 
-        looks_like_raw_user_id = (
-            name == ""
-            or (user_id is not None and name == user_id)
-            or name.startswith("user_")
-        )
+        # If we have a good name stored, use it
+        if name and not name.startswith("user_") and name != user_id:
+            return name
 
-        if looks_like_raw_user_id and user_id:
-            return member_name_by_user_id.get(user_id) or "Unknown user"
+        # Try to look up in members (if we collected them)
+        if user_id and member_name_by_user_id:
+            member_name = member_name_by_user_id.get(user_id)
+            if member_name:
+                return member_name
 
-        return name or "Unknown user"
+        # Fallback: return user_id if present (better than "Unknown user")
+        if user_id:
+            return user_id
+
+        return "Unknown user"
 
     return [
         {

@@ -24,6 +24,10 @@ interface FormData {
   is_renal_certified: boolean;
   is_charge_certified: boolean;
   other_certifications: string;
+  // Leave status
+  is_on_maternity_leave: boolean;
+  is_on_sick_leave: boolean;
+  is_on_sabbatical: boolean;
 }
 
 export default function NursesPage() {
@@ -45,6 +49,9 @@ export default function NursesPage() {
     is_renal_certified: false,
     is_charge_certified: false,
     other_certifications: "",
+    is_on_maternity_leave: false,
+    is_on_sick_leave: false,
+    is_on_sabbatical: false,
   });
 
   const [nurses, setNurses] = useState<Nurse[]>([]);
@@ -100,6 +107,9 @@ export default function NursesPage() {
       is_renal_certified: nurse.is_renal_certified || false,
       is_charge_certified: nurse.is_charge_certified || false,
       other_certifications: nurse.other_certifications || "",
+      is_on_maternity_leave: nurse.is_on_maternity_leave || false,
+      is_on_sick_leave: nurse.is_on_sick_leave || false,
+      is_on_sabbatical: nurse.is_on_sabbatical || false,
     });
     setShowModal(true);
   };
@@ -121,6 +131,9 @@ export default function NursesPage() {
         is_renal_certified: formData.is_renal_certified,
         is_charge_certified: formData.is_charge_certified,
         other_certifications: formData.other_certifications || undefined,
+        is_on_maternity_leave: formData.is_on_maternity_leave,
+        is_on_sick_leave: formData.is_on_sick_leave,
+        is_on_sabbatical: formData.is_on_sabbatical,
       };
 
       console.log("[Nurse Update] Submitting payload:", payload);
@@ -128,11 +141,16 @@ export default function NursesPage() {
       if (editingNurse) {
         const updated = await updateNurseAPI(editingNurse.id, user.id, payload);
         console.log("[Nurse Update] Response:", updated);
+        // Update the nurse in-place without reloading the entire list
+        setNurses((prev) =>
+          prev.map((n) => (n.id === editingNurse.id ? updated : n)),
+        );
       } else {
         await createNurseAPI(user.id, payload);
+        // Only reload for new nurses to add them to the list
+        loadNurses();
       }
       setShowModal(false);
-      loadNurses();
     } catch (error: any) {
       console.error("[Nurse Update] Error:", error);
       alert(error.message || "Failed to save nurse");
@@ -269,15 +287,36 @@ export default function NursesPage() {
               if (nurse.is_charge_certified)
                 badges.push({ label: "Charge", color: "amber", icon: "⭐" });
 
+              // Check if nurse is on any leave
+              const isOnLeave =
+                nurse.is_on_maternity_leave ||
+                nurse.is_on_sick_leave ||
+                nurse.is_on_sabbatical;
+              const leaveTypes = [];
+              if (nurse.is_on_maternity_leave)
+                leaveTypes.push("Maternity/Paternity");
+              if (nurse.is_on_sick_leave) leaveTypes.push("Sick");
+              if (nurse.is_on_sabbatical) leaveTypes.push("Sabbatical");
+
               return (
                 <div
                   key={nurse.id}
-                  className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 hover:shadow-md transition-shadow"
+                  className={`bg-white rounded-xl shadow-sm border p-5 hover:shadow-md transition-shadow ${
+                    isOnLeave
+                      ? "border-orange-300 bg-orange-50/30"
+                      : "border-gray-200"
+                  }`}
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex items-start gap-4">
                       {/* Avatar */}
-                      <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center flex-shrink-0">
+                      <div
+                        className={`w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0 ${
+                          isOnLeave
+                            ? "bg-gradient-to-br from-orange-400 to-orange-500"
+                            : "bg-gradient-to-br from-blue-500 to-purple-500"
+                        }`}
+                      >
                         <span className="text-white font-semibold text-sm">
                           {nurse.name
                             .split(" ")
@@ -290,9 +329,22 @@ export default function NursesPage() {
 
                       {/* Info */}
                       <div>
-                        <h3 className="font-semibold text-gray-900 text-lg">
-                          {nurse.name}
-                        </h3>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-semibold text-gray-900 text-lg">
+                            {nurse.name}
+                          </h3>
+                          {isOnLeave && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-orange-100 text-orange-700 text-xs font-medium rounded-full">
+                              🚫 On Leave
+                            </span>
+                          )}
+                        </div>
+                        {isOnLeave && (
+                          <p className="text-xs text-orange-600 mt-0.5">
+                            {leaveTypes.join(" + ")} Leave — Not available for
+                            scheduling
+                          </p>
+                        )}
                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-sm text-gray-500">
                           {nurse.employee_id && (
                             <span className="flex items-center gap-1">
@@ -747,6 +799,128 @@ export default function NursesPage() {
                       className="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
                       placeholder="e.g., ACLS, PALS, BLS"
                     />
+                  </div>
+
+                  {/* Leave Status */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-3">
+                      Leave Status
+                    </label>
+                    <p className="text-xs text-gray-500 mb-3">
+                      Staff on leave will be excluded from scheduling
+                    </p>
+                    <div className="space-y-2">
+                      <label
+                        className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${
+                          formData.is_on_maternity_leave
+                            ? "border-pink-500 bg-pink-50"
+                            : "border-gray-200 hover:border-gray-300"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={formData.is_on_maternity_leave}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              is_on_maternity_leave: e.target.checked,
+                            })
+                          }
+                          className="sr-only"
+                        />
+                        <span className="text-xl">👶</span>
+                        <span className="text-sm font-medium text-gray-700">
+                          Maternity / Paternity Leave
+                        </span>
+                        {formData.is_on_maternity_leave && (
+                          <svg
+                            className="w-5 h-5 text-pink-500 ml-auto"
+                            fill="currentColor"
+                            viewBox="0 0 20 20"
+                          >
+                            <path
+                              fillRule="evenodd"
+                              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        )}
+                      </label>
+
+                      <label
+                        className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${
+                          formData.is_on_sick_leave
+                            ? "border-red-500 bg-red-50"
+                            : "border-gray-200 hover:border-gray-300"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={formData.is_on_sick_leave}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              is_on_sick_leave: e.target.checked,
+                            })
+                          }
+                          className="sr-only"
+                        />
+                        <span className="text-xl">🏥</span>
+                        <span className="text-sm font-medium text-gray-700">
+                          Sick Leave
+                        </span>
+                        {formData.is_on_sick_leave && (
+                          <svg
+                            className="w-5 h-5 text-red-500 ml-auto"
+                            fill="currentColor"
+                            viewBox="0 0 20 20"
+                          >
+                            <path
+                              fillRule="evenodd"
+                              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        )}
+                      </label>
+
+                      <label
+                        className={`flex items-center gap-3 p-3 rounded-lg border-2 cursor-pointer transition-all ${
+                          formData.is_on_sabbatical
+                            ? "border-indigo-500 bg-indigo-50"
+                            : "border-gray-200 hover:border-gray-300"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={formData.is_on_sabbatical}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              is_on_sabbatical: e.target.checked,
+                            })
+                          }
+                          className="sr-only"
+                        />
+                        <span className="text-xl">✈️</span>
+                        <span className="text-sm font-medium text-gray-700">
+                          Sabbatical Leave
+                        </span>
+                        {formData.is_on_sabbatical && (
+                          <svg
+                            className="w-5 h-5 text-indigo-500 ml-auto"
+                            fill="currentColor"
+                            viewBox="0 0 20 20"
+                          >
+                            <path
+                              fillRule="evenodd"
+                              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        )}
+                      </label>
+                    </div>
                   </div>
                 </form>
               </div>

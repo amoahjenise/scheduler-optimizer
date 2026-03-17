@@ -1323,6 +1323,10 @@ export interface Nurse {
   is_renal_certified: boolean;
   is_charge_certified: boolean;
   other_certifications?: string;
+  // Leave status - nurses on leave are excluded from scheduling
+  is_on_maternity_leave?: boolean;
+  is_on_sick_leave?: boolean;
+  is_on_sabbatical?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -1340,6 +1344,10 @@ export interface NurseCreate {
   is_renal_certified?: boolean;
   is_charge_certified?: boolean;
   other_certifications?: string;
+  // Leave status
+  is_on_maternity_leave?: boolean;
+  is_on_sick_leave?: boolean;
+  is_on_sabbatical?: boolean;
 }
 
 export interface NurseUpdate {
@@ -1355,6 +1363,10 @@ export interface NurseUpdate {
   is_renal_certified?: boolean;
   is_charge_certified?: boolean;
   other_certifications?: string;
+  // Leave status
+  is_on_maternity_leave?: boolean;
+  is_on_sick_leave?: boolean;
+  is_on_sabbatical?: boolean;
 }
 
 export async function listNursesAPI(

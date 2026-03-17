@@ -742,15 +742,15 @@ export default function Dashboard() {
             <div className="xl:col-span-8 space-y-4">
               {/* Shift Overview - Most Important */}
               <div
-                className={`bg-gradient-to-br ${isDayShiftActive ? "from-amber-50 to-white rounded-2xl p-5 border border-amber-100" : "from-indigo-50 to-white rounded-2xl p-5 border border-indigo-100"} shadow-sm`}
+                className={`bg-gradient-to-br ${activeShiftTab === "day" ? "from-amber-50 to-white rounded-2xl p-5 border border-amber-100" : "from-indigo-50 to-white rounded-2xl p-5 border border-indigo-100"} shadow-sm`}
               >
                 <div className="flex items-center justify-between mb-3">
                   <div className="flex items-center gap-3">
                     <div
-                      className={`w-10 h-10 rounded-xl ${isDayShiftActive ? "bg-amber-100" : "bg-indigo-100"} flex items-center justify-center`}
+                      className={`w-10 h-10 rounded-xl ${activeShiftTab === "day" ? "bg-amber-100" : "bg-indigo-100"} flex items-center justify-center`}
                     >
                       <Activity
-                        className={`w-5 h-5 ${isDayShiftActive ? "text-amber-600" : "text-indigo-600"}`}
+                        className={`w-5 h-5 ${activeShiftTab === "day" ? "text-amber-600" : "text-indigo-600"}`}
                       />
                     </div>
                     <div>
@@ -767,7 +767,7 @@ export default function Dashboard() {
 
                   {todaySchedule && (
                     <div
-                      className={`inline-flex rounded-xl border ${isDayShiftActive ? "border-amber-200" : "border-indigo-200"} bg-white p-1`}
+                      className={`inline-flex rounded-xl border ${activeShiftTab === "day" ? "border-amber-200" : "border-indigo-200"} bg-white p-1`}
                     >
                       <button
                         type="button"
@@ -803,7 +803,9 @@ export default function Dashboard() {
                           ? todaySchedule.dayStaff
                           : todaySchedule.nightStaff;
                       const iconColor =
-                        activeShiftTab === "day" ? "text-[#1A5CFF]" : "text-indigo-600";
+                        activeShiftTab === "day"
+                          ? "text-[#1A5CFF]"
+                          : "text-indigo-600";
 
                       if (activeStaff.length === 0) {
                         return (
@@ -823,7 +825,9 @@ export default function Dashboard() {
                               key={`${activeShiftTab}-${idx}-${shift.nurse}`}
                               className="flex items-center gap-2 p-2.5 bg-white rounded-lg border border-gray-100"
                             >
-                              <UserCheck className={`w-4 h-4 ${iconColor} flex-shrink-0`} />
+                              <UserCheck
+                                className={`w-4 h-4 ${iconColor} flex-shrink-0`}
+                              />
                               <div className="min-w-0 flex-1">
                                 <p className="text-sm font-medium text-gray-900 truncate">
                                   {shift.nurse}
@@ -892,7 +896,7 @@ export default function Dashboard() {
                           }`}
                         >
                           <span
-                            className={`text-[8px] font-semibold uppercase tracking-wide mb-0.5 ${
+                            className={`text-[8px] font-semibold uppercase tracking-wide mb-0.5 mt-1 ${
                               index === today
                                 ? "text-blue-100"
                                 : "text-gray-500"
@@ -912,7 +916,11 @@ export default function Dashboard() {
 
                         {/* Hover Tooltip */}
                         {hoveredDay === index && daySchedule && hasSchedule && (
-                          <div className="absolute left-1/2 top-full z-[60] mt-2 w-64 -translate-x-1/2 rounded-xl border border-gray-200 bg-white p-3 shadow-xl">
+                          <div
+                            className="absolute left-1/2 top-full z-[60] mt-2 w-64 -translate-x-1/2 rounded-xl border border-gray-200 bg-white p-3 shadow-xl"
+                            onMouseEnter={() => setHoveredDay(index)}
+                            onMouseLeave={() => setHoveredDay(null)}
+                          >
                             <div className="text-xs font-semibold text-gray-900 mb-2">
                               {dayDate.toLocaleDateString("en-US", {
                                 weekday: "short",

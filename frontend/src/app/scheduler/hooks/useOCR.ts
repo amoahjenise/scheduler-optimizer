@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import { GridRow, ShiftEntry, OCRWarning, NewNurseCandidate } from "../types";
 import {
   parseShiftCode,
+  sanitizeOCRShiftCell,
   cleanNurseName,
   normalizeNurseName,
   extractEmployeeId,
@@ -96,6 +97,7 @@ export function useOCR({
               row.shifts.forEach((shift: string, idx: number) => {
                 if (idx < dates.length) {
                   const date = dates[idx];
+                  const sanitizedShift = sanitizeOCRShiftCell(shift);
                   const existingShift =
                     combinedGrid[normalizedName].shifts[date];
                   const isExistingEmpty =
@@ -104,19 +106,23 @@ export function useOCR({
                   // Extract comments from cells containing * marker
                   if (shift && shift.includes("*")) {
                     const cleanShift = shift.replace(/\*/g, "").trim();
+                    const sanitizedCleanShift =
+                      sanitizeOCRShiftCell(cleanShift);
                     extractedComments.push(
-                      `${nurseName}|${date}|${cleanShift} (marker note)`,
+                      `${nurseName}|${date}|${sanitizedCleanShift} (marker note)`,
                     );
-                    if (isExistingEmpty || cleanShift) {
-                      const parsed = parseShiftCode(cleanShift, date);
+                    if (isExistingEmpty || sanitizedCleanShift) {
+                      const parsed = parseShiftCode(sanitizedCleanShift, date);
                       combinedGrid[normalizedName].shifts[date] = {
                         ...parsed,
-                        shift: cleanShift ? cleanShift + " *" : "*",
+                        shift: sanitizedCleanShift
+                          ? sanitizedCleanShift + " *"
+                          : "*",
                       };
                     }
-                  } else if (isExistingEmpty || shift) {
+                  } else if (isExistingEmpty || sanitizedShift) {
                     combinedGrid[normalizedName].shifts[date] = parseShiftCode(
-                      shift,
+                      sanitizedShift,
                       date,
                     );
                   }
@@ -146,23 +152,32 @@ export function useOCR({
 
             for (const shift of row.shifts) {
               if (shift && shift.date) {
+                const sanitizedShift = sanitizeOCRShiftCell(shift.shift || "");
                 const existingShift =
                   combinedGrid[normalizedName].shifts[shift.date];
                 const isExistingEmpty = !existingShift || !existingShift.shift;
 
                 if (shift.shift && shift.shift.includes("*")) {
                   const cleanShift = shift.shift.replace(/\*/g, "").trim();
+                  const sanitizedCleanShift = sanitizeOCRShiftCell(cleanShift);
                   extractedComments.push(
-                    `${nurseName}|${shift.date}|${cleanShift} (marker note)`,
+                    `${nurseName}|${shift.date}|${sanitizedCleanShift} (marker note)`,
                   );
-                  if (isExistingEmpty || cleanShift) {
+                  if (isExistingEmpty || sanitizedCleanShift) {
+                    const parsed = parseShiftCode(
+                      sanitizedCleanShift,
+                      shift.date,
+                    );
                     combinedGrid[normalizedName].shifts[shift.date] = {
-                      ...shift,
-                      shift: cleanShift ? cleanShift + " *" : "*",
+                      ...parsed,
+                      shift: sanitizedCleanShift
+                        ? sanitizedCleanShift + " *"
+                        : "*",
                     };
                   }
-                } else if (isExistingEmpty || shift.shift) {
-                  combinedGrid[normalizedName].shifts[shift.date] = shift;
+                } else if (isExistingEmpty || sanitizedShift) {
+                  combinedGrid[normalizedName].shifts[shift.date] =
+                    parseShiftCode(sanitizedShift, shift.date);
                 }
               }
             }

@@ -15,6 +15,11 @@ interface CommentEntry {
   comment: string;
 }
 
+interface GroupedCommentEntries {
+  nurse: string;
+  items: Array<{ entry: CommentEntry; originalIndex: number }>;
+}
+
 function parseComments(raw: string): CommentEntry[] {
   if (!raw.trim()) return [];
   return raw
@@ -54,6 +59,29 @@ export default function AutoCommentsBox({
 
   const entries = useMemo(() => parseComments(autoComments), [autoComments]);
 
+  const groupedEntries = useMemo<GroupedCommentEntries[]>(() => {
+    const groups = new Map<
+      string,
+      {
+        nurse: string;
+        items: Array<{ entry: CommentEntry; originalIndex: number }>;
+      }
+    >();
+
+    entries.forEach((entry, originalIndex) => {
+      const nurseName = entry.name.trim() || "Unassigned";
+      const key = nurseName.toLowerCase();
+      if (!groups.has(key)) {
+        groups.set(key, { nurse: nurseName, items: [] });
+      }
+      groups.get(key)!.items.push({ entry, originalIndex });
+    });
+
+    return Array.from(groups.values()).sort((a, b) =>
+      a.nurse.localeCompare(b.nurse),
+    );
+  }, [entries]);
+
   const updateEntry = useCallback(
     (index: number, field: keyof CommentEntry, value: string) => {
       const updated = [...entries];
@@ -88,9 +116,12 @@ export default function AutoCommentsBox({
           stripped.toLowerCase() === "time off request" ? "" : stripped;
         updateEntry(index, "comment", restored);
       } else {
-        // Strip OCR "(marker note)" suffix — it's only a processing
+        // Strip OCR "(marker note)" / "(preference marker)" suffix — it's only a processing
         // hint and shouldn't appear in the user-facing comment.
-        const cleaned = comment.replace(/\s*\(marker note\)\s*$/i, "").trim();
+        const cleaned = comment
+          .replace(/\s*\(marker note\)\s*$/i, "")
+          .replace(/\s*\(preference marker\)\s*$/i, "")
+          .trim();
         updateEntry(
           index,
           "comment",
@@ -124,9 +155,10 @@ export default function AutoCommentsBox({
         if (entry.comment.toUpperCase().startsWith("OFF")) {
           return entry;
         }
-        // Strip OCR "(marker note)" before prepending OFF
+        // Strip OCR suffixes before prepending OFF
         const cleaned = entry.comment
           .replace(/\s*\(marker note\)\s*$/i, "")
+          .replace(/\s*\(preference marker\)\s*$/i, "")
           .trim();
         return {
           ...entry,
@@ -154,7 +186,9 @@ export default function AutoCommentsBox({
       {/* Header bar */}
       <div className="flex items-center justify-between mb-3">
         <span className="text-xs text-gray-500">
-          {entries.length} {entries.length === 1 ? "entry" : "entries"}
+          {entries.length} {entries.length === 1 ? "entry" : "entries"} ·{" "}
+          {groupedEntries.length}{" "}
+          {groupedEntries.length === 1 ? "nurse" : "nurses"}
         </span>
         <div className="flex items-center gap-2">
           <button
@@ -266,86 +300,108 @@ export default function AutoCommentsBox({
           {entries.length === 0 && (
             <div className="text-center py-8 text-gray-400 text-sm">
               <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              No employee notes yet. Click &quot;Add Note&quot; or upload a
-              schedule to auto-detect.
+              No employee notes yet. Click &quot;Add Note&quot; or add "*" in
+              the Editable Schedule Grid to auto-detect.
             </div>
           )}
 
-          {entries.map((entry, idx) => {
-            const off = isOff(entry.comment);
-            return (
-              <div
-                key={idx}
-                className={`group flex items-start gap-2 p-2.5 rounded-lg border transition-colors ${
-                  off
-                    ? "bg-orange-50 border-orange-200"
-                    : "bg-white border-gray-200 hover:border-blue-200"
-                }`}
-              >
-                {/* Off indicator */}
-                <button
-                  type="button"
-                  onClick={() => toggleOff(idx)}
-                  title={off ? "Remove time-off flag" : "Mark as time-off"}
-                  className={`mt-1 flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
-                    off
-                      ? "bg-orange-500 text-white"
-                      : "bg-gray-100 text-gray-400 hover:bg-orange-100 hover:text-orange-500"
-                  }`}
-                >
-                  <Plane className="w-3.5 h-3.5" />
-                </button>
-
-                {/* Fields */}
-                <div className="flex-1 grid grid-cols-[1fr_auto_1fr] gap-2 items-center min-w-0">
-                  <input
-                    type="text"
-                    value={entry.name}
-                    onChange={(e) => updateEntry(idx, "name", e.target.value)}
-                    placeholder="Employee name"
-                    className="px-2 py-1.5 text-sm border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-400 focus:border-blue-400 min-w-0"
-                  />
-                  <input
-                    type="date"
-                    value={entry.date}
-                    onChange={(e) => updateEntry(idx, "date", e.target.value)}
-                    className="px-2 py-1.5 text-sm border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
-                  />
-                  <input
-                    type="text"
-                    value={
-                      off
-                        ? entry.comment
-                            .replace(/^OFF\s*/i, "")
-                            .replace(/\s*\(marker note\)\s*$/i, "")
-                        : entry.comment.replace(/\s*\(marker note\)\s*$/i, "")
-                    }
-                    onChange={(e) =>
-                      updateEntry(
-                        idx,
-                        "comment",
-                        off ? `OFF ${e.target.value}` : e.target.value,
-                      )
-                    }
-                    placeholder={
-                      off ? "Reason (e.g., vacation)" : "Note / comment"
-                    }
-                    className="px-2 py-1.5 text-sm border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-400 focus:border-blue-400 min-w-0"
-                  />
-                </div>
-
-                {/* Delete */}
-                <button
-                  type="button"
-                  onClick={() => removeEntry(idx)}
-                  className="mt-1 flex-shrink-0 p-1 text-gray-300 hover:text-red-500 rounded transition-colors opacity-0 group-hover:opacity-100"
-                  title="Remove"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+          {groupedEntries.map((group) => (
+            <div
+              key={group.nurse}
+              className="rounded-lg border border-gray-200 bg-gray-50/40 p-2"
+            >
+              <div className="px-1 pb-2 text-xs font-semibold text-gray-700">
+                {group.nurse}
               </div>
-            );
-          })}
+
+              <div className="space-y-2">
+                {group.items.map(({ entry, originalIndex }) => {
+                  const off = isOff(entry.comment);
+                  return (
+                    <div
+                      key={originalIndex}
+                      className={`group flex items-start gap-2 p-2.5 rounded-lg border transition-colors ${
+                        off
+                          ? "bg-orange-50 border-orange-200"
+                          : "bg-white border-gray-200 hover:border-blue-200"
+                      }`}
+                    >
+                      {/* Off indicator */}
+                      <button
+                        type="button"
+                        onClick={() => toggleOff(originalIndex)}
+                        title={
+                          off ? "Remove time-off flag" : "Mark as time-off"
+                        }
+                        className={`mt-1 flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-colors ${
+                          off
+                            ? "bg-orange-500 text-white"
+                            : "bg-gray-100 text-gray-400 hover:bg-orange-100 hover:text-orange-500"
+                        }`}
+                      >
+                        <Plane className="w-3.5 h-3.5" />
+                      </button>
+
+                      {/* Fields */}
+                      <div className="flex-1 grid grid-cols-[1fr_auto_1fr] gap-2 items-center min-w-0">
+                        <input
+                          type="text"
+                          value={entry.name}
+                          onChange={(e) =>
+                            updateEntry(originalIndex, "name", e.target.value)
+                          }
+                          placeholder="Employee name"
+                          className="px-2 py-1.5 text-sm border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-400 focus:border-blue-400 min-w-0"
+                        />
+                        <input
+                          type="date"
+                          value={entry.date}
+                          onChange={(e) =>
+                            updateEntry(originalIndex, "date", e.target.value)
+                          }
+                          className="px-2 py-1.5 text-sm border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-400 focus:border-blue-400"
+                        />
+                        <input
+                          type="text"
+                          value={
+                            off
+                              ? entry.comment
+                                  .replace(/^OFF\s*/i, "")
+                                  .replace(/\s*\(marker note\)\s*$/i, "")
+                                  .replace(/\s*\(preference marker\)\s*$/i, "")
+                              : entry.comment
+                                  .replace(/\s*\(marker note\)\s*$/i, "")
+                                  .replace(/\s*\(preference marker\)\s*$/i, "")
+                          }
+                          onChange={(e) =>
+                            updateEntry(
+                              originalIndex,
+                              "comment",
+                              off ? `OFF ${e.target.value}` : e.target.value,
+                            )
+                          }
+                          placeholder={
+                            off ? "Reason (e.g., vacation)" : "Note / comment"
+                          }
+                          className="px-2 py-1.5 text-sm border border-gray-200 rounded-md focus:ring-1 focus:ring-blue-400 focus:border-blue-400 min-w-0"
+                        />
+                      </div>
+
+                      {/* Delete */}
+                      <button
+                        type="button"
+                        onClick={() => removeEntry(originalIndex)}
+                        className="mt-1 flex-shrink-0 p-1 text-gray-300 hover:text-red-500 rounded transition-colors opacity-0 group-hover:opacity-100"
+                        title="Remove"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
 
           {/* Add button */}
           <button

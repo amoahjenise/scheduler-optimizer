@@ -55,6 +55,12 @@ export interface ScheduleTemplate {
 const STORAGE_KEY = "scheduler-templates";
 const MAX_TEMPLATES = 20; // prevent localStorage bloat
 
+function normalizeTemplateName(name: string): string {
+  return String(name || "")
+    .trim()
+    .toLowerCase();
+}
+
 // ============================================================================
 // HELPERS
 // ============================================================================
@@ -211,7 +217,21 @@ export function useScheduleTemplates() {
       endDate: string,
       unit?: string,
       notes?: string,
-    ) => {
+    ): ScheduleTemplate | null => {
+      const normalizedName = normalizeTemplateName(name);
+      const existingTemplate = templates.find(
+        (t) => normalizeTemplateName(t.name) === normalizedName,
+      );
+
+      if (existingTemplate) {
+        const shouldOverwrite = window.confirm(
+          `A template named "${existingTemplate.name}" already exists. Overwrite it?`,
+        );
+        if (!shouldOverwrite) {
+          return null;
+        }
+      }
+
       const template = gridToTemplate(
         name,
         grid,
@@ -220,14 +240,30 @@ export function useScheduleTemplates() {
         unit,
         notes,
       );
+
       setTemplates((prev) => {
-        const updated = [template, ...prev].slice(0, MAX_TEMPLATES);
+        let updated: ScheduleTemplate[];
+
+        if (existingTemplate) {
+          const overwritten: ScheduleTemplate = {
+            ...template,
+            id: existingTemplate.id,
+          };
+          updated = [
+            overwritten,
+            ...prev.filter((t) => t.id !== existingTemplate.id),
+          ].slice(0, MAX_TEMPLATES);
+        } else {
+          updated = [template, ...prev].slice(0, MAX_TEMPLATES);
+        }
+
         saveTemplatesToStorage(updated);
         return updated;
       });
+
       return template;
     },
-    [],
+    [templates],
   );
 
   /** Delete a template by ID */

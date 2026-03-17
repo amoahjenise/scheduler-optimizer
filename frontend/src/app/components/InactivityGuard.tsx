@@ -139,6 +139,25 @@ export default function InactivityGuard() {
     }
   }, [isSignedIn]);
 
+  // ── Track previous signed-in state to detect login/logout transitions ──
+  const wasSignedInRef = useRef(isSignedIn);
+
+  useEffect(() => {
+    const wasSignedIn = wasSignedInRef.current;
+    wasSignedInRef.current = isSignedIn;
+
+    // If user just signed out, stop all timers and preserve warning state
+    if (wasSignedIn && !isSignedIn) {
+      clearAllTimers();
+      return;
+    }
+
+    // If user just signed in and no activity is running, start fresh timers
+    if (!wasSignedIn && isSignedIn) {
+      resetTimers();
+    }
+  }, [isSignedIn, resetTimers, clearAllTimers]);
+
   // ── Activity listeners ──
   useEffect(() => {
     if (!isSignedIn) return;
@@ -166,15 +185,13 @@ export default function InactivityGuard() {
     activityEvents.forEach((event) =>
       window.addEventListener(event, handleActivity, { passive: true }),
     );
-    resetTimers();
 
     return () => {
       activityEvents.forEach((event) =>
         window.removeEventListener(event, handleActivity),
       );
-      clearAllTimers();
     };
-  }, [isSignedIn, resetTimers, clearAllTimers, pauseCountdown]);
+  }, [isSignedIn, resetTimers, pauseCountdown]);
 
   // ═══════════════════════════════════════════════════════════════════
   //  RENDER — three mutually-exclusive dialogs
