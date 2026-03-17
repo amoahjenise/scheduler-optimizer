@@ -12,6 +12,26 @@ from app.core.auth import OptionalAuth, ManagerAuth, AuthContext
 router = APIRouter()
 
 
+def _resolve_user_scope(auth: AuthContext, query_user_id: Optional[str]) -> Optional[str]:
+    """
+    Resolve the effective user_id for data-scoping, enforcing IDOR protection.
+
+    Rules:
+    - Authenticated + org  → caller uses org filter; this helper is not needed.
+    - Authenticated + no org → always use auth.user_id.  If the caller also
+      passed a user_id param that doesn't match their JWT, reject with 403.
+    - Unauthenticated → use the query param as-is (legacy / dev compatibility).
+    """
+    if auth.is_authenticated:
+        if query_user_id and query_user_id != auth.user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to access another user's data.",
+            )
+        return auth.user_id
+    return query_user_id
+
+
 @router.get("", response_model=NurseListResponse)
 def list_nurses(
     auth: OptionalAuth,
@@ -26,12 +46,15 @@ def list_nurses(
     otherwise falls back to user_id filter for backward compatibility.
     """
     query = db.query(Nurse)
-    
-    # Filter by organization if available, else by user_id
+
+    # Filter by organization if available, else by the authenticated user's ID.
+    # _resolve_user_scope() prevents IDOR by rejecting mismatched user_id params.
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Nurse.organization_id == auth.organization_id)
-    elif user_id:
-        query = query.filter(Nurse.user_id == user_id)
+    else:
+        effective_uid = _resolve_user_scope(auth, user_id)
+        if effective_uid:
+            query = query.filter(Nurse.user_id == effective_uid)
     
     # Apply search filter if provided
     if search:
@@ -66,12 +89,13 @@ def get_nurse(
     Get a specific nurse by ID.
     """
     query = db.query(Nurse).filter(Nurse.id == nurse_id)
-    
-    # Filter by organization if available, else by user_id
+
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Nurse.organization_id == auth.organization_id)
-    elif user_id:
-        query = query.filter(Nurse.user_id == user_id)
+    else:
+        effective_uid = _resolve_user_scope(auth, user_id)
+        if effective_uid:
+            query = query.filter(Nurse.user_id == effective_uid)
     
     nurse = query.first()
     
@@ -93,8 +117,8 @@ def create_nurse(
     """
     # Determine organization_id and effective user_id
     org_id = auth.organization_id if auth.is_authenticated else None
-    effective_user_id = user_id or (auth.user_id if auth.is_authenticated else None)
-    
+    effective_user_id = _resolve_user_scope(auth, user_id)
+
     # Check for duplicate name within organization or user's nurses
     existing_query = db.query(Nurse).filter(Nurse.name == nurse_data.name)
     if org_id:
@@ -134,12 +158,13 @@ def update_nurse(
     Update an existing nurse profile.
     """
     query = db.query(Nurse).filter(Nurse.id == nurse_id)
-    
-    # Filter by organization if available, else by user_id
+
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Nurse.organization_id == auth.organization_id)
-    elif user_id:
-        query = query.filter(Nurse.user_id == user_id)
+    else:
+        effective_uid = _resolve_user_scope(auth, user_id)
+        if effective_uid:
+            query = query.filter(Nurse.user_id == effective_uid)
     
     nurse = query.first()
     
@@ -157,8 +182,10 @@ def update_nurse(
         )
         if auth.is_authenticated and auth.organization_id:
             existing_query = existing_query.filter(Nurse.organization_id == auth.organization_id)
-        elif user_id:
-            existing_query = existing_query.filter(Nurse.user_id == user_id)
+        else:
+            uid = _resolve_user_scope(auth, user_id)
+            if uid:
+                existing_query = existing_query.filter(Nurse.user_id == uid)
         
         if existing_query.first():
             raise HTTPException(
@@ -186,12 +213,13 @@ def delete_nurse(
     Delete a nurse profile.
     """
     query = db.query(Nurse).filter(Nurse.id == nurse_id)
-    
-    # Filter by organization if available, else by user_id
+
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Nurse.organization_id == auth.organization_id)
-    elif user_id:
-        query = query.filter(Nurse.user_id == user_id)
+    else:
+        effective_uid = _resolve_user_scope(auth, user_id)
+        if effective_uid:
+            query = query.filter(Nurse.user_id == effective_uid)
     
     nurse = query.first()
     

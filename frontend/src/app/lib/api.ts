@@ -1374,6 +1374,7 @@ export async function listNursesAPI(
   page = 1,
   pageSize = 50,
   search?: string,
+  headers?: Record<string, string>,
 ): Promise<{
   nurses: Nurse[];
   total: number;
@@ -1393,6 +1394,7 @@ export async function listNursesAPI(
     page: number;
     page_size: number;
   }>(`/nurses?${params.toString()}`, {
+    headers,
     timeoutMs: 15000,
     retryCount: 1,
   });
@@ -1401,66 +1403,47 @@ export async function listNursesAPI(
 export async function getNurseAPI(
   nurseId: string,
   userId: string,
+  headers?: Record<string, string>,
 ): Promise<Nurse> {
-  const res = await fetch(`${API_BASE}/nurses/${nurseId}?user_id=${userId}`);
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => null);
-    throw new Error(err?.detail || "Failed to fetch nurse");
-  }
-
-  return res.json();
+  return apiRequest<Nurse>(`/nurses/${nurseId}?user_id=${userId}`, {
+    headers,
+  });
 }
 
 export async function createNurseAPI(
   userId: string,
   nurse: NurseCreate,
+  headers?: Record<string, string>,
 ): Promise<Nurse> {
-  const res = await fetch(`${API_BASE}/nurses?user_id=${userId}`, {
+  return apiRequest<Nurse>(`/nurses?user_id=${userId}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
     body: JSON.stringify(nurse),
   });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => null);
-    throw new Error(err?.detail || "Failed to create nurse");
-  }
-
-  return res.json();
 }
 
 export async function updateNurseAPI(
   nurseId: string,
   userId: string,
   nurse: NurseUpdate,
+  headers?: Record<string, string>,
 ): Promise<Nurse> {
-  const res = await fetch(`${API_BASE}/nurses/${nurseId}?user_id=${userId}`, {
+  return apiRequest<Nurse>(`/nurses/${nurseId}?user_id=${userId}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
     body: JSON.stringify(nurse),
   });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => null);
-    throw new Error(err?.detail || "Failed to update nurse");
-  }
-
-  return res.json();
 }
 
 export async function deleteNurseAPI(
   nurseId: string,
   userId: string,
+  headers?: Record<string, string>,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/nurses/${nurseId}?user_id=${userId}`, {
+  return apiRequest<void>(`/nurses/${nurseId}?user_id=${userId}`, {
     method: "DELETE",
+    headers,
   });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => null);
-    throw new Error(err?.detail || "Failed to delete nurse");
-  }
 }
 
 // ─────────────────────────────────────────────────────────────

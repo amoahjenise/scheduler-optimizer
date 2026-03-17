@@ -51,9 +51,23 @@ async def create_schedule(
 
     # Use organization_id if available
     org_id = auth.organization_id if auth.is_authenticated else None
-    
+
+    # Always derive user_id from the verified JWT when the user is authenticated.
+    # The form-supplied user_id is only a fallback for unauthenticated (legacy) calls.
+    # This prevents a user from creating records owned by another user.
+    if auth.is_authenticated and auth.user_id:
+        if user_id and user_id != auth.user_id:
+            from fastapi import HTTPException as _HTTPException
+            raise _HTTPException(
+                status_code=403,
+                detail="Not authorized to create records on behalf of another user.",
+            )
+        effective_user_id = auth.user_id
+    else:
+        effective_user_id = user_id
+
     schedule = Schedule(
-        user_id=user_id,
+        user_id=effective_user_id,
         organization_id=org_id,
         period=period,
         notes=notes,

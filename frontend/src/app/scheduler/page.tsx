@@ -397,7 +397,9 @@ export default function SchedulerPage() {
     (async () => {
       setOrganizationNursesLoading(true);
       try {
-        const { nurses } = await listNursesAPI(userId, 1, 1000);
+        const token = await getToken();
+        const authHeaders = token ? { Authorization: `Bearer ${token}` } : undefined;
+        const { nurses } = await listNursesAPI(userId, 1, 1000, undefined, authHeaders);
         if (!cancelled) {
           const allNurses = Array.isArray(nurses) ? nurses : [];
           // Store ALL nurses for name matching (including those on leave)

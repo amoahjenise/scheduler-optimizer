@@ -32,7 +32,7 @@ interface FormData {
 
 export default function NursesPage() {
   const { user } = useUser();
-  const { currentOrganization } = useOrganization();
+  const { currentOrganization, getAuthHeaders } = useOrganization();
   const fullTimeBiWeeklyTarget =
     currentOrganization?.full_time_weekly_target ?? 75;
   const partTimeBiWeeklyTarget =
@@ -73,11 +73,13 @@ export default function NursesPage() {
     if (!user?.id) return;
     setLoading(true);
     try {
+      const authHeaders = await getAuthHeaders();
       const data = await listNursesAPI(
         user.id,
         1,
         100,
         searchTerm || undefined,
+        authHeaders,
       );
       setNurses(data.nurses);
     } catch (error) {
@@ -138,15 +140,17 @@ export default function NursesPage() {
 
       console.log("[Nurse Update] Submitting payload:", payload);
 
+      const authHeaders = await getAuthHeaders();
+
       if (editingNurse) {
-        const updated = await updateNurseAPI(editingNurse.id, user.id, payload);
+        const updated = await updateNurseAPI(editingNurse.id, user.id, payload, authHeaders);
         console.log("[Nurse Update] Response:", updated);
         // Update the nurse in-place without reloading the entire list
         setNurses((prev) =>
           prev.map((n) => (n.id === editingNurse.id ? updated : n)),
         );
       } else {
-        await createNurseAPI(user.id, payload);
+        await createNurseAPI(user.id, payload, authHeaders);
         // Only reload for new nurses to add them to the list
         loadNurses();
       }
@@ -164,7 +168,8 @@ export default function NursesPage() {
     if (!confirm("Are you sure you want to delete this nurse?")) return;
 
     try {
-      await deleteNurseAPI(nurseId, user.id);
+      const authHeaders = await getAuthHeaders();
+      await deleteNurseAPI(nurseId, user.id, authHeaders);
       loadNurses();
     } catch (error: any) {
       alert(error.message || "Failed to delete nurse");
