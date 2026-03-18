@@ -16,6 +16,7 @@ import {
 } from "../lib/api";
 import { useOrganization } from "../context/OrganizationContext";
 import { FEATURES } from "../lib/featureFlags";
+import { useTranslations } from "next-intl";
 
 type RecentActivityItem = {
   id: string;
@@ -28,6 +29,7 @@ type RecentActivityItem = {
 export default function ActivitiesPage() {
   const { user } = useUser();
   const { getAuthHeaders, isLoading: orgLoading } = useOrganization();
+  const t = useTranslations("activities");
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -47,9 +49,9 @@ export default function ActivitiesPage() {
           schedulesList,
           deletionActivities,
         ] = await Promise.all([
-          fetchPatientsAPI({ active_only: true }),
-          fetchTodaysHandoversAPI("day"),
-          fetchTodaysHandoversAPI("night"),
+          fetchPatientsAPI({ active_only: true }, authHeaders),
+          fetchTodaysHandoversAPI("day", authHeaders),
+          fetchTodaysHandoversAPI("night", authHeaders),
           fetchOptimizedSchedulesAPI(authHeaders),
           fetchDeletionActivitiesAPI(authHeaders, 100),
         ]);
@@ -59,10 +61,12 @@ export default function ActivitiesPage() {
         );
 
         const activeHandoversDay = (dayHandovers.handovers || []).filter(
-          (h: Handover) => activePatientIds.has(h.patient_id),
+          (h: Handover) =>
+            h.patient_id != null && activePatientIds.has(h.patient_id),
         );
         const activeHandoversNight = (nightHandovers.handovers || []).filter(
-          (h: Handover) => activePatientIds.has(h.patient_id),
+          (h: Handover) =>
+            h.patient_id != null && activePatientIds.has(h.patient_id),
         );
 
         const handoverActivities: RecentActivityItem[] = [
@@ -71,8 +75,8 @@ export default function ActivitiesPage() {
         ].map((handover) => ({
           id: `handover-${handover.id}`,
           type: "handover",
-          title: `Hand-off completed by ${handover.outgoing_nurse}`,
-          subtitle: `${handover.shift_type === "day" ? "Day" : "Night"} shift • ${new Date(handover.shift_date).toLocaleDateString()}`,
+          title: t("handoverCompletedBy", { nurse: handover.outgoing_nurse }),
+          subtitle: `${handover.shift_type === "day" ? t("dayShift") : t("nightShift")} \u2022 ${new Date(handover.shift_date).toLocaleDateString()}`,
           timestamp: new Date(handover.shift_date).getTime(),
         }));
 
@@ -81,8 +85,15 @@ export default function ActivitiesPage() {
         ).map((patient: Patient) => ({
           id: `patient-${patient.id}`,
           type: "patient",
-          title: `Patient added: ${patient.last_name}, ${patient.first_name}`,
-          subtitle: `Room ${patient.room_number}${patient.bed ? ` • Bed ${patient.bed}` : ""}`,
+          title: t("patientAdded", {
+            name: `${patient.last_name}, ${patient.first_name}`,
+          }),
+          subtitle: patient.bed
+            ? t("roomBedSubtitle", {
+                room: patient.room_number,
+                bed: patient.bed,
+              })
+            : t("roomOnlySubtitle", { room: patient.room_number }),
           timestamp: new Date(patient.created_at).getTime(),
         }));
 
@@ -126,7 +137,7 @@ export default function ActivitiesPage() {
           const start = startRaw || fallbackDates[0];
           const end = endRaw || fallbackDates[fallbackDates.length - 1];
 
-          if (!start || !end) return "Schedule period unavailable";
+          if (!start || !end) return t("schedulePeriodUnavailable");
 
           const startDate = new Date(
             /^\d{4}-\d{2}-\d{2}$/.test(start) ? `${start}T00:00:00` : start,
@@ -138,7 +149,7 @@ export default function ActivitiesPage() {
             Number.isNaN(startDate.getTime()) ||
             Number.isNaN(endDate.getTime())
           ) {
-            return "Schedule period unavailable";
+            return t("schedulePeriodUnavailable");
           }
 
           return `${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}`;
@@ -147,11 +158,67 @@ export default function ActivitiesPage() {
         const scheduleActivities: RecentActivityItem[] = (
           Array.isArray(schedulesList) ? schedulesList : []
         ).map((schedule) => ({
-          id: `schedule-${schedule.id}`,
-          type: "schedule",
-          title: `${schedule.is_finalized ? "Schedule finalized" : "Draft schedule saved"}: ${formatSchedulePeriod(schedule)}`,
-          subtitle: `Created ${new Date(schedule.created_at).toLocaleDateString()}`,
-          timestamp: new Date(schedule.created_at).getTime(),
+          ...(function () {
+            const rawSchedule = schedule as OptimizedSchedule & {
+              created_by_name?: string;
+              created_by?: string;
+            };
+            const scheduleData =
+              typeof schedule.schedule_data === "string"
+                ? (() => {
+                    try {
+                      return JSON.parse(schedule.schedule_data);
+                    } catch {
+                      return {};
+                    }
+                  })()
+                : (schedule.schedule_data ?? {});
+
+            const scheduleDataObj =
+              scheduleData && typeof scheduleData === "object"
+                ? (scheduleData as Record<string, any>)
+                : {};
+
+            const fallbackUserName =
+              user?.fullName ||
+              user?.firstName ||
+              user?.primaryEmailAddress?.emailAddress ||
+              "";
+
+            const rawCreatedBy =
+              rawSchedule.created_by_name ||
+              rawSchedule.created_by ||
+              scheduleDataObj.created_by_name ||
+              scheduleDataObj.createdByName ||
+              scheduleDataObj.created_by ||
+              scheduleDataObj.createdBy;
+
+            const authorName =
+              rawCreatedBy === user?.id && fallbackUserName
+                ? fallbackUserName
+                : rawCreatedBy || null;
+
+            const createdDate = new Date(
+              schedule.created_at,
+            ).toLocaleDateString();
+
+            return {
+              id: `schedule-${schedule.id}`,
+              type: "schedule" as const,
+              title: schedule.is_finalized
+                ? t("scheduleFinalized", {
+                    period: formatSchedulePeriod(schedule),
+                  })
+                : t("draftSaved", { period: formatSchedulePeriod(schedule) }),
+              subtitle: authorName
+                ? t("createdByOn", {
+                    name: String(authorName),
+                    date: createdDate,
+                  })
+                : t("createdOn", { date: createdDate }),
+              timestamp: new Date(schedule.created_at).getTime(),
+            };
+          })(),
         }));
 
         const deletionRecentActivities: RecentActivityItem[] = (
@@ -159,8 +226,15 @@ export default function ActivitiesPage() {
         ).map((activity: DeletionActivity) => ({
           id: `deletion-${activity.id}`,
           type: activity.object_type,
-          title: `${activity.object_type === "patient" ? "Patient" : activity.object_type === "schedule" ? "Schedule" : "Hand-off"} deleted: ${activity.object_label}`,
-          subtitle: `Deleted by ${activity.performed_by_name || "Unknown user"}${activity.details ? ` • ${activity.details}` : ""}`,
+          title:
+            activity.object_type === "patient"
+              ? t("patientDeleted", { label: activity.object_label })
+              : activity.object_type === "schedule"
+                ? t("scheduleDeleted", { label: activity.object_label })
+                : t("handoverDeleted", { label: activity.object_label }),
+          subtitle:
+            t("deletedByFull", { name: activity.performed_by_name || "?" }) +
+            (activity.details ? ` \u2022 ${activity.details}` : ""),
           timestamp: new Date(activity.occurred_at).getTime(),
         }));
 
@@ -174,7 +248,7 @@ export default function ActivitiesPage() {
         );
       } catch (err) {
         console.error("Failed to load activities:", err);
-        setError("Failed to load activities");
+        setError(t("loadFailed"));
       } finally {
         setLoading(false);
       }
@@ -199,25 +273,22 @@ export default function ActivitiesPage() {
           href="/dashboard"
           className="text-sm text-blue-600 hover:underline mb-1 inline-block"
         >
-          ← Back to Dashboard
+          {t("backToDashboard")}
         </Link>
 
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-semibold text-gray-900">
-              All Recent Activity
+              {t("title")}
             </h1>
-            <p className="text-sm text-gray-500 mt-1">
-              Latest updates across patients, hand-offs, schedules, and
-              deletions
-            </p>
+            <p className="text-sm text-gray-500 mt-1">{t("subtitle")}</p>
           </div>
           <button
             onClick={() => window.location.reload()}
             className="inline-flex items-center gap-2 px-3 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50"
           >
             <RefreshCw className="w-4 h-4" />
-            Refresh
+            {t("refresh")}
           </button>
         </div>
 
@@ -231,7 +302,7 @@ export default function ActivitiesPage() {
           </div>
         ) : activities.length === 0 ? (
           <div className="bg-white border border-gray-200 rounded-xl p-8 text-center text-gray-500">
-            No recent activity yet.
+            {t("noActivity")}
           </div>
         ) : (
           <div className="space-y-2.5">

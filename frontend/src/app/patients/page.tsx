@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useTranslations } from "next-intl";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -36,6 +37,8 @@ import { FEATURES } from "../lib/featureFlags";
 
 export default function PatientsPage() {
   const router = useRouter();
+  const t = useTranslations("patients");
+  const tCommon = useTranslations("common");
 
   // Redirect when patient management is disabled
   if (!FEATURES.PATIENT_MANAGEMENT) {
@@ -92,10 +95,14 @@ export default function PatientsPage() {
   const loadPatients = useCallback(async () => {
     try {
       setLoading(true);
-      const result = await fetchPatientsAPI({
-        active_only: !showInactive,
-        search: searchQuery || undefined,
-      });
+      const authHeaders = await getAuthHeaders();
+      const result = await fetchPatientsAPI(
+        {
+          active_only: !showInactive,
+          search: searchQuery || undefined,
+        },
+        authHeaders,
+      );
       setPatients(result.patients || []);
       setError(null);
     } catch (err) {
@@ -118,7 +125,8 @@ export default function PatientsPage() {
 
     setSaving(true);
     try {
-      await createPatientAPI(formData as PatientCreate);
+      const authHeaders = await getAuthHeaders();
+      await createPatientAPI(formData as PatientCreate, authHeaders);
       setIsCreating(false);
       resetForm();
       loadPatients();
@@ -135,7 +143,8 @@ export default function PatientsPage() {
 
     setSaving(true);
     try {
-      await updatePatientAPI(editingPatient.id, formData);
+      const authHeaders = await getAuthHeaders();
+      await updatePatientAPI(editingPatient.id, formData, authHeaders);
       setEditingPatient(null);
       setShowModal(false);
       resetForm();
@@ -162,9 +171,14 @@ export default function PatientsPage() {
 
   const handleToggleActive = async (patient: Patient) => {
     try {
-      await updatePatientAPI(patient.id, {
-        is_active: !patient.is_active,
-      } as any);
+      const authHeaders = await getAuthHeaders();
+      await updatePatientAPI(
+        patient.id,
+        {
+          is_active: !patient.is_active,
+        } as any,
+        authHeaders,
+      );
       loadPatients();
     } catch (err) {
       console.error("Failed to toggle patient status:", err);
@@ -322,30 +336,28 @@ export default function PatientsPage() {
                 href="/dashboard"
                 className="text-sm text-blue-600 hover:underline mb-1 inline-block"
               >
-                ← Back to Dashboard
+                {t("backToDashboard")}
               </Link>
               <h1 className="text-2xl font-semibold text-gray-900">
-                Patient Management
+                {t("patientManagement")}
               </h1>
-              <p className="text-sm text-gray-500 mt-1">
-                Manage patient census, profile details, and status
-              </p>
+              <p className="text-sm text-gray-500 mt-1">{t("manageCensus")}</p>
             </div>
             <div className="flex items-center gap-3">
               <button
                 onClick={() => setShowFieldSettings(true)}
                 className="flex items-center gap-2 px-3 py-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 text-sm font-medium rounded-lg transition-colors"
-                title="Field Settings"
+                title={t("fieldSettings")}
               >
                 <Settings className="w-4 h-4" />
-                Field Settings
+                {t("fieldSettings")}
               </button>
               <button
                 onClick={startCreating}
                 className="flex items-center gap-2 px-4 py-2 bg-[#1A5CFF] hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
               >
                 <Plus className="w-4 h-4" />
-                Add Patient
+                {t("addPatient")}
               </button>
             </div>
           </div>
@@ -362,7 +374,7 @@ export default function PatientsPage() {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search by name, room, MRN, or diagnosis..."
+                placeholder={t("searchPlaceholder")}
                 className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
             </div>
@@ -373,7 +385,7 @@ export default function PatientsPage() {
                 onChange={(e) => setShowInactive(e.target.checked)}
                 className="rounded border-gray-300 text-[#1A5CFF] focus:ring-blue-500"
               />
-              Show inactive patients
+              {t("showInactivePatients")}
             </label>
           </div>
         </div>
@@ -398,7 +410,7 @@ export default function PatientsPage() {
             <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
               <div className="px-4 py-3 border-b border-gray-100 bg-gray-50">
                 <span className="text-sm font-medium text-gray-700">
-                  {filteredPatients.length} patient
+                  {filteredPatients.length} {t("patient")}
                   {filteredPatients.length !== 1 ? "s" : ""}
                 </span>
               </div>
@@ -406,16 +418,16 @@ export default function PatientsPage() {
               {loading ? (
                 <div className="p-12 text-center">
                   <div className="animate-spin w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full mx-auto mb-3" />
-                  <p className="text-sm text-gray-500">Loading patients...</p>
+                  <p className="text-sm text-gray-500">{t("loading")}...</p>
                 </div>
               ) : filteredPatients.length === 0 ? (
                 <div className="p-12 text-center">
                   <User className="w-12 h-12 text-gray-300 mx-auto mb-3" />
-                  <p className="text-gray-500 font-medium">No patients found</p>
+                  <p className="text-gray-500 font-medium">
+                    {t("noPatientsFound")}
+                  </p>
                   <p className="text-sm text-gray-400 mt-1">
-                    {searchQuery
-                      ? "Try a different search term"
-                      : "Add your first patient to get started"}
+                    {searchQuery ? t("searchPlaceholder") : t("addPatient")}
                   </p>
                 </div>
               ) : (
@@ -430,11 +442,11 @@ export default function PatientsPage() {
                             <Bed className="w-4 h-4 text-blue-600" />
                             <h3 className="text-sm font-bold text-gray-900">
                               {roomNumber === "Unassigned"
-                                ? "Unassigned Room"
-                                : `Room ${roomNumber}`}
+                                ? t("unassignedRoom")
+                                : `${tCommon("room")} ${roomNumber}`}
                             </h3>
                             <span className="ml-2 text-xs text-gray-500 bg-white px-2 py-0.5 rounded-full">
-                              {roomPatients.length} patient
+                              {roomPatients.length} {t("patient")}
                               {roomPatients.length !== 1 ? "s" : ""}
                             </span>
                           </div>
@@ -468,22 +480,22 @@ export default function PatientsPage() {
                                       }`}
                                     >
                                       {patient.is_active
-                                        ? "Active"
-                                        : "Inactive"}
+                                        ? t("active")
+                                        : t("inactive")}
                                     </span>
                                   </div>
                                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-500">
                                     {patient.room_number && (
                                       <span className="flex items-center gap-1">
                                         <Bed className="w-3.5 h-3.5" />
-                                        Room {patient.room_number}
+                                        {tCommon("room")} {patient.room_number}
                                         {patient.bed && ` / ${patient.bed}`}
                                       </span>
                                     )}
                                     {patient.mrn && (
                                       <span className="flex items-center gap-1">
                                         <FileText className="w-3.5 h-3.5" />
-                                        MRN: {patient.mrn}
+                                        {t("mrn")}: {patient.mrn}
                                       </span>
                                     )}
                                     {(patient.age || patient.date_of_birth) && (
@@ -503,7 +515,7 @@ export default function PatientsPage() {
                                   <button
                                     onClick={() => startEditing(patient)}
                                     className="p-2 text-gray-400 hover:text-[#1A5CFF] hover:bg-blue-50 rounded-lg transition-colors"
-                                    title="Edit patient"
+                                    title={t("editPatient")}
                                   >
                                     <Edit2 className="w-4 h-4" />
                                   </button>
@@ -516,13 +528,13 @@ export default function PatientsPage() {
                                     }`}
                                     title={
                                       patient.is_active
-                                        ? "Deactivate patient (remove from active list)"
-                                        : "Activate patient"
+                                        ? t("deactivatePatient")
+                                        : t("activatePatient")
                                     }
                                     aria-label={
                                       patient.is_active
-                                        ? "Deactivate patient"
-                                        : "Activate patient"
+                                        ? t("deactivatePatientLabel")
+                                        : t("activatePatientLabel")
                                     }
                                   >
                                     {patient.is_active ? (
@@ -534,24 +546,22 @@ export default function PatientsPage() {
                                   {deleteConfirm === patient.id ? (
                                     <div className="flex items-center gap-2">
                                       <div className="text-xs text-gray-700 max-w-xs">
-                                        Permanently delete this patient and all
-                                        associated handovers? This action cannot
-                                        be undone.
+                                        {t("permanentlyDelete")}
                                       </div>
                                       <button
                                         onClick={() =>
                                           handleDeletePatient(patient.id)
                                         }
                                         className="px-2 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 rounded transition-colors"
-                                        title="Permanently delete patient"
+                                        title={t("permanentlyDeletePatient")}
                                       >
-                                        Delete permanently
+                                        {t("deletePermanently")}
                                       </button>
                                       <button
                                         onClick={() => setDeleteConfirm(null)}
                                         className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded transition-colors"
                                       >
-                                        Cancel
+                                        {tCommon("cancel")}
                                       </button>
                                     </div>
                                   ) : (
@@ -560,8 +570,8 @@ export default function PatientsPage() {
                                         setDeleteConfirm(patient.id)
                                       }
                                       className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                                      title="Delete patient (permanent)"
-                                      aria-label="Delete patient permanently"
+                                      title={t("deletePatientPermanent")}
+                                      aria-label={t("deletePatientPermanently")}
                                     >
                                       <Trash2 className="w-4 h-4" />
                                     </button>
@@ -594,7 +604,7 @@ export default function PatientsPage() {
               <div className="flex items-center gap-2">
                 <User className="w-5 h-5" />
                 <span className="font-semibold text-base">
-                  {isCreating ? "Add New Patient" : "Edit Patient"}
+                  {isCreating ? t("addNewPatient") : t("editPatient")}
                 </span>
               </div>
               <button
@@ -611,7 +621,7 @@ export default function PatientsPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">
-                    First Name *
+                    {t("firstName")} *
                   </label>
                   <input
                     type="text"
@@ -628,7 +638,7 @@ export default function PatientsPage() {
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">
-                    Last Name *
+                    {t("lastName")} *
                   </label>
                   <input
                     type="text"
@@ -649,7 +659,7 @@ export default function PatientsPage() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">
-                    Room Number *
+                    {t("roomNumber")} *
                   </label>
                   <input
                     type="text"
@@ -668,7 +678,7 @@ export default function PatientsPage() {
                 {shouldShowField("bed") && (
                   <div>
                     <label className="block text-xs font-medium text-gray-600 mb-1">
-                      {getFieldLabel("bed", "Bed")}
+                      {getFieldLabel("bed", t("bed"))}
                       {isFieldRequired("bed") && " *"}
                     </label>
                     <input
@@ -691,7 +701,7 @@ export default function PatientsPage() {
               {shouldShowField("mrn") && (
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">
-                    {getFieldLabel("mrn", "MRN")}
+                    {getFieldLabel("mrn", t("mrn"))}
                     {isFieldRequired("mrn") && " *"}
                   </label>
                   <input
@@ -714,7 +724,7 @@ export default function PatientsPage() {
                 <div>
                   <div className="flex items-center justify-between mb-1">
                     <label className="text-xs font-medium text-gray-600">
-                      {ageInputMode === "dob" ? "Date of Birth" : "Age"}
+                      {ageInputMode === "dob" ? t("dateOfBirth") : t("age")}
                       {isFieldRequired("date_of_birth") && " *"}
                     </label>
                     <button
@@ -762,7 +772,9 @@ export default function PatientsPage() {
                       }}
                       className="text-xs text-blue-600 hover:text-blue-700 underline"
                     >
-                      {ageInputMode === "dob" ? "Use Age" : "Use DOB"}
+                      {ageInputMode === "dob"
+                        ? t("switchToAge")
+                        : t("switchToDOB")}
                     </button>
                   </div>
                   {ageInputMode === "dob" ? (
@@ -813,8 +825,8 @@ export default function PatientsPage() {
                         }}
                         className="px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                       >
-                        <option value="months">months</option>
-                        <option value="years">years</option>
+                        <option value="months">{t("months")}</option>
+                        <option value="years">{t("years")}</option>
                       </select>
                     </div>
                   )}
@@ -825,7 +837,7 @@ export default function PatientsPage() {
               {shouldShowField("diagnosis") && (
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">
-                    {getFieldLabel("diagnosis", "Diagnosis")}
+                    {getFieldLabel("diagnosis", t("diagnosis"))}
                     {isFieldRequired("diagnosis") && " *"}
                   </label>
                   <textarea
@@ -849,7 +861,7 @@ export default function PatientsPage() {
                   <label className="block text-xs font-medium text-gray-600 mb-1">
                     {getFieldLabel(
                       "attending_physician",
-                      "Attending Physician",
+                      t("attendingPhysician"),
                     )}
                     {isFieldRequired("attending_physician") && " *"}
                   </label>
@@ -872,7 +884,7 @@ export default function PatientsPage() {
               {shouldShowField("admission_date") && (
                 <div>
                   <label className="block text-xs font-medium text-gray-600 mb-1">
-                    {getFieldLabel("admission_date", "Admission Date")}
+                    {getFieldLabel("admission_date", t("admissionDate"))}
                     {isFieldRequired("admission_date") && " *"}
                   </label>
                   <input
@@ -906,10 +918,10 @@ export default function PatientsPage() {
                     />
                     <div>
                       <span className="text-sm font-medium text-gray-700">
-                        Active Patient
+                        {t("active")} {t("patient")}
                       </span>
                       <p className="text-xs text-gray-500">
-                        Uncheck to mark this patient as inactive/discharged
+                        {t("uncheckToMarkInactive")}
                       </p>
                     </div>
                   </label>
@@ -923,7 +935,7 @@ export default function PatientsPage() {
                 onClick={cancelEditing}
                 className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-200 rounded-lg font-medium transition-colors"
               >
-                Cancel
+                {tCommon("cancel")}
               </button>
               <button
                 onClick={isCreating ? handleCreatePatient : handleUpdatePatient}
@@ -933,12 +945,12 @@ export default function PatientsPage() {
                 {saving ? (
                   <>
                     <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    Saving...
+                    {t("saving")}...
                   </>
                 ) : (
                   <>
                     <Check className="w-4 h-4" />
-                    {isCreating ? "Create Patient" : "Save Changes"}
+                    {isCreating ? t("createPatient") : t("savePatient")}
                   </>
                 )}
               </button>

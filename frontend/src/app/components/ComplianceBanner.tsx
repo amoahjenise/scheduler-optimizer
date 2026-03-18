@@ -6,9 +6,11 @@
 "use client";
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 
 export default function ComplianceBanner() {
   const [dismissed, setDismissed] = useState(false);
+  const t = useTranslations("complianceBanner");
 
   if (dismissed) return null;
 
@@ -30,21 +32,21 @@ export default function ComplianceBanner() {
             />
           </svg>
           <span>
-            <strong className="text-blue-200">HIPAA Protected</strong>
+            <strong className="text-blue-200">{t("hipaaProtected")}</strong>
             <span className="mx-1.5 text-blue-400">|</span>
-            TLS encrypted in transit
+            {t("tlsEncrypted")}
             <span className="mx-1.5 text-blue-400">|</span>
-            AES-256 at rest
+            {t("aes256AtRest")}
             <span className="mx-1.5 text-blue-400">|</span>
-            All access is audited
+            {t("accessAudited")}
             <span className="mx-1.5 text-blue-400">|</span>
-            Do not copy, export, or screenshot PHI
+            {t("noCopyPhi")}
           </span>
         </div>
         <button
           onClick={() => setDismissed(true)}
           className="text-blue-300 hover:text-white transition-colors flex-shrink-0"
-          aria-label="Dismiss compliance banner"
+          aria-label={t("dismiss")}
         >
           <svg
             className="w-4 h-4"

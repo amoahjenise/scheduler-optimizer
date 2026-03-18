@@ -4,6 +4,7 @@ import React from "react";
 import { SignedIn, SignedOut, SignInButton, SignUpButton } from "@clerk/nextjs";
 import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import {
   ArrowRight,
   Shield,
@@ -552,9 +553,31 @@ const Footer = () => (
           <img src="/logo-placeholder.png" alt="Logo" className="h-14 w-auto" />
           <span className="text-xl font-bold text-gray-900">Chronofy</span>
         </div>
-        <p className="text-sm text-gray-500">
-          © {new Date().getFullYear()} Chronofy. Built for healthcare teams.
-        </p>
+        <div className="text-sm text-gray-500 text-center md:text-right">
+          <p>
+            © {new Date().getFullYear()} Chronofy. Built for healthcare teams.
+          </p>
+          <div className="mt-1 flex items-center justify-center md:justify-end gap-3">
+            <Link href="/about" className="hover:text-gray-700 hover:underline">
+              About
+            </Link>
+            <Link href="/terms" className="hover:text-gray-700 hover:underline">
+              Terms
+            </Link>
+            <Link
+              href="/privacy"
+              className="hover:text-gray-700 hover:underline"
+            >
+              Privacy
+            </Link>
+            <Link
+              href="/cookies"
+              className="hover:text-gray-700 hover:underline"
+            >
+              Cookies
+            </Link>
+          </div>
+        </div>
       </div>
     </div>
   </footer>

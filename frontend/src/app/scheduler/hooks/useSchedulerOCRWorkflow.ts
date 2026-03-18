@@ -24,6 +24,8 @@ interface UseSchedulerOCRWorkflowOptions {
   startDate: string;
   endDate: string;
   userId: string;
+  /** Function to get auth token for API calls */
+  getToken: () => Promise<string | null>;
   /** Already-loaded nurses from the parent — avoids a redundant un-authenticated API call */
   organizationNurses: Nurse[];
   /** All nurses including those on leave - used for name matching only */
@@ -49,6 +51,7 @@ export function useSchedulerOCRWorkflow({
   startDate,
   endDate,
   userId,
+  getToken,
   organizationNurses,
   allOrganizationNurses,
   getDefaultMaxWeeklyHours,
@@ -72,6 +75,12 @@ export function useSchedulerOCRWorkflow({
     setOcrError(null);
 
     try {
+      // Get auth token for API calls
+      const token = await getToken();
+      const headers: Record<string, string> = token
+        ? { Authorization: `Bearer ${token}` }
+        : {};
+
       const allDates = new Set<string>();
       const combinedGrid: Record<
         string,
@@ -89,7 +98,12 @@ export function useSchedulerOCRWorkflow({
       >();
 
       for (const file of screenshots) {
-        const result = await parseImageWithFastAPI(file, startDate, endDate);
+        const result = await parseImageWithFastAPI(
+          file,
+          startDate,
+          endDate,
+          headers,
+        );
 
         if (result.dates) {
           result.dates.forEach((d: string) => allDates.add(d));
@@ -356,9 +370,14 @@ export function useSchedulerOCRWorkflow({
                 match.dbNurse.seniority &&
                 gridRow.seniority !== match.dbNurse.seniority
               ) {
-                updateNurseAPI(match.dbNurse.id, userId, {
-                  seniority: gridRow.seniority,
-                }).catch((err) => {
+                updateNurseAPI(
+                  match.dbNurse.id,
+                  userId,
+                  {
+                    seniority: gridRow.seniority,
+                  },
+                  headers,
+                ).catch((err) => {
                   console.error(
                     `Failed to update seniority for ${match.dbNurse.name}:`,
                     err,
@@ -534,6 +553,7 @@ export function useSchedulerOCRWorkflow({
     startDate,
     endDate,
     userId,
+    getToken,
     organizationNurses,
     allOrganizationNurses,
     getDefaultMaxWeeklyHours,

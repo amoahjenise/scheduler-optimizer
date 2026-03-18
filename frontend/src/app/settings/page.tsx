@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useUser } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import {
   Upload,
   RefreshCw,
@@ -40,19 +41,22 @@ import {
 
 const DEFAULT_LOGO = "/logo-placeholder.png";
 
-const SETTINGS_SECTIONS = [
-  { id: "logo-settings", label: "Logo" },
-  { id: "organization-settings", label: "Organization" },
-  { id: "staffing-defaults", label: "Staffing" },
-  { id: "teams-settings", label: "Teams" },
-  { id: "rooms-settings", label: "Rooms" },
-  { id: "data-management", label: "Data" },
-  { id: "account-info", label: "Account" },
-] as const;
+const getSettingsSections = (t: any) =>
+  [
+    { id: "logo-settings", label: t("logo") },
+    { id: "organization-settings", label: t("organization") },
+    { id: "staffing-defaults", label: t("staffing") },
+    { id: "teams-settings", label: t("teams") },
+    { id: "rooms-settings", label: t("rooms") },
+    { id: "data-management", label: t("data") },
+    { id: "account-info", label: t("account") },
+  ] as const;
 
 export default function SettingsPage() {
   const router = useRouter();
   const { user, isLoaded } = useUser();
+  const t = useTranslations("settings");
+  const tCommon = useTranslations("common");
   const {
     currentOrganization,
     currentMembership,
@@ -68,24 +72,39 @@ export default function SettingsPage() {
   const [logoUrl, setLogoUrl] = useState(DEFAULT_LOGO);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState("");
+  const [messageType, setMessageType] = useState<"success" | "error" | null>(
+    null,
+  );
 
   const [copiedCode, setCopiedCode] = useState(false);
   const [teams, setTeams] = useState<string[]>(DEFAULT_TEAMS);
   const [newTeam, setNewTeam] = useState("");
   const [teamsMessage, setTeamsMessage] = useState("");
+  const [teamsMessageType, setTeamsMessageType] = useState<
+    "success" | "error" | null
+  >(null);
   const [rooms, setRooms] = useState<string[]>(DEFAULT_ROOMS);
   const [newRoom, setNewRoom] = useState("");
   const [roomsMessage, setRoomsMessage] = useState("");
+  const [roomsMessageType, setRoomsMessageType] = useState<
+    "success" | "error" | null
+  >(null);
   const [editingRoom, setEditingRoom] = useState<string | null>(null);
   const [editRoomValue, setEditRoomValue] = useState("");
   const [cleanupDays, setCleanupDays] = useState(7);
   const [cleanupMessage, setCleanupMessage] = useState("");
+  const [cleanupMessageType, setCleanupMessageType] = useState<
+    "success" | "error" | null
+  >(null);
   const [cleaningUp, setCleaningUp] = useState(false);
   const [showCleanupConfirm, setShowCleanupConfirm] = useState(false);
   const [fullTimeBiWeeklyTarget, setFullTimeBiWeeklyTarget] = useState(75);
   const [partTimeBiWeeklyTarget, setPartTimeBiWeeklyTarget] = useState(63.75);
   const [savingWeeklyTargets, setSavingWeeklyTargets] = useState(false);
   const [weeklyTargetsMessage, setWeeklyTargetsMessage] = useState("");
+  const [weeklyTargetsMessageType, setWeeklyTargetsMessageType] = useState<
+    "success" | "error" | null
+  >(null);
 
   // Staffing defaults
   const [staffingDefaults, setStaffingDefaults] = useState<
@@ -172,12 +191,7 @@ export default function SettingsPage() {
     newAdminName: string,
   ) => {
     if (!currentOrganization) return;
-    if (
-      !confirm(
-        `Are you sure you want to transfer admin role to ${newAdminName}?\n\nYou will become a regular member and will no longer have admin privileges. This action cannot be undone by you.`,
-      )
-    )
-      return;
+    if (!confirm(t("confirmTransferAdmin", { name: newAdminName }))) return;
 
     setTransferringAdmin(true);
     try {
@@ -192,15 +206,13 @@ export default function SettingsPage() {
 
       if (!res.ok) {
         const error = await res.json().catch(() => null);
-        throw new Error(error?.detail || "Failed to transfer admin role");
+        throw new Error(error?.detail || t("failedTransferAdminError"));
       }
 
       // Refresh page to update permissions
       window.location.reload();
     } catch (err) {
-      alert(
-        err instanceof Error ? err.message : "Failed to transfer admin role",
-      );
+      alert(err instanceof Error ? err.message : t("failedTransferAdminError"));
     } finally {
       setTransferringAdmin(false);
     }
@@ -249,7 +261,8 @@ export default function SettingsPage() {
     if (!trimmed) return;
 
     if (teams.includes(trimmed)) {
-      setTeamsMessage("Team already exists");
+      setTeamsMessage(t("teamExists"));
+      setTeamsMessageType("error");
       setTimeout(() => setTeamsMessage(""), 3000);
       return;
     }
@@ -257,21 +270,24 @@ export default function SettingsPage() {
     const updatedTeams = addTeam(trimmed);
     setTeams(updatedTeams);
     setNewTeam("");
-    setTeamsMessage("Team added successfully");
+    setTeamsMessage(t("teamAdded"));
+    setTeamsMessageType("success");
     setTimeout(() => setTeamsMessage(""), 3000);
   };
 
   const handleRemoveTeam = (teamToRemove: string) => {
     const updatedTeams = removeTeam(teamToRemove);
     setTeams(updatedTeams);
-    setTeamsMessage("Team removed");
+    setTeamsMessage(t("teamRemoved"));
+    setTeamsMessageType("success");
     setTimeout(() => setTeamsMessage(""), 3000);
   };
 
   const handleResetTeams = () => {
     const updatedTeams = resetTeams();
     setTeams(updatedTeams);
-    setTeamsMessage("Teams reset to default");
+    setTeamsMessage(t("teamsReset"));
+    setTeamsMessageType("success");
     setTimeout(() => setTeamsMessage(""), 3000);
   };
 
@@ -285,7 +301,8 @@ export default function SettingsPage() {
     if (!trimmed) return;
 
     if (rooms.includes(trimmed)) {
-      setRoomsMessage("Room already exists");
+      setRoomsMessage(t("roomExists"));
+      setRoomsMessageType("error");
       setTimeout(() => setRoomsMessage(""), 3000);
       return;
     }
@@ -293,14 +310,16 @@ export default function SettingsPage() {
     const updatedRooms = addRoom(trimmed);
     setRooms(updatedRooms);
     setNewRoom("");
-    setRoomsMessage("Room added successfully");
+    setRoomsMessage(t("roomAdded"));
+    setRoomsMessageType("success");
     setTimeout(() => setRoomsMessage(""), 3000);
   };
 
   const handleRemoveRoom = (roomToRemove: string) => {
     const updatedRooms = removeRoom(roomToRemove);
     setRooms(updatedRooms);
-    setRoomsMessage("Room removed");
+    setRoomsMessage(t("roomRemoved"));
+    setRoomsMessageType("success");
     setTimeout(() => setRoomsMessage(""), 3000);
   };
 
@@ -313,12 +332,14 @@ export default function SettingsPage() {
     if (!editingRoom) return;
     const trimmed = editRoomValue.trim();
     if (!trimmed) {
-      setRoomsMessage("Room name cannot be empty");
+      setRoomsMessage(t("roomNameEmpty"));
+      setRoomsMessageType("error");
       setTimeout(() => setRoomsMessage(""), 3000);
       return;
     }
     if (trimmed !== editingRoom && rooms.includes(trimmed)) {
-      setRoomsMessage("Room already exists");
+      setRoomsMessage(t("roomExists"));
+      setRoomsMessageType("error");
       setTimeout(() => setRoomsMessage(""), 3000);
       return;
     }
@@ -333,28 +354,33 @@ export default function SettingsPage() {
     window.dispatchEvent(new CustomEvent("roomsConfigChanged"));
     setEditingRoom(null);
     setEditRoomValue("");
-    setRoomsMessage("Room updated successfully");
+    setRoomsMessage(t("roomUpdated"));
+    setRoomsMessageType("success");
     setTimeout(() => setRoomsMessage(""), 3000);
   };
 
   const handleResetRooms = () => {
     const defaultRooms = resetRooms();
     setRooms(defaultRooms);
-    setRoomsMessage("Rooms reset to default");
+    setRoomsMessage(t("roomsReset"));
+    setRoomsMessageType("success");
     setTimeout(() => setRoomsMessage(""), 3000);
   };
 
   const handleCleanupHandovers = async () => {
     setCleaningUp(true);
     setCleanupMessage("");
+    setCleanupMessageType(null);
     try {
       const result = await cleanupOldHandoversAPI(cleanupDays);
       setCleanupMessage(result.message);
+      setCleanupMessageType("success");
       setShowCleanupConfirm(false);
     } catch (error) {
       setCleanupMessage(
-        error instanceof Error ? error.message : "Failed to cleanup handovers",
+        error instanceof Error ? error.message : t("failedCleanupHandovers"),
       );
+      setCleanupMessageType("error");
     } finally {
       setCleaningUp(false);
       setTimeout(() => setCleanupMessage(""), 5000);
@@ -367,20 +393,23 @@ export default function SettingsPage() {
 
     // Validate file type
     if (!file.type.startsWith("image/")) {
-      setMessage("Please upload an image file");
+      setMessage(t("uploadImageFile"));
+      setMessageType("error");
       setTimeout(() => setMessage(""), 3000);
       return;
     }
 
     // Validate file size (max 2MB)
     if (file.size > 2 * 1024 * 1024) {
-      setMessage("File size must be less than 2MB");
+      setMessage(t("fileSizeLimit"));
+      setMessageType("error");
       setTimeout(() => setMessage(""), 3000);
       return;
     }
 
     if (!isAdmin) {
-      setMessage("Only admins can update the organization logo");
+      setMessage(t("adminOnlyLogo"));
+      setMessageType("error");
       setTimeout(() => setMessage(""), 3000);
       return;
     }
@@ -394,27 +423,29 @@ export default function SettingsPage() {
           const dataUrl = reader.result as string;
           await updateOrganizationLogo(dataUrl);
           setLogoUrl(dataUrl);
-          setMessage(
-            "Logo updated successfully! All organization members will see the new logo.",
-          );
+          setMessage(t("logoUpdated"));
+          setMessageType("success");
           setTimeout(() => setMessage(""), 5000);
         } catch (error) {
           setMessage(
-            error instanceof Error ? error.message : "Failed to upload logo",
+            error instanceof Error ? error.message : t("failedUploadLogo"),
           );
+          setMessageType("error");
           setTimeout(() => setMessage(""), 3000);
         } finally {
           setUploading(false);
         }
       };
       reader.onerror = () => {
-        setMessage("Failed to read file");
+        setMessage(t("failedReadFile"));
+        setMessageType("error");
         setTimeout(() => setMessage(""), 3000);
         setUploading(false);
       };
       reader.readAsDataURL(file);
     } catch (error) {
-      setMessage("Failed to upload logo");
+      setMessage(t("failedUploadLogo"));
+      setMessageType("error");
       setTimeout(() => setMessage(""), 3000);
       setUploading(false);
     }
@@ -422,7 +453,8 @@ export default function SettingsPage() {
 
   const handleReset = async () => {
     if (!isAdmin) {
-      setMessage("Only admins can reset the organization logo");
+      setMessage(t("adminOnlyResetLogo"));
+      setMessageType("error");
       setTimeout(() => setMessage(""), 3000);
       return;
     }
@@ -431,12 +463,12 @@ export default function SettingsPage() {
     try {
       await updateOrganizationLogo("");
       setLogoUrl(DEFAULT_LOGO);
-      setMessage("Logo reset to default.");
+      setMessage(t("logoReset"));
+      setMessageType("success");
       setTimeout(() => setMessage(""), 5000);
     } catch (error) {
-      setMessage(
-        error instanceof Error ? error.message : "Failed to reset logo",
-      );
+      setMessage(error instanceof Error ? error.message : t("failedResetLogo"));
+      setMessageType("error");
       setTimeout(() => setMessage(""), 3000);
     } finally {
       setUploading(false);
@@ -453,7 +485,8 @@ export default function SettingsPage() {
 
   const handleSaveWeeklyTargets = async () => {
     if (!isAdmin) {
-      setWeeklyTargetsMessage("Only admins can update weekly targets");
+      setWeeklyTargetsMessage(t("adminOnlyTargets"));
+      setWeeklyTargetsMessageType("error");
       setTimeout(() => setWeeklyTargetsMessage(""), 3000);
       return;
     }
@@ -464,7 +497,8 @@ export default function SettingsPage() {
       partTimeBiWeeklyTarget < 0 ||
       partTimeBiWeeklyTarget > 336
     ) {
-      setWeeklyTargetsMessage("Bi-weekly targets must be between 0 and 336");
+      setWeeklyTargetsMessage(t("biweeklyTargetsRange"));
+      setWeeklyTargetsMessageType("error");
       setTimeout(() => setWeeklyTargetsMessage(""), 3000);
       return;
     }
@@ -475,13 +509,13 @@ export default function SettingsPage() {
         fullTimeBiWeeklyTarget,
         partTimeBiWeeklyTarget,
       );
-      setWeeklyTargetsMessage("Bi-weekly targets saved successfully");
+      setWeeklyTargetsMessage(t("biweeklyTargetsSaved"));
+      setWeeklyTargetsMessageType("success");
     } catch (error) {
       setWeeklyTargetsMessage(
-        error instanceof Error
-          ? error.message
-          : "Failed to save weekly targets",
+        error instanceof Error ? error.message : t("failedSaveBiweeklyTargets"),
       );
+      setWeeklyTargetsMessageType("error");
     } finally {
       setSavingWeeklyTargets(false);
       setTimeout(() => setWeeklyTargetsMessage(""), 4000);
@@ -493,6 +527,8 @@ export default function SettingsPage() {
     if (!target) return;
     target.scrollIntoView({ behavior: "smooth", block: "start" });
   };
+
+  const SETTINGS_SECTIONS = getSettingsSections(t);
 
   if (!isLoaded) {
     return (
@@ -512,12 +548,12 @@ export default function SettingsPage() {
               className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4 transition-colors"
             >
               <ArrowLeft className="w-4 h-4" />
-              <span className="text-sm font-medium">Back</span>
+              <span className="text-sm font-medium">{t("back")}</span>
             </button>
-            <h1 className="text-3xl font-bold text-gray-900 mb-2">Settings</h1>
-            <p className="text-gray-600">
-              Customize your application preferences
-            </p>
+            <h1 className="text-3xl font-bold text-gray-900 mb-2">
+              {t("title")}
+            </h1>
+            <p className="text-gray-600">{t("customizePreferences")}</p>
           </div>
 
           <div className="sticky top-20 z-20 mb-6 rounded-lg border border-gray-200 bg-white/90 px-3 py-2 shadow-sm backdrop-blur-sm">
@@ -541,19 +577,19 @@ export default function SettingsPage() {
             className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
           >
             <h2 className="text-xl font-semibold text-gray-900 mb-4">
-              Logo Settings
+              {t("logoSettings")}
             </h2>
 
             {/* Current Logo Preview */}
             <div className="mb-6">
               <label className="block text-sm font-medium text-gray-700 mb-3">
-                Current Logo
+                {t("currentLogo")}
               </label>
               <div className="flex items-center gap-4">
                 <div className="w-32 h-32 border-2 border-gray-200 rounded-lg flex items-center justify-center bg-gray-50 p-4">
                   <img
                     src={logoUrl}
-                    alt="Current Logo"
+                    alt={t("currentLogo")}
                     className="max-w-full max-h-full object-contain"
                     onError={(e) => {
                       e.currentTarget.src = "/MCH Logo.png";
@@ -562,12 +598,10 @@ export default function SettingsPage() {
                 </div>
                 <div className="flex-1">
                   <p className="text-sm text-gray-600 mb-2">
-                    Upload a custom logo to replace the default Chronofy logo.
-                    The logo will appear in the header.
+                    {t("uploadCustomLogo")}
                   </p>
                   <p className="text-xs text-gray-500">
-                    Recommended: PNG or SVG format, transparent background, max
-                    2MB
+                    {t("logoRecommendations")}
                   </p>
                 </div>
               </div>
@@ -583,7 +617,7 @@ export default function SettingsPage() {
                   <div className="flex items-center gap-3">
                     <Upload className="w-5 h-5 text-gray-400 group-hover:text-blue-500" />
                     <span className="text-sm font-medium text-gray-600 group-hover:text-blue-600">
-                      {uploading ? "Uploading..." : "Click to upload new logo"}
+                      {uploading ? t("uploading") : t("clickToUpload")}
                     </span>
                   </div>
                   <input
@@ -602,7 +636,7 @@ export default function SettingsPage() {
                 className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
               >
                 <RefreshCw className="w-4 h-4" />
-                Reset to Default Logo
+                {t("resetToDefault")}
               </button>
             </div>
 
@@ -610,7 +644,7 @@ export default function SettingsPage() {
             {message && (
               <div
                 className={`mt-4 p-3 rounded-lg text-sm ${
-                  message.includes("successfully") || message.includes("reset")
+                  messageType === "success"
                     ? "bg-green-50 text-green-800 border border-green-200"
                     : "bg-red-50 text-red-800 border border-red-200"
                 }`}
@@ -629,7 +663,7 @@ export default function SettingsPage() {
               <div className="flex items-center gap-3 mb-4">
                 <Building2 className="w-6 h-6 text-blue-600" />
                 <h2 className="text-xl font-semibold text-gray-900">
-                  Organization Settings
+                  {t("organizationSettings")}
                 </h2>
               </div>
 
@@ -637,7 +671,7 @@ export default function SettingsPage() {
                 {/* Organization Name */}
                 <div>
                   <label className="block text-sm font-medium text-gray-600 mb-1">
-                    Organization Name
+                    {t("organizationName")}
                   </label>
                   <p className="text-gray-900 font-medium">
                     {currentOrganization.name}
@@ -647,7 +681,7 @@ export default function SettingsPage() {
                 {/* Your Role */}
                 <div>
                   <label className="block text-sm font-medium text-gray-600 mb-1">
-                    Your Role
+                    {t("yourRole")}
                   </label>
                   <span
                     className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize ${
@@ -658,7 +692,7 @@ export default function SettingsPage() {
                           : "bg-green-100 text-green-800"
                     }`}
                   >
-                    {currentMembership?.role || "Member"}
+                    {currentMembership?.role || t("member")}
                   </span>
                 </div>
 
@@ -666,17 +700,15 @@ export default function SettingsPage() {
                 {isAdmin && (
                   <div className="pt-4 border-t border-gray-200">
                     <label className="block text-sm font-medium text-gray-600 mb-2">
-                      Bi-weekly Hour Defaults
+                      {t("biweeklyHourDefaults")}
                     </label>
                     <p className="text-xs text-gray-500 mb-3">
-                      Set organization defaults used when creating Full-Time and
-                      Part-Time staff entries. Values are per bi-weekly (2-week)
-                      period.
+                      {t("biweeklyDefaultsDesc")}
                     </p>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
                       <div>
                         <label className="block text-xs font-medium text-gray-600 mb-1">
-                          Full-Time target (hours/bi-weekly)
+                          {t("fullTimeTarget")}
                         </label>
                         <input
                           type="number"
@@ -694,7 +726,7 @@ export default function SettingsPage() {
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-gray-600 mb-1">
-                          Part-Time target (hours/bi-weekly)
+                          {t("partTimeTarget")}
                         </label>
                         <input
                           type="number"
@@ -717,14 +749,14 @@ export default function SettingsPage() {
                       className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
                     >
                       {savingWeeklyTargets
-                        ? "Saving..."
-                        : "Save Bi-weekly Targets"}
+                        ? t("saving")
+                        : t("saveBiweeklyTargets")}
                     </button>
 
                     {weeklyTargetsMessage && (
                       <div
                         className={`mt-3 p-2 rounded-lg text-sm ${
-                          weeklyTargetsMessage.includes("success")
+                          weeklyTargetsMessageType === "success"
                             ? "bg-green-50 text-green-800 border border-green-200"
                             : "bg-red-50 text-red-800 border border-red-200"
                         }`}
@@ -740,11 +772,10 @@ export default function SettingsPage() {
                   <div className="pt-4 border-t border-gray-200">
                     <label className="block text-sm font-medium text-gray-600 mb-2">
                       <Users className="w-4 h-4 inline mr-1" />
-                      Team Invite Code
+                      {t("teamInviteCode")}
                     </label>
                     <p className="text-xs text-gray-500 mb-3">
-                      Share this code with team members so they can join your
-                      organization.
+                      {t("shareInviteCode")}
                     </p>
                     <div className="flex items-center gap-2">
                       <div className="flex-1 bg-gray-100 rounded-lg px-4 py-3 font-mono text-lg tracking-widest text-center font-semibold text-gray-800">
@@ -761,12 +792,12 @@ export default function SettingsPage() {
                         {copiedCode ? (
                           <>
                             <Check className="w-4 h-4" />
-                            Copied!
+                            {t("copied")}
                           </>
                         ) : (
                           <>
                             <Copy className="w-4 h-4" />
-                            Copy
+                            {t("copy")}
                           </>
                         )}
                       </button>
@@ -779,14 +810,13 @@ export default function SettingsPage() {
                   <div className="pt-4 border-t border-gray-200">
                     <label className="block text-sm font-medium text-gray-600 mb-2">
                       <Users className="w-4 h-4 inline mr-1" />
-                      Pending Approvals
+                      {t("pendingApprovalsCount")}
                       <span className="ml-2 inline-flex items-center justify-center w-5 h-5 text-xs font-bold text-white bg-amber-500 rounded-full">
                         {pendingMembers.length}
                       </span>
                     </label>
                     <p className="text-xs text-gray-500 mb-3">
-                      These users used your invite code and are waiting for your
-                      approval before they can access the system.
+                      {t("usedInviteCode")}
                     </p>
                     <div className="space-y-2">
                       {pendingMembers.map((member) => (
@@ -812,14 +842,16 @@ export default function SettingsPage() {
                               disabled={approvingId === member.id}
                               className="px-3 py-1.5 text-xs font-medium text-white bg-green-600 rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50"
                             >
-                              {approvingId === member.id ? "..." : "Approve"}
+                              {approvingId === member.id
+                                ? t("approving")
+                                : t("approveMember")}
                             </button>
                             <button
                               onClick={() => handleRejectMember(member.id)}
                               disabled={approvingId === member.id}
                               className="px-3 py-1.5 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors disabled:opacity-50"
                             >
-                              Reject
+                              {t("rejectMember")}
                             </button>
                           </div>
                         </div>
@@ -831,7 +863,7 @@ export default function SettingsPage() {
                 {isAdmin && loadingMembers && (
                   <div className="pt-4 border-t border-gray-200">
                     <p className="text-sm text-gray-400">
-                      Checking for pending member requests...
+                      {t("checkingPendingMembers")}
                     </p>
                   </div>
                 )}
@@ -841,11 +873,10 @@ export default function SettingsPage() {
                   <div className="pt-4 border-t border-gray-200">
                     <label className="block text-sm font-medium text-gray-600 mb-2">
                       <Users className="w-4 h-4 inline mr-1" />
-                      Transfer Admin Role
+                      {t("transferAdminRoleTitle")}
                     </label>
                     <p className="text-xs text-gray-500 mb-3">
-                      Transfer your admin role to another approved member. You
-                      will become a regular member after the transfer.
+                      {t("transferAdminRoleDesc")}
                     </p>
                     <div className="space-y-2">
                       {approvedMembers
@@ -878,8 +909,8 @@ export default function SettingsPage() {
                               className="px-3 py-1.5 text-xs font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50"
                             >
                               {transferringAdmin
-                                ? "Transferring..."
-                                : "Transfer Admin"}
+                                ? t("transferringAdmin")
+                                : t("transferAdminBtn")}
                             </button>
                           </div>
                         ))}
@@ -887,7 +918,7 @@ export default function SettingsPage() {
                         (m) => m.id !== currentMembership?.id,
                       ).length === 0 && (
                         <p className="text-sm text-gray-500 italic">
-                          No other approved members to transfer admin role to.
+                          {t("noOtherApprovedMembers")}
                         </p>
                       )}
                     </div>
@@ -911,22 +942,21 @@ export default function SettingsPage() {
                 <div className="pt-4 border-t border-gray-200">
                   <label className="block text-sm font-medium text-red-600 mb-1">
                     <DoorOpen className="w-4 h-4 inline mr-1" />
-                    Leave Organization
+                    {t("leaveOrganizationTitle")}
                   </label>
                   <p className="text-xs text-gray-500 mb-3">
-                    Remove yourself from{" "}
+                    {t("leaveOrganizationDescription")}{" "}
                     <span className="font-medium">
                       {currentOrganization.name}
                     </span>
-                    . You will lose access to all data within this organization.
-                    {isAdmin &&
-                      " As an admin, you can only leave if there is at least one other admin."}
+                    . {t("leaveOrganizationNote")}
+                    {isAdmin && " " + t("leaveOrganizationAdminNote")}
                   </p>
                   <button
                     onClick={async () => {
                       if (
                         !confirm(
-                          `Are you sure you want to leave "${currentOrganization.name}"? You will lose access to all organization data.`,
+                          t("confirmLeave", { name: currentOrganization.name }),
                         )
                       )
                         return;
@@ -934,13 +964,13 @@ export default function SettingsPage() {
                         await leaveOrganization(currentOrganization.id);
                         router.push("/dashboard");
                       } catch (err: any) {
-                        alert(err.message || "Failed to leave organization");
+                        alert(err.message || t("failedToLeave"));
                       }
                     }}
                     className="px-4 py-2 text-sm font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors"
                   >
                     <DoorOpen className="w-4 h-4 inline mr-1" />
-                    Leave Organization
+                    {t("leaveOrganizationTitle")}
                   </button>
                 </div>
               </div>
@@ -955,13 +985,11 @@ export default function SettingsPage() {
             <div className="flex items-center gap-3 mb-4">
               <Users className="w-6 h-6 text-emerald-600" />
               <h2 className="text-xl font-semibold text-gray-900">
-                Staffing Requirements Defaults
+                {t("staffingRequirementsDefaultsTitle")}
               </h2>
             </div>
             <p className="text-sm text-gray-600 mb-4">
-              Set the default minimum staff required per shift. These values
-              pre-fill the Staff Requirements table when creating a new
-              schedule.
+              {t("staffingRequirementsDefaultsDesc")}
             </p>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
               {DEFAULT_SHIFT_TYPES.map((shift) => (
@@ -990,23 +1018,23 @@ export default function SettingsPage() {
               <button
                 onClick={() => {
                   saveStaffingDefaults(staffingDefaults);
-                  setStaffingMessage("Staffing defaults saved");
+                  setStaffingMessage(t("staffingDefaultsSaved"));
                   setTimeout(() => setStaffingMessage(""), 3000);
                 }}
                 className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors"
               >
-                Save Defaults
+                {t("saveDefaults")}
               </button>
               <button
                 onClick={() => {
                   setStaffingDefaults({ ...DEFAULT_STAFF_REQUIREMENTS });
                   saveStaffingDefaults(DEFAULT_STAFF_REQUIREMENTS);
-                  setStaffingMessage("Reset to factory defaults");
+                  setStaffingMessage(t("resetToFactory"));
                   setTimeout(() => setStaffingMessage(""), 3000);
                 }}
                 className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
               >
-                Reset
+                {t("reset")}
               </button>
             </div>
             {staffingMessage && (
@@ -1023,16 +1051,16 @@ export default function SettingsPage() {
           >
             <div className="flex items-center gap-3 mb-4">
               <Users className="w-6 h-6 text-blue-600" />
-              <h2 className="text-xl font-semibold text-gray-900">Teams</h2>
+              <h2 className="text-xl font-semibold text-gray-900">
+                {t("teamsTitle")}
+              </h2>
             </div>
-            <p className="text-sm text-gray-600 mb-4">
-              Manage teams that can be assigned to patients and staff.
-            </p>
+            <p className="text-sm text-gray-600 mb-4">{t("manageTeams")}</p>
 
             {/* Current Teams */}
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Current Teams
+                {t("currentTeams")}
               </label>
               <div className="flex flex-wrap gap-2">
                 {teams.map((team) => (
@@ -1044,7 +1072,7 @@ export default function SettingsPage() {
                     <button
                       onClick={() => handleRemoveTeam(team)}
                       className="text-blue-600 hover:text-red-600 transition-colors"
-                      title="Remove team"
+                      title={t("removeTeam")}
                     >
                       <svg
                         className="w-4 h-4"
@@ -1068,7 +1096,7 @@ export default function SettingsPage() {
             {/* Add New Team */}
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Add New Team
+                {t("addNewTeam")}
               </label>
               <div className="flex gap-2">
                 <input
@@ -1081,14 +1109,14 @@ export default function SettingsPage() {
                       handleAddTeam();
                     }
                   }}
-                  placeholder="Enter team name..."
+                  placeholder={t("enterTeamName")}
                   className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
                 <button
                   onClick={handleAddTeam}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
                 >
-                  Add
+                  {tCommon("add")}
                 </button>
               </div>
             </div>
@@ -1099,16 +1127,14 @@ export default function SettingsPage() {
               className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
             >
               <RefreshCw className="w-4 h-4" />
-              Reset to Default Teams
+              {t("resetToDefaultTeams")}
             </button>
 
             {/* Teams Message */}
             {teamsMessage && (
               <div
                 className={`mt-4 p-3 rounded-lg text-sm ${
-                  teamsMessage.includes("successfully") ||
-                  teamsMessage.includes("reset") ||
-                  teamsMessage.includes("removed")
+                  teamsMessageType === "success"
                     ? "bg-green-50 text-green-800 border border-green-200"
                     : "bg-red-50 text-red-800 border border-red-200"
                 }`}
@@ -1126,20 +1152,19 @@ export default function SettingsPage() {
             >
               <div className="flex items-center gap-3 mb-4">
                 <DoorOpen className="w-6 h-6 text-green-600" />
-                <h2 className="text-xl font-semibold text-gray-900">Rooms</h2>
+                <h2 className="text-xl font-semibold text-gray-900">
+                  {t("roomsTitle")}
+                </h2>
                 <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
-                  Admin
+                  {t("admin")}
                 </span>
               </div>
-              <p className="text-sm text-gray-600 mb-4">
-                Manage rooms that can be assigned to patients. These rooms
-                appear as suggestions when adding patients.
-              </p>
+              <p className="text-sm text-gray-600 mb-4">{t("manageRooms")}</p>
 
               {/* Current Rooms */}
               <div className="mb-4">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Current Rooms
+                  {t("currentRooms")}
                 </label>
                 <div className="flex flex-wrap gap-2">
                   {rooms.map((room) => (
@@ -1168,7 +1193,7 @@ export default function SettingsPage() {
                           <button
                             onClick={handleSaveRoomEdit}
                             className="text-green-600 hover:text-green-800 transition-colors"
-                            title="Save"
+                            title={t("save")}
                           >
                             <Check className="w-4 h-4" />
                           </button>
@@ -1178,7 +1203,7 @@ export default function SettingsPage() {
                               setEditRoomValue("");
                             }}
                             className="text-gray-500 hover:text-gray-700 transition-colors"
-                            title="Cancel"
+                            title={t("cancel")}
                           >
                             <svg
                               className="w-4 h-4"
@@ -1201,7 +1226,7 @@ export default function SettingsPage() {
                           <button
                             onClick={() => handleEditRoom(room)}
                             className="text-green-600 hover:text-blue-600 transition-colors"
-                            title="Edit room"
+                            title={t("editRoom")}
                           >
                             <svg
                               className="w-4 h-4"
@@ -1220,7 +1245,7 @@ export default function SettingsPage() {
                           <button
                             onClick={() => handleRemoveRoom(room)}
                             className="text-green-600 hover:text-red-600 transition-colors"
-                            title="Remove room"
+                            title={t("removeRoom")}
                           >
                             <svg
                               className="w-4 h-4"
@@ -1246,7 +1271,7 @@ export default function SettingsPage() {
               {/* Add New Room */}
               <div className="mb-4">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Add New Room
+                  {t("addNewRoom")}
                 </label>
                 <div className="flex gap-2">
                   <input
@@ -1259,14 +1284,14 @@ export default function SettingsPage() {
                         handleAddRoom();
                       }
                     }}
-                    placeholder="Enter room number (e.g., B7.17)..."
+                    placeholder={t("enterRoomNumber")}
                     className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
                   />
                   <button
                     onClick={handleAddRoom}
                     className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
                   >
-                    Add
+                    {tCommon("add")}
                   </button>
                 </div>
               </div>
@@ -1277,17 +1302,14 @@ export default function SettingsPage() {
                 className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
               >
                 <RefreshCw className="w-4 h-4" />
-                Reset to Default Rooms
+                {t("resetToDefaultRooms")}
               </button>
 
               {/* Rooms Message */}
               {roomsMessage && (
                 <div
                   className={`mt-4 p-3 rounded-lg text-sm ${
-                    roomsMessage.includes("successfully") ||
-                    roomsMessage.includes("reset") ||
-                    roomsMessage.includes("removed") ||
-                    roomsMessage.includes("updated")
+                    roomsMessageType === "success"
                       ? "bg-green-50 text-green-800 border border-green-200"
                       : "bg-red-50 text-red-800 border border-red-200"
                   }`}
@@ -1306,17 +1328,17 @@ export default function SettingsPage() {
             <div className="flex items-center gap-3 mb-4">
               <Trash2 className="w-6 h-6 text-red-600" />
               <h2 className="text-xl font-semibold text-gray-900">
-                Data Management
+                {t("dataManagement")}
               </h2>
             </div>
             <p className="text-sm text-gray-600 mb-4">
-              Clean up old hand-off reports to keep your database manageable.
+              {t("cleanupOldHandoffs")}
             </p>
 
             {/* Cleanup Days Selector */}
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Keep hand-offs from the last
+                {t("keepHandoffsFromLast")}
               </label>
               <div className="flex items-center gap-3">
                 <select
@@ -1324,16 +1346,16 @@ export default function SettingsPage() {
                   onChange={(e) => setCleanupDays(Number(e.target.value))}
                   className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 >
-                  <option value={7}>7 days</option>
-                  <option value={14}>14 days</option>
-                  <option value={30}>30 days</option>
-                  <option value={60}>60 days</option>
-                  <option value={90}>90 days</option>
-                  <option value={180}>180 days</option>
-                  <option value={365}>1 year</option>
+                  <option value={7}>{`7 ${t("days")}`}</option>
+                  <option value={14}>{`14 ${t("days")}`}</option>
+                  <option value={30}>{`30 ${t("days")}`}</option>
+                  <option value={60}>{`60 ${t("days")}`}</option>
+                  <option value={90}>{`90 ${t("days")}`}</option>
+                  <option value={180}>{`180 ${t("days")}`}</option>
+                  <option value={365}>{`365 ${t("days")}`}</option>
                 </select>
                 <span className="text-sm text-gray-500">
-                  (older hand-offs will be deleted)
+                  {t("olderHandoffsDeleted")}
                 </span>
               </div>
             </div>
@@ -1345,7 +1367,7 @@ export default function SettingsPage() {
                 className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-700 bg-red-50 rounded-lg hover:bg-red-100 transition-colors border border-red-200"
               >
                 <Trash2 className="w-4 h-4" />
-                Clean Up Old Hand-offs
+                {t("cleanUpOldHandoffs")}
               </button>
             ) : (
               <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
@@ -1353,12 +1375,10 @@ export default function SettingsPage() {
                   <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
                   <div>
                     <p className="font-medium text-red-800">
-                      Are you sure you want to delete old hand-offs?
+                      {t("confirmDeleteHandoffs")}
                     </p>
                     <p className="text-sm text-red-700 mt-1">
-                      This will permanently delete all hand-off reports older
-                      than <strong>{cleanupDays} days</strong>. This action
-                      cannot be undone.
+                      {t("deleteHandoffsWarning", { days: cleanupDays })}
                     </p>
                   </div>
                 </div>
@@ -1371,12 +1391,12 @@ export default function SettingsPage() {
                     {cleaningUp ? (
                       <>
                         <RefreshCw className="w-4 h-4 animate-spin" />
-                        Deleting...
+                        {t("deleting")}
                       </>
                     ) : (
                       <>
                         <Trash2 className="w-4 h-4" />
-                        Yes, Delete Old Hand-offs
+                        {t("yesDeleteHandoffs")}
                       </>
                     )}
                   </button>
@@ -1385,7 +1405,7 @@ export default function SettingsPage() {
                     disabled={cleaningUp}
                     className="px-4 py-2 text-sm font-medium text-gray-700 bg-white rounded-lg hover:bg-gray-100 transition-colors border border-gray-300 disabled:opacity-50"
                   >
-                    Cancel
+                    {tCommon("cancel")}
                   </button>
                 </div>
               </div>
@@ -1395,7 +1415,7 @@ export default function SettingsPage() {
             {cleanupMessage && (
               <div
                 className={`mt-4 p-3 rounded-lg text-sm ${
-                  cleanupMessage.includes("Deleted")
+                  cleanupMessageType === "success"
                     ? "bg-green-50 text-green-800 border border-green-200"
                     : "bg-red-50 text-red-800 border border-red-200"
                 }`}
@@ -1411,12 +1431,12 @@ export default function SettingsPage() {
             className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6"
           >
             <h2 className="text-xl font-semibold text-gray-900 mb-4">
-              Account Information
+              {t("accountInformation")}
             </h2>
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-medium text-gray-600">
-                  Email
+                  {t("email")}
                 </label>
                 <p className="text-gray-900">
                   {user?.primaryEmailAddress?.emailAddress || "N/A"}
@@ -1424,7 +1444,7 @@ export default function SettingsPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-600">
-                  Name
+                  {t("name")}
                 </label>
                 <p className="text-gray-900">{user?.fullName || "N/A"}</p>
               </div>

@@ -137,6 +137,7 @@ export async function parseImageWithFastAPI(
   file: File,
   startDate: string,
   endDate: string,
+  headers?: Record<string, string>,
 ): Promise<any> {
   const formData = new FormData();
   formData.append("file", file);
@@ -146,6 +147,7 @@ export async function parseImageWithFastAPI(
   const data = await apiRequest<any>("/schedules/upload-schedule/", {
     method: "POST",
     body: formData,
+    headers,
     // OCR upload/parse can take longer for larger screenshots
     timeoutMs: 180000,
   });
@@ -1019,13 +1021,16 @@ export interface HandoverUpdate {
   is_completed?: boolean;
 }
 
-export async function fetchHandoversAPI(params?: {
-  shift_date?: string;
-  shift_type?: ShiftType;
-  is_completed?: boolean;
-  patient_id?: string;
-  outgoing_nurse?: string;
-}): Promise<{ handovers: Handover[]; total: number }> {
+export async function fetchHandoversAPI(
+  params?: {
+    shift_date?: string;
+    shift_type?: ShiftType;
+    is_completed?: boolean;
+    patient_id?: string;
+    outgoing_nurse?: string;
+  },
+  headers?: Record<string, string>,
+): Promise<{ handovers: Handover[]; total: number }> {
   const searchParams = new URLSearchParams();
   if (params?.shift_date) searchParams.set("shift_date", params.shift_date);
   if (params?.shift_type) searchParams.set("shift_type", params.shift_type);
@@ -1035,7 +1040,9 @@ export async function fetchHandoversAPI(params?: {
   if (params?.outgoing_nurse)
     searchParams.set("outgoing_nurse", params.outgoing_nurse);
 
-  const res = await fetch(`${API_BASE}/handovers/?${searchParams}`);
+  const res = await fetch(`${API_BASE}/handovers/?${searchParams}`, {
+    headers,
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => null);
     throw new Error(err?.detail || "Failed to fetch handovers");
@@ -1255,16 +1262,19 @@ export async function previewConstraintsAPI(payload: any): Promise<any> {
   });
 }
 
-export async function optimizeWithConstraintsAPI(payload: {
-  constraints: any;
-  assignments?: any;
-  nurses?: any;
-  schedule_id?: string;
-  save_to_db?: boolean;
-}): Promise<any> {
+export async function optimizeWithConstraintsAPI(
+  payload: {
+    constraints: any;
+    assignments?: any;
+    nurses?: any;
+    schedule_id?: string;
+    save_to_db?: boolean;
+  },
+  headers?: Record<string, string>,
+): Promise<any> {
   return apiRequest<any>("/optimize/optimize-with-constraints", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
     body: JSON.stringify(payload),
     timeoutMs: 300000,
   });

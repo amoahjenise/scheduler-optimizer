@@ -2,6 +2,7 @@
 
 import React, { Dispatch, SetStateAction, useState } from "react";
 import { motion } from "framer-motion";
+import { useTranslations } from "next-intl";
 import { SchedulePeriodInput } from "../components";
 import { PreferenceImportPanel } from "../components/PreferenceImportPanel";
 import { TemplatePicker } from "../components/ScheduleTemplateManager";
@@ -65,6 +66,7 @@ export default function SetupStep({
   onTemplateSelect,
   onTemplateDelete,
 }: SetupStepProps) {
+  const t = useTranslations("scheduler");
   const [localSource, setLocalSource] =
     useState<PreferenceSource>(preferenceSource);
   const activeSource = onPreferenceSourceChange
@@ -100,10 +102,10 @@ export default function SetupStep({
       {/* ── Preference Source Selector ── */}
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         <h2 className="text-lg font-semibold text-gray-900 mb-2 flex items-center gap-2">
-          <span className="text-xl">📊</span> 2. Schedule Input Method
+          <span className="text-xl">📊</span> {t("scheduleInputMethodTitle")}
         </h2>
         <p className="text-gray-500 text-sm mb-4">
-          Choose how to provide nurse schedule data for optimization.
+          {t("scheduleInputMethodDesc")}
         </p>
 
         <div className="grid grid-cols-3 gap-3">
@@ -126,10 +128,10 @@ export default function SetupStep({
             <span
               className={`text-sm font-medium ${activeSource === "ocr" ? "text-blue-700" : "text-gray-700"}`}
             >
-              Upload Schedule Images
+              {t("uploadScheduleImages")}
             </span>
             <span className="text-xs text-gray-500 text-center">
-              Scan existing paper/PDF schedules with OCR
+              {t("scanExistingSchedules")}
             </span>
             {activeSource === "ocr" && (
               <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-blue-500" />
@@ -155,10 +157,10 @@ export default function SetupStep({
             <span
               className={`text-sm font-medium ${activeSource === "import" ? "text-green-700" : "text-gray-700"}`}
             >
-              Import Preferences
+              {t("importPreferences")}
             </span>
             <span className="text-xs text-gray-500 text-center">
-              CSV/Excel from eEspresso, paste, or manual entry
+              {t("importPreferencesDesc")}
             </span>
             {activeSource === "import" && (
               <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-green-500" />
@@ -184,10 +186,10 @@ export default function SetupStep({
             <span
               className={`text-sm font-medium ${activeSource === "template" ? "text-purple-700" : "text-gray-700"}`}
             >
-              From Template
+              {t("fromTemplate")}
             </span>
             <span className="text-xs text-gray-500 text-center">
-              Start from a previously saved schedule
+              {t("fromTemplateDesc")}
             </span>
             {templates.length > 0 && (
               <span className="absolute top-2 left-2 px-1.5 py-0.5 text-[10px] font-medium rounded-full bg-purple-100 text-purple-600">
@@ -205,11 +207,10 @@ export default function SetupStep({
       {activeSource === "ocr" && (
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-2 flex items-center gap-2">
-            <span className="text-xl">📷</span> Upload Schedule Images
+            <span className="text-xl">📷</span> {t("uploadScheduleImages")}
           </h2>
           <p className="text-gray-500 text-sm mb-4">
-            Upload screenshots or photos of your current schedule. We&apos;ll
-            extract the data using OCR.
+            {t("uploadScheduleImagesDesc")}
           </p>
 
           <UploadInput
@@ -293,11 +294,10 @@ export default function SetupStep({
       {activeSource === "template" && (
         <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="text-lg font-semibold text-gray-900 mb-2 flex items-center gap-2">
-            <span className="text-xl">📂</span> Load from Template
+            <span className="text-xl">📂</span> {t("loadFromTemplate")}
           </h2>
           <p className="text-gray-500 text-sm mb-4">
-            Select a previously saved schedule template. The nurse roster and
-            shift pattern will be projected onto your selected date range.
+            {t("loadFromTemplateDesc")}
           </p>
           <TemplatePicker
             templates={templates}

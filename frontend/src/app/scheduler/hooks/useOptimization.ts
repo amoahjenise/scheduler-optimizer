@@ -27,6 +27,7 @@ interface UseOptimizationOptions {
   requiredStaff?: Record<string, Record<string, number>>;
   startDate?: string;
   endDate?: string;
+  getAuthHeaders?: () => Promise<Record<string, string>>;
   onOptimized?: (data: {
     grid: GridRow[];
     scheduleId?: string;
@@ -52,6 +53,7 @@ export function useOptimization({
   requiredStaff,
   startDate,
   endDate,
+  getAuthHeaders,
   onOptimized,
 }: UseOptimizationOptions) {
   const [optimizing, setOptimizing] = useState(false);
@@ -361,12 +363,15 @@ export function useOptimization({
         }
 
         const guardedData = await Promise.race([
-          optimizeWithConstraintsAPI({
-            constraints: constraintsWithHours,
-            assignments,
-            nurses,
-            schedule_id: savedScheduleId || undefined,
-          }),
+          optimizeWithConstraintsAPI(
+            {
+              constraints: constraintsWithHours,
+              assignments,
+              nurses,
+              schedule_id: savedScheduleId || undefined,
+            },
+            getAuthHeaders ? await getAuthHeaders() : undefined,
+          ),
           new Promise((resolve) =>
             setTimeout(() => resolve({ __timed_out: true }), 45000),
           ),
@@ -447,6 +452,7 @@ export function useOptimization({
       resolveDefaultMaxWeeklyHours,
       fullTimeBiWeeklyTarget,
       partTimeBiWeeklyTarget,
+      getAuthHeaders,
       onOptimized,
     ],
   );

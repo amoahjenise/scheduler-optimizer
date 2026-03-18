@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useUser } from "@clerk/nextjs";
+import { useTranslations, useLocale } from "next-intl";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { Calendar, Clock, Users, Eye, CheckCircle, Pencil } from "lucide-react";
@@ -10,7 +11,14 @@ import { useOrganization } from "../context/OrganizationContext";
 
 export default function SchedulesPage() {
   const { user } = useUser();
-  const { currentOrganization, isAdmin, getAuthHeaders } = useOrganization();
+  const t = useTranslations("schedules");
+  const locale = useLocale();
+  const {
+    currentOrganization,
+    isAdmin,
+    getAuthHeaders,
+    isLoading: orgLoading,
+  } = useOrganization();
   const [schedules, setSchedules] = useState<OptimizedSchedule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -28,13 +36,15 @@ export default function SchedulesPage() {
         setSchedules(filtered);
       } catch (err) {
         console.error("Failed to load schedules:", err);
-        setError("Failed to load schedules");
+        setError(t("failedToLoadSchedules"));
       } finally {
         setLoading(false);
       }
     }
-    loadSchedules();
-  }, [isAdmin, getAuthHeaders]);
+    if (user?.id && !orgLoading && currentOrganization) {
+      loadSchedules();
+    }
+  }, [user?.id, isAdmin, orgLoading, currentOrganization, getAuthHeaders]);
 
   const formatDate = (dateStr: string) => {
     const normalized = /^\d{4}-\d{2}-\d{2}$/.test(dateStr)
@@ -42,7 +52,7 @@ export default function SchedulesPage() {
       : dateStr;
     const parsed = new Date(normalized);
     if (Number.isNaN(parsed.getTime())) return "N/A";
-    return parsed.toLocaleDateString("en-US", {
+    return parsed.toLocaleDateString(locale, {
       month: "short",
       day: "numeric",
       year: "numeric",
@@ -101,17 +111,17 @@ export default function SchedulesPage() {
             href="/dashboard"
             className="text-sm text-blue-600 hover:underline mb-1 inline-block"
           >
-            ← Back to Dashboard
+            {t("backToDashboard")}
           </Link>
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-semibold text-gray-900">
-                {isAdmin ? "All Schedules" : "Team Schedules"}
+                {isAdmin ? t("allSchedules") : t("teamSchedules")}
               </h1>
               <p className="text-gray-500 text-sm mt-1">
                 {isAdmin
-                  ? "View and manage all schedules"
-                  : "View finalized schedules for your team"}
+                  ? t("viewManageAllSchedules")
+                  : t("viewFinalizedSchedules")}
               </p>
             </div>
             {isAdmin && (
@@ -120,14 +130,14 @@ export default function SchedulesPage() {
                   href="/scheduler?manageTemplates=1"
                   className="inline-flex items-center gap-2 px-4 py-2.5 bg-white text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
                 >
-                  🗂 Manage Templates
+                  {t("manageTemplates")}
                 </Link>
                 <Link
                   href="/scheduler?new=1"
                   className="inline-flex items-center gap-2 px-4 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
                 >
                   <Calendar className="w-4 h-4" />
-                  Create New Schedule
+                  {t("createNewSchedule")}
                 </Link>
               </div>
             )}
@@ -147,12 +157,10 @@ export default function SchedulesPage() {
           <div className="bg-white rounded-2xl border border-gray-200 p-12 text-center">
             <Calendar className="w-16 h-16 mx-auto mb-4 text-gray-300" />
             <h3 className="text-lg font-semibold text-gray-900 mb-2">
-              No Schedules Available
+              {t("noSchedulesAvailable")}
             </h3>
             <p className="text-gray-500 mb-6">
-              {isAdmin
-                ? "Create your first schedule using the Schedule Optimizer"
-                : "No finalized schedules have been published yet"}
+              {isAdmin ? t("noSchedulesDesc") : t("noSchedulesNonAdminDesc")}
             </p>
             {isAdmin && (
               <div className="flex items-center justify-center gap-2">
@@ -160,14 +168,14 @@ export default function SchedulesPage() {
                   href="/scheduler?manageTemplates=1"
                   className="inline-flex items-center gap-2 px-4 py-2 bg-white text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
                 >
-                  🗂 Manage Templates
+                  {t("manageTemplates")}
                 </Link>
                 <Link
                   href="/scheduler?new=1"
                   className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
                 >
                   <Calendar className="w-4 h-4" />
-                  Create Schedule
+                  {t("createSchedule")}
                 </Link>
               </div>
             )}
@@ -214,11 +222,11 @@ export default function SchedulesPage() {
                         {schedule.is_finalized && (
                           <span className="flex items-center gap-1 text-emerald-600">
                             <CheckCircle className="w-3.5 h-3.5" />
-                            Finalized
+                            {t("finalized")}
                           </span>
                         )}
                         {!schedule.is_finalized && isAdmin && (
-                          <span className="text-amber-600">Draft</span>
+                          <span className="text-amber-600">{t("draft")}</span>
                         )}
                       </div>
                     </div>
@@ -231,7 +239,7 @@ export default function SchedulesPage() {
                         className="flex items-center gap-2 px-4 py-2 text-emerald-600 border border-emerald-200 rounded-lg hover:bg-emerald-50 transition-colors"
                       >
                         <Eye className="w-4 h-4" />
-                        View
+                        {t("view")}
                       </Link>
                     ) : isAdmin ? (
                       <Link
@@ -239,7 +247,7 @@ export default function SchedulesPage() {
                         className="flex items-center gap-2 px-4 py-2 text-amber-600 border border-amber-200 rounded-lg hover:bg-amber-50 transition-colors"
                       >
                         <Pencil className="w-4 h-4" />
-                        Edit Draft
+                        {t("editDraft")}
                       </Link>
                     ) : null}
                   </div>

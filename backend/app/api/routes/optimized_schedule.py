@@ -200,16 +200,18 @@ def _scoped_schedule_query(
 ):
     """Build a schedule query scoped to the authenticated organization when present."""
     query = db.query(OptimizedSchedule)
+    
+    # Security check first - if no auth/organization, return empty query
+    if not (auth.is_authenticated and auth.organization_id):
+        # Return a query that will never match anything
+        return query.filter(OptimizedSchedule.id.is_(None))
+    
+    # Apply organization filter for authenticated users
+    query = query.filter(OptimizedSchedule.organization_id == auth.organization_id)
+    
+    # Apply schedule ID filter if provided
     if schedule_id:
         query = query.filter(OptimizedSchedule.id == schedule_id)
-
-    if auth.is_authenticated and auth.organization_id:
-        # Filter strictly by organization - no legacy NULL fallback to prevent data leakage
-        query = query.filter(OptimizedSchedule.organization_id == auth.organization_id)
-    else:
-        # No auth or no organization -> ensure no data is returned
-        # Use an impossible filter to guarantee empty result
-        query = query.filter(OptimizedSchedule.id == "no-access-without-org")
 
     return query
 

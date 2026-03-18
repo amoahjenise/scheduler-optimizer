@@ -6,6 +6,7 @@ import { PatientFieldConfig } from "../../lib/patientConfig";
 import { loadRooms } from "../../lib/roomsConfig";
 import { loadTeams, DEFAULT_TEAMS } from "../../lib/teamsConfig";
 import { loadDiagnoses, addDiagnosis } from "../../lib/diagnosesConfig";
+import { useOrganization } from "../../context/OrganizationContext";
 
 interface AddPatientModalProps {
   onClose: () => void;
@@ -30,6 +31,7 @@ export default function AddPatientModal({
   onPatientAdded,
   config,
 }: AddPatientModalProps) {
+  const { getAuthHeaders } = useOrganization();
   const [formData, setFormData] = useState<PatientCreate>({
     mrn: "",
     first_name: "",
@@ -142,7 +144,10 @@ export default function AddPatientModal({
             : teamSuffix
           : formData.diagnosis,
       };
-      const patient = await createPatientAPI(patientData);
+      const patient = await createPatientAPI(
+        patientData,
+        await getAuthHeaders(),
+      );
       onPatientAdded(patient);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create patient");

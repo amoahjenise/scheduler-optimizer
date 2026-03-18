@@ -17,6 +17,7 @@ interface UseOCROptions {
   userId: string;
   startDate: string;
   endDate: string;
+  getToken?: () => Promise<string | null>;
   onComplete?: (data: {
     dates: string[];
     grid: GridRow[];
@@ -33,6 +34,7 @@ export function useOCR({
   userId,
   startDate,
   endDate,
+  getToken,
   onComplete,
   onNewNursesDetected,
 }: UseOCROptions) {
@@ -241,10 +243,16 @@ export function useOCR({
       // Check for new nurses not yet in the database
       if (userId && onNewNursesDetected) {
         try {
+          const token = getToken ? await getToken() : null;
+          const authHeaders = token
+            ? { Authorization: `Bearer ${token}` }
+            : undefined;
           const { nurses: existingNurses } = await listNursesAPI(
             userId,
             1,
             1000,
+            undefined,
+            authHeaders,
           );
           const existingNames = new Set(
             existingNurses.map((n) => n.name.toLowerCase().trim()),

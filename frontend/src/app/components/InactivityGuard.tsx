@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { useTranslations } from "next-intl";
 import { clearSensitiveData } from "../lib/sessionCleanup";
 
 const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -23,6 +24,7 @@ const SIGNOUT_INFO_KEY = "hipaa-signout-info";
  */
 export default function InactivityGuard() {
   const { signOut, isSignedIn } = useAuth();
+  const t = useTranslations("inactivity");
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const warningTimerRef = useRef<NodeJS.Timeout | null>(null);
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
@@ -66,8 +68,7 @@ export default function InactivityGuard() {
         minute: "2-digit",
         second: "2-digit",
       }),
-      reason:
-        "Your session was automatically ended due to inactivity to protect patient data (HIPAA compliance).",
+      reason: t("autoEndedReason"),
     };
     try {
       localStorage.setItem(SIGNOUT_INFO_KEY, JSON.stringify(info));
@@ -219,7 +220,7 @@ export default function InactivityGuard() {
                 />
               </svg>
               <h2 className="text-lg font-semibold text-white">
-                Session Ended
+                {t("sessionEnded")}
               </h2>
             </div>
           </div>
@@ -241,7 +242,7 @@ export default function InactivityGuard() {
                 />
               </svg>
               <span className="text-sm font-medium text-gray-600">
-                Signed out at {signoutInfo.time}
+                {t("signedOutAt", { time: signoutInfo.time })}
               </span>
             </div>
 
@@ -253,7 +254,7 @@ export default function InactivityGuard() {
               onClick={() => setSignoutInfo(null)}
               className="w-full px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
             >
-              OK
+              {t("ok")}
             </button>
           </div>
         </div>
@@ -284,18 +285,17 @@ export default function InactivityGuard() {
                   d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                 />
               </svg>
-              <h2 className="text-lg font-semibold text-white">Still Here?</h2>
+              <h2 className="text-lg font-semibold text-white">
+                {t("stillHere")}
+              </h2>
             </div>
           </div>
 
           <div className="px-6 py-5">
             <p className="text-gray-700 text-sm leading-relaxed mb-2">
-              Your session was about to expire due to inactivity.
+              {t("aboutToExpire")}
             </p>
-            <p className="text-gray-500 text-xs mb-5">
-              Click <strong>Resume</strong> to continue your session, or sign
-              out now.
-            </p>
+            <p className="text-gray-500 text-xs mb-5">{t("resumeOrSignOut")}</p>
 
             {/* Frozen countdown ring (visual indicator of where it stopped) */}
             <div className="flex items-center justify-center mb-5">
@@ -327,13 +327,13 @@ export default function InactivityGuard() {
                 onClick={resetTimers}
                 className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
               >
-                Resume
+                {t("resume")}
               </button>
               <button
                 onClick={doLogout}
                 className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
               >
-                Sign Out
+                {t("signOut")}
               </button>
             </div>
           </div>
@@ -363,14 +363,14 @@ export default function InactivityGuard() {
               />
             </svg>
             <h2 className="text-lg font-semibold text-white">
-              Session Expiring
+              {t("sessionExpiring")}
             </h2>
           </div>
         </div>
 
         <div className="px-6 py-5">
           <p className="text-gray-700 text-sm leading-relaxed">
-            For patient data security, your session will end due to inactivity.
+            {t("forSecurity")}
           </p>
 
           {/* Countdown */}
@@ -399,7 +399,7 @@ export default function InactivityGuard() {
           </div>
 
           <p className="text-xs text-gray-500 text-center mb-4">
-            Move your mouse or press any key to stay signed in.
+            {t("moveMouseToStay")}
           </p>
 
           <div className="flex gap-3">
@@ -407,13 +407,13 @@ export default function InactivityGuard() {
               onClick={resetTimers}
               className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
             >
-              Stay Signed In
+              {t("resume")}
             </button>
             <button
               onClick={doLogout}
               className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
             >
-              Sign Out Now
+              {t("signOutNow")}
             </button>
           </div>
         </div>

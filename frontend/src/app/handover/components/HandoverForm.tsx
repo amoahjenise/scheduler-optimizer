@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useUser } from "@clerk/nextjs";
+import { useTranslations } from "next-intl";
 import {
   Patient,
   Handover,
@@ -13,6 +14,7 @@ import {
   updateHandoverAPI,
   completeHandoverAPI,
 } from "../../lib/api";
+import { useOrganization } from "../../context/OrganizationContext";
 import SmartTextInput from "../../components/SmartTextInput";
 import LabTrendBanner from "./LabTrendBanner";
 import CarriedForwardBanner from "./CarriedForwardBanner";
@@ -585,7 +587,9 @@ export default function HandoverForm({
   readOnly = false,
   previousHandover = null,
 }: HandoverFormProps) {
+  const t = useTranslations("handover");
   const { user } = useUser();
+  const { getAuthHeaders } = useOrganization();
   const isFormReadOnly = readOnly || handover.is_completed;
   // Load patient field configuration
   const [patientConfig, setPatientConfig] = useState<PatientFieldConfig>(() =>
@@ -961,7 +965,12 @@ export default function HandoverForm({
         const updateData: Record<string, string> = {
           [handoverField]: newValue,
         };
-        const updated = await updateHandoverAPI(handover.id, updateData as any);
+        const authHeaders = await getAuthHeaders();
+        const updated = await updateHandoverAPI(
+          handover.id,
+          updateData as any,
+          authHeaders,
+        );
         onSave(updated);
         // Also notify parent about the "patient" change for display purposes
         if (onPatientUpdate) {
@@ -983,7 +992,12 @@ export default function HandoverForm({
     setSaving(true);
     setSaveStatus("saving");
     try {
-      const updated = await updateHandoverAPI(handover.id, formData);
+      const authHeaders = await getAuthHeaders();
+      const updated = await updateHandoverAPI(
+        handover.id,
+        formData,
+        authHeaders,
+      );
       onSave(updated);
       setLastSaved(new Date());
       setSaveStatus("saved");
@@ -1060,16 +1074,23 @@ export default function HandoverForm({
     try {
       // Persist unsaved form changes first
       if (isDirty) {
-        const updated = await updateHandoverAPI(handover.id, formData);
+        const authHeaders = await getAuthHeaders();
+        const updated = await updateHandoverAPI(
+          handover.id,
+          formData,
+          authHeaders,
+        );
         onSave(updated);
         setLastSaved(new Date());
         setIsDirty(false);
         initialDataRef.current = JSON.stringify(formData);
       }
 
+      const authHeadersComplete = await getAuthHeaders();
       const completed = await completeHandoverAPI(
         handover.id,
         resolvedIncomingNurse,
+        authHeadersComplete,
       );
       onSave(completed);
       setSaveStatus("saved");
@@ -1168,7 +1189,7 @@ export default function HandoverForm({
           {isDirty && !isFormReadOnly && (
             <span className="ml-auto flex items-center gap-1 text-xs text-amber-600 font-medium">
               <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse" />
-              Unsaved
+              {t("unsaved")}
             </span>
           )}
         </div>
@@ -1188,7 +1209,7 @@ export default function HandoverForm({
           {saveStatus === "saving" && (
             <span className="flex items-center gap-2">
               <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
-              Saving...
+              {t("saving")}
             </span>
           )}
           {saveStatus === "saved" && (
@@ -1200,10 +1221,10 @@ export default function HandoverForm({
                   clipRule="evenodd"
                 />
               </svg>
-              Saved
+              {t("saved")}
             </span>
           )}
-          {saveStatus === "error" && "Save failed - will retry"}
+          {saveStatus === "error" && t("saveFailedRetry")}
         </div>
       )}
 
@@ -3336,7 +3357,7 @@ export default function HandoverForm({
             {saveStatus === "saving" && (
               <>
                 <span className="animate-spin h-3 w-3 border-2 border-blue-500 border-t-transparent rounded-full" />
-                Saving...
+                {t("saving")}
               </>
             )}
             {saveStatus === "saved" && (
@@ -3352,14 +3373,14 @@ export default function HandoverForm({
                     clipRule="evenodd"
                   />
                 </svg>
-                Saved
+                {t("saved")}
               </>
             )}
-            {saveStatus === "error" && "Save failed"}
+            {saveStatus === "error" && t("saveFailed")}
             {saveStatus === "idle" && (
               <>
                 <span className="w-2 h-2 bg-green-500 rounded-full" />
-                Auto-save on
+                {t("autoSaveOn")}
               </>
             )}
           </div>
@@ -3410,12 +3431,12 @@ export default function HandoverForm({
                     d="M5 13l4 4L19 7"
                   />
                 </svg>
-                Completed
+                {t("completed")}
               </>
             ) : completing ? (
               <>
                 <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
-                Completing...
+                {t("completing")}
               </>
             ) : (
               <>
@@ -3432,7 +3453,7 @@ export default function HandoverForm({
                     d="M5 13l4 4L19 7"
                   />
                 </svg>
-                Mark Complete
+                {t("markComplete")}
               </>
             )}
           </button>
@@ -3467,7 +3488,7 @@ export default function HandoverForm({
                 d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"
               />
             </svg>
-            Preview &amp; Print
+            {t("previewAndPrint")}
           </button>
           <button
             onClick={() => saveForm()}
@@ -3481,7 +3502,7 @@ export default function HandoverForm({
             {saving ? (
               <>
                 <span className="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full" />
-                Saving...
+                {t("saving")}
               </>
             ) : (
               <>
@@ -3498,7 +3519,7 @@ export default function HandoverForm({
                     d="M5 13l4 4L19 7"
                   />
                 </svg>
-                Save Now
+                {t("saveNow")}
               </>
             )}
           </button>
