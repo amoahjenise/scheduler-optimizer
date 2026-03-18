@@ -11,6 +11,7 @@ import { PatientFieldConfig } from "../../lib/patientConfig";
 import { loadRooms } from "../../lib/roomsConfig";
 import { loadTeams, DEFAULT_TEAMS } from "../../lib/teamsConfig";
 import { loadDiagnoses, addDiagnosis } from "../../lib/diagnosesConfig";
+import { useOrganization } from "../../context/OrganizationContext";
 
 interface NewHandoffReportModalProps {
   onClose: () => void;
@@ -39,6 +40,7 @@ export default function NewHandoffReportModal({
   shiftType,
   outgoingNurse,
 }: NewHandoffReportModalProps) {
+  const { getAuthHeaders } = useOrganization();
   const [formData, setFormData] = useState({
     first_name: "",
     last_name: "",
@@ -165,7 +167,8 @@ export default function NewHandoffReportModal({
         p_attending_physician: formData.attending_physician.trim() || undefined,
       };
 
-      const handover = await createHandoverAPI(handoverData);
+      const authHeaders = await getAuthHeaders();
+      const handover = await createHandoverAPI(handoverData, authHeaders);
       onHandoverCreated(handover);
     } catch (err) {
       setError(

@@ -33,8 +33,8 @@ router = APIRouter(prefix="/api/scheduling", tags=["scheduling"])
 @router.post("/demands", response_model=ScheduleDemandResponse)
 def create_demand(
     demand: ScheduleDemandCreate,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Create a schedule demand for a specific shift/date."""
     if not auth or not auth.organization_id:
@@ -61,10 +61,10 @@ def create_demand(
 
 @router.get("/demands", response_model=ScheduleDemandList)
 def list_demands(
+    auth: OrgAuth,
     date_start: str = Query(...),
     date_end: str = Query(...),
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    db: Session = Depends(get_db)
 ):
     """List all demands for org in date range."""
     if not auth or not auth.organization_id:
@@ -89,8 +89,8 @@ def list_demands(
 @router.get("/demands/{demand_id}", response_model=ScheduleDemandResponse)
 def get_demand(
     demand_id: str,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Get a specific demand."""
     if not auth or not auth.organization_id:
@@ -109,8 +109,8 @@ def get_demand(
 def update_demand(
     demand_id: str,
     demand: ScheduleDemandCreate,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Update a demand."""
     if not auth or not auth.organization_id:
@@ -135,8 +135,8 @@ def update_demand(
 @router.delete("/demands/{demand_id}")
 def delete_demand(
     demand_id: str,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Soft-delete a demand."""
     if not auth or not auth.organization_id:
@@ -159,8 +159,8 @@ def delete_demand(
 @router.post("/templates", response_model=ShiftTemplateResponse)
 def create_template(
     template: ShiftTemplateCreate,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Create a reusable shift template."""
     if not auth or not auth.organization_id:
@@ -183,9 +183,9 @@ def create_template(
 
 @router.get("/templates", response_model=List[ShiftTemplateResponse])
 def list_templates(
+    auth: OrgAuth,
     template_type: Optional[str] = None,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    db: Session = Depends(get_db)
 ):
     """List shift templates."""
     if not auth or not auth.organization_id:
@@ -205,8 +205,8 @@ def list_templates(
 def update_template(
     template_id: str,
     template: ShiftTemplateCreate,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Update a template."""
     if not auth or not auth.organization_id:
@@ -233,8 +233,8 @@ def update_template(
 @router.delete("/templates/{template_id}")
 def delete_template(
     template_id: str,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Delete a template."""
     if not auth or not auth.organization_id:
@@ -257,8 +257,8 @@ def delete_template(
 @router.post("/time-off-requests", response_model=TimeOffRequestResponse)
 def create_time_off_request(
     request: TimeOffRequestCreate,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Create time-off request."""
     if not auth or not auth.organization_id:
@@ -285,10 +285,10 @@ def create_time_off_request(
 
 @router.get("/time-off-requests", response_model=List[TimeOffRequestResponse])
 def list_time_off_requests(
+    auth: OrgAuth,
     status: Optional[str] = None,
     nurse_id: Optional[str] = None,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    db: Session = Depends(get_db)
 ):
     """List time-off requests."""
     if not auth or not auth.organization_id:
@@ -308,8 +308,8 @@ def list_time_off_requests(
 def approve_time_off(
     request_id: str,
     approval: TimeOffRequestApprove,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Approve time-off request."""
     if not auth or not auth.organization_id:
@@ -335,8 +335,8 @@ def approve_time_off(
 def deny_time_off(
     request_id: str,
     denial: TimeOffRequestDeny,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Deny time-off request."""
     if not auth or not auth.organization_id:
@@ -363,8 +363,8 @@ def deny_time_off(
 
 @router.get("/reconciliation/compliance", response_model=ComplianceScoreResponse)
 def get_compliance_score(
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Get organizational compliance score."""
     if not auth or not auth.organization_id:
@@ -375,9 +375,9 @@ def get_compliance_score(
 
 @router.get("/reconciliation/balancing-shifts", response_model=BalancingShiftRecommendations)
 def get_balancing_shifts(
+    auth: OrgAuth,
     period_end_date: str = Query(...),
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    db: Session = Depends(get_db)
 ):
     """Get recommended balancing shifts for the period."""
     if not auth or not auth.organization_id:
@@ -399,9 +399,9 @@ def get_balancing_shifts(
 @router.get("/reconciliation/{nurse_id}", response_model=NurseHoursReconciliationResponse)
 def get_nurse_reconciliation(
     nurse_id: str,
+    auth: OrgAuth,
     period_start_date: str = Query(...),
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    db: Session = Depends(get_db)
 ):
     """Get reconciliation for a nurse in 28-day period."""
     if not auth or not auth.organization_id:
@@ -429,9 +429,9 @@ def get_nurse_reconciliation(
 
 @router.post("/reconciliation/calculate-all")
 def recalculate_all_reconciliations(
+    auth: OrgAuth,
     period_end_date: str = Query(...),
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    db: Session = Depends(get_db)
 ):
     """Recalculate reconciliations for all nurses in org."""
     if not auth or not auth.organization_id:
@@ -471,8 +471,8 @@ def recalculate_all_reconciliations(
 @router.post("/publish", response_model=PublishScheduleResponse)
 def publish_schedule(
     publish_req: PublishScheduleRequest,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Publish a schedule with conflict detection."""
     if not auth or not auth.organization_id:
@@ -491,8 +491,8 @@ def publish_schedule(
 @router.post("/assignments", response_model=ShiftAssignmentResponse)
 def create_shift_assignments(
     assignment_req: ShiftAssignmentRequest,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Assign one or more shifts to nurses."""
     if not auth or not auth.organization_id:
@@ -511,8 +511,8 @@ def create_shift_assignments(
 @router.post("/recurrences", response_model=ScheduleRecurrenceResponse)
 def create_recurrence(
     recurrence: ScheduleRecurrenceCreate,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Create a schedule recurrence pattern."""
     if not auth or not auth.organization_id:
@@ -538,9 +538,9 @@ def create_recurrence(
 
 @router.get("/recurrences", response_model=List[ScheduleRecurrenceResponse])
 def list_recurrences(
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None,
-    recurrence_type: Optional[str] = Query(None)
+    auth: OrgAuth,
+    recurrence_type: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
 ):
     """List schedule recurrences for organization."""
     if not auth or not auth.organization_id:
@@ -556,8 +556,8 @@ def list_recurrences(
 @router.get("/recurrences/{recurrence_id}", response_model=ScheduleRecurrenceResponse)
 def get_recurrence(
     recurrence_id: int,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Get specific recurrence pattern."""
     if not auth or not auth.organization_id:
@@ -578,8 +578,8 @@ def get_recurrence(
 def update_recurrence(
     recurrence_id: int,
     recurrence: ScheduleRecurrenceCreate,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Update schedule recurrence pattern."""
     if not auth or not auth.organization_id:
@@ -611,8 +611,8 @@ def update_recurrence(
 def generate_schedule_from_recurrence(
     recurrence_id: int,
     request: GenerateScheduleFromRecurrenceRequest,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Generate a schedule from a recurrence pattern."""
     if not auth or not auth.organization_id:
@@ -654,8 +654,8 @@ def generate_schedule_from_recurrence(
 @router.post("/employee-preferences", response_model=EmployeePreferredScheduleResponse)
 def create_employee_preference(
     pref: EmployeePreferredScheduleCreate,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Create employee preferred schedule."""
     if not auth or not auth.organization_id:
@@ -681,8 +681,8 @@ def create_employee_preference(
 @router.get("/employee-preferences/{nurse_id}", response_model=List[EmployeePreferredScheduleResponse])
 def get_employee_preferences(
     nurse_id: str,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Get employee preferred schedules."""
     if not auth or not auth.organization_id:
@@ -700,8 +700,8 @@ def get_employee_preferences(
 def update_employee_preference(
     pref_id: int,
     pref: EmployeePreferredScheduleCreate,
-    db: Session = Depends(get_db),
-    auth: OrgAuth = None
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
 ):
     """Update employee preferred schedule."""
     if not auth or not auth.organization_id:

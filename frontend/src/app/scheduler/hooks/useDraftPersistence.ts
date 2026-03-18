@@ -271,9 +271,13 @@ export function useDraftPersistence({
       try {
         setDraftSaveStatus("saving");
         const token = await getToken();
-        const authHeaders = token
-          ? { Authorization: `Bearer ${token}` }
-          : undefined;
+        const authHeaders =
+          token && organizationId
+            ? {
+                Authorization: `Bearer ${token}`,
+                "X-Organization-ID": organizationId,
+              }
+            : undefined;
 
         await updateDraftScheduleAPI(
           savedScheduleId,

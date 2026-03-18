@@ -286,9 +286,13 @@ export function useDraftRouteLifecycle({
     if (draftIdToDelete && !state.isFinalized) {
       try {
         const token = await getToken();
-        const authHeaders = token
-          ? { Authorization: `Bearer ${token}` }
-          : undefined;
+        const authHeaders: Record<string, string> = {};
+        if (token) {
+          authHeaders["Authorization"] = `Bearer ${token}`;
+        }
+        if (organizationId) {
+          authHeaders["X-Organization-ID"] = organizationId;
+        }
         await deleteScheduleAPI(draftIdToDelete, authHeaders);
       } catch (error) {
         console.error("Failed to delete draft:", error);
@@ -325,9 +329,13 @@ export function useDraftRouteLifecycle({
 
         const { today, twoWeeksLater } = getDefaultDates();
         const token = await getToken();
-        const authHeaders = token
-          ? { Authorization: `Bearer ${token}` }
-          : undefined;
+        const authHeaders: Record<string, string> = {};
+        if (token) {
+          authHeaders["Authorization"] = `Bearer ${token}`;
+        }
+        if (organizationId) {
+          authHeaders["X-Organization-ID"] = organizationId;
+        }
 
         const result = await createDraftScheduleAPI(
           {
@@ -408,8 +416,20 @@ export function useDraftRouteLifecycle({
 
       try {
         clearLocalDraftState();
-        const schedule =
-          await fetchOptimizedScheduleByIdAPI(scheduleIdFromRoute);
+
+        const token = await getToken();
+        const authHeaders: Record<string, string> = {};
+        if (token) {
+          authHeaders["Authorization"] = `Bearer ${token}`;
+        }
+        if (organizationId) {
+          authHeaders["X-Organization-ID"] = organizationId;
+        }
+
+        const schedule = await fetchOptimizedScheduleByIdAPI(
+          scheduleIdFromRoute,
+          authHeaders,
+        );
         const hydratedState = parseSchedulePayload(schedule);
         applyHydratedState(hydratedState);
       } catch (error) {

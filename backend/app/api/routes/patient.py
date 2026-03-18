@@ -33,6 +33,9 @@ def get_patients(
     # Filter by organization if available
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Patient.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> return empty list to prevent data leakage
+        return PatientListResponse(patients=[], total=0)
     
     if active_only:
         query = query.filter(Patient.is_active == True)
@@ -61,6 +64,9 @@ def get_patient(patient_id: str, auth: OptionalAuth, db: Session = Depends(get_d
     # Filter by organization if available
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Patient.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> cannot access any patient
+        raise HTTPException(status_code=404, detail="Patient not found")
     
     patient = query.first()
     if not patient:
@@ -71,18 +77,20 @@ def get_patient(patient_id: str, auth: OptionalAuth, db: Session = Depends(get_d
 @router.post("/", response_model=PatientResponse, status_code=201)
 def create_patient(patient_data: PatientCreate, auth: OptionalAuth, db: Session = Depends(get_db)):
     """
-    Create a new patient.
+    Create a new patient. Requires authentication.
     """
-    org_id = auth.organization_id if auth.is_authenticated else None
+    if not auth.is_authenticated or not auth.organization_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    org_id = auth.organization_id
     
     # Check if MRN already exists for active patient (only when MRN is provided)
     if patient_data.mrn and patient_data.mrn.strip():
         existing_query = db.query(Patient).filter(
             Patient.mrn == patient_data.mrn,
-            Patient.is_active == True
+            Patient.is_active == True,
+            Patient.organization_id == org_id
         )
-        if org_id:
-            existing_query = existing_query.filter(Patient.organization_id == org_id)
         
         if existing_query.first():
             raise HTTPException(
@@ -112,6 +120,9 @@ def update_patient(
     # Filter by organization if available
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Patient.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> cannot access any patient
+        raise HTTPException(status_code=404, detail="Patient not found")
     
     patient = query.first()
     if not patient:
@@ -136,6 +147,9 @@ def delete_patient(patient_id: str, auth: OptionalAuth, db: Session = Depends(ge
     # Filter by organization if available
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Patient.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> cannot access any patient
+        raise HTTPException(status_code=404, detail="Patient not found")
     
     patient = query.first()
     if not patient:
@@ -169,6 +183,9 @@ def reactivate_patient(patient_id: str, auth: OptionalAuth, db: Session = Depend
     # Filter by organization if available
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Patient.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> cannot access any patient
+        raise HTTPException(status_code=404, detail="Patient not found")
     
     patient = query.first()
     if not patient:
@@ -187,20 +204,22 @@ def create_patients_bulk(
     db: Session = Depends(get_db)
 ):
     """
-    Create multiple patients at once.
+    Create multiple patients at once. Requires authentication.
     Useful for initial data import.
     """
-    org_id = auth.organization_id if auth.is_authenticated else None
+    if not auth.is_authenticated or not auth.organization_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    org_id = auth.organization_id
     created_patients = []
     
     for patient_data in patients_data:
         # Skip if MRN already exists
         existing_query = db.query(Patient).filter(
             Patient.mrn == patient_data.mrn,
-            Patient.is_active == True
+            Patient.is_active == True,
+            Patient.organization_id == org_id
         )
-        if org_id:
-            existing_query = existing_query.filter(Patient.organization_id == org_id)
         
         existing = existing_query.first()
         

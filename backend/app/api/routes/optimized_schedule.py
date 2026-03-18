@@ -204,12 +204,12 @@ def _scoped_schedule_query(
         query = query.filter(OptimizedSchedule.id == schedule_id)
 
     if auth.is_authenticated and auth.organization_id:
-        query = query.filter(
-            or_(
-                OptimizedSchedule.organization_id == auth.organization_id,
-                OptimizedSchedule.organization_id.is_(None),
-            )
-        )
+        # Filter strictly by organization - no legacy NULL fallback to prevent data leakage
+        query = query.filter(OptimizedSchedule.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> ensure no data is returned
+        # Use an impossible filter to guarantee empty result
+        query = query.filter(OptimizedSchedule.id == "no-access-without-org")
 
     return query
 
@@ -230,12 +230,17 @@ def _get_mutable_schedule_or_404(
     auth: AuthContext,
     schedule_id: str,
 ) -> OptimizedSchedule:
-    """Fetch a schedule for mutation and preserve 403 semantics for other-org rows."""
+    """Fetch a schedule for mutation - requires matching organization."""
     schedule = db.query(OptimizedSchedule).filter(OptimizedSchedule.id == schedule_id).first()
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    if auth.is_authenticated and auth.organization_id and schedule.organization_id not in [None, auth.organization_id]:
+    # Require authenticated user with organization membership
+    if not auth.is_authenticated or not auth.organization_id:
+        raise HTTPException(status_code=403, detail="Not authorized to update this draft")
+    
+    # Only allow access to schedules belonging to user's organization
+    if schedule.organization_id != auth.organization_id:
         raise HTTPException(status_code=403, detail="Not authorized to update this draft")
 
     return schedule
@@ -5006,7 +5011,7 @@ async def optimize_with_preferences(
     db: Session = Depends(get_db)
 ):
     """
-    Preferred-First Self-Scheduling Optimization
+    Preferred-First Self-Scheduling Optimization. Requires authentication.
     
     This endpoint implements a 3-stage algorithm:
     1. LOCKED PASS: Assign uncontested preferences
@@ -5020,6 +5025,10 @@ async def optimize_with_preferences(
     - Weekend fairness (1:2 rotation)
     """
     try:
+        # Require authentication
+        if not auth.is_authenticated or not auth.organization_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
         logger.info("=" * 80)
         logger.info("SELF-SCHEDULING ENDPOINT CALLED")
         logger.info("=" * 80)
@@ -5167,8 +5176,8 @@ async def optimize_with_preferences(
             }
         }
         
-        # Save to database
-        org_id = auth.organization_id if auth.is_authenticated else None
+        # Save to database using authenticated org_id
+        org_id = auth.organization_id
         
         schedule_data = {
             "schedule_data": {
@@ -5224,10 +5233,14 @@ async def optimize_with_constraints(
     db: Session = Depends(get_db)
 ):
     """
-    Optimize schedule using pre-confirmed constraints.
+    Optimize schedule using pre-confirmed constraints. Requires authentication.
     This is called after user reviews and edits constraints from /preview.
     """
     try:
+        # Require authentication
+        if not auth.is_authenticated or not auth.organization_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
         logger.info("=" * 80)
         logger.info("OPTIMIZE WITH CONFIRMED CONSTRAINTS")
         logger.info("=" * 80)
@@ -5267,7 +5280,7 @@ async def optimize_with_constraints(
         
         # Build nurse_defaults from database for any nurses missing from the frontend payload
         nurse_defaults = {}
-        org_id = auth.organization_id if auth.is_authenticated else None
+        org_id = auth.organization_id
         if org_id:
             db_nurses = db.query(Nurse).filter(Nurse.organization_id == org_id).all()
             for db_nurse in db_nurses:
@@ -5292,8 +5305,8 @@ async def optimize_with_constraints(
         response_data = {"optimized_schedule": schedule}
         
         if save_to_db:
-            # Get organization_id from auth context
-            org_id = auth.organization_id if auth.is_authenticated else None
+            # Use authenticated organization_id
+            org_id = auth.organization_id
 
             existing_draft = None
             if schedule_id:
@@ -5341,11 +5354,15 @@ async def optimize_schedule(
     db: Session = Depends(get_db)
 ):
     try:
+        # Require authentication for schedule creation
+        if not auth.is_authenticated or not auth.organization_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
         logger.info("="  * 80)
         logger.info("OPTIMIZE ENDPOINT CALLED")
         logger.info("=" * 80)
         logger.info(f"Schedule ID: {req.schedule_id}")
-        logger.info(f"Organization ID: {auth.organization_id if auth.is_authenticated else 'N/A'}")
+        logger.info(f"Organization ID: {auth.organization_id}")
         logger.info(f"Dates: {len(req.dates)} days from {req.dates[0] if req.dates else 'N/A'} to {req.dates[-1] if req.dates else 'N/A'}")
         logger.info(f"Nurses received from frontend: {len(req.nurses)}")
         for i, nurse in enumerate(req.nurses, 1):
@@ -5581,8 +5598,8 @@ async def optimize_schedule(
         # Skip AI refinement - RobustScheduler already produces a complete schedule
         # The old AI refinement was unreliable and often broke the schedule
 
-        # Get organization_id from auth context
-        org_id = auth.organization_id if auth.is_authenticated else None
+        # Use authenticated organization_id
+        org_id = auth.organization_id
 
         new_schedule = OptimizedSchedule(
             schedule_id=req.schedule_id if req.schedule_id else None,
@@ -5616,18 +5633,14 @@ async def list_optimized_schedules(
     db: Session = Depends(get_db)
 ):
     """List optimized schedules for the current organization, most recent first"""
+    # If no organization context, return empty list - never expose all schedules
+    if not auth.is_authenticated or not auth.organization_id:
+        return []
+    
     query = db.query(OptimizedSchedule)
     
-    # Filter by organization if authenticated.
-    # Include legacy rows with NULL organization_id to avoid hiding old schedules
-    # created before multitenancy was introduced.
-    if auth.is_authenticated and auth.organization_id:
-        query = query.filter(
-            or_(
-                OptimizedSchedule.organization_id == auth.organization_id,
-                OptimizedSchedule.organization_id.is_(None),
-            )
-        )
+    # Filter strictly by organization - no legacy NULL fallback to prevent data leakage
+    query = query.filter(OptimizedSchedule.organization_id == auth.organization_id)
     
     schedules = query.order_by(OptimizedSchedule.created_at.desc()).limit(50).all()
     result = []
@@ -5709,9 +5722,12 @@ async def create_draft_schedule(
     auth: AuthContext = Depends(get_optional_auth),
     db: Session = Depends(get_db)
 ):
-    """Create an initial draft schedule so it appears immediately in Schedule Management and dashboard counts."""
+    """Create an initial draft schedule. Requires authentication."""
     try:
-        org_id = auth.organization_id if auth.is_authenticated else None
+        if not auth.is_authenticated or not auth.organization_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
+        org_id = auth.organization_id
 
         new_schedule = OptimizedSchedule(
             organization_id=org_id,
@@ -5781,10 +5797,13 @@ async def save_and_finalize_schedule(
     auth: AuthContext = Depends(get_optional_auth),
     db: Session = Depends(get_db)
 ):
-    """Save a draft schedule and immediately finalize it"""
+    """Save a draft schedule and immediately finalize it. Requires authentication."""
     try:
-        # Get organization_id from auth context
-        org_id = auth.organization_id if auth.is_authenticated else None
+        # Require authentication
+        if not auth.is_authenticated or not auth.organization_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
+        org_id = auth.organization_id
 
         existing_draft = None
         if schedule_id:

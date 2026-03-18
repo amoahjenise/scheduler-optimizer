@@ -20,7 +20,7 @@ def _resolve_user_scope(auth: AuthContext, query_user_id: Optional[str]) -> Opti
     - Authenticated + org  → caller uses org filter; this helper is not needed.
     - Authenticated + no org → always use auth.user_id.  If the caller also
       passed a user_id param that doesn't match their JWT, reject with 403.
-    - Unauthenticated → use the query param as-is (legacy / dev compatibility).
+    - Unauthenticated → return None (caller should reject or return empty)
     """
     if auth.is_authenticated:
         if query_user_id and query_user_id != auth.user_id:
@@ -29,7 +29,8 @@ def _resolve_user_scope(auth: AuthContext, query_user_id: Optional[str]) -> Opti
                 detail="Not authorized to access another user's data.",
             )
         return auth.user_id
-    return query_user_id
+    # Unauthenticated - never allow user_id bypass
+    return None
 
 
 @router.get("", response_model=NurseListResponse)
@@ -55,6 +56,9 @@ def list_nurses(
         effective_uid = _resolve_user_scope(auth, user_id)
         if effective_uid:
             query = query.filter(Nurse.user_id == effective_uid)
+        else:
+            # No scope (org or user) -> return empty list, never expose all data
+            return NurseListResponse(nurses=[], total=0, page=page, page_size=page_size)
     
     # Apply search filter if provided
     if search:
@@ -96,6 +100,9 @@ def get_nurse(
         effective_uid = _resolve_user_scope(auth, user_id)
         if effective_uid:
             query = query.filter(Nurse.user_id == effective_uid)
+        else:
+            # No scope -> cannot access any nurse
+            raise HTTPException(status_code=404, detail="Nurse not found")
     
     nurse = query.first()
     
@@ -113,18 +120,19 @@ def create_nurse(
     db: Session = Depends(get_db)
 ):
     """
-    Create a new nurse profile.
+    Create a new nurse profile. Requires authentication.
     """
-    # Determine organization_id and effective user_id
-    org_id = auth.organization_id if auth.is_authenticated else None
+    if not auth.is_authenticated or not auth.organization_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    org_id = auth.organization_id
     effective_user_id = _resolve_user_scope(auth, user_id)
 
-    # Check for duplicate name within organization or user's nurses
-    existing_query = db.query(Nurse).filter(Nurse.name == nurse_data.name)
-    if org_id:
-        existing_query = existing_query.filter(Nurse.organization_id == org_id)
-    elif effective_user_id:
-        existing_query = existing_query.filter(Nurse.user_id == effective_user_id)
+    # Check for duplicate name within organization
+    existing_query = db.query(Nurse).filter(
+        Nurse.name == nurse_data.name,
+        Nurse.organization_id == org_id
+    )
     
     if existing_query.first():
         raise HTTPException(
@@ -132,7 +140,7 @@ def create_nurse(
             detail=f"Nurse with name '{nurse_data.name}' already exists"
         )
     
-    # Create nurse with organization_id if available
+    # Create nurse with organization_id
     nurse = Nurse(
         user_id=effective_user_id,
         organization_id=org_id,
@@ -165,6 +173,9 @@ def update_nurse(
         effective_uid = _resolve_user_scope(auth, user_id)
         if effective_uid:
             query = query.filter(Nurse.user_id == effective_uid)
+        else:
+            # No scope -> cannot access any nurse
+            raise HTTPException(status_code=404, detail="Nurse not found")
     
     nurse = query.first()
     
@@ -220,6 +231,9 @@ def delete_nurse(
         effective_uid = _resolve_user_scope(auth, user_id)
         if effective_uid:
             query = query.filter(Nurse.user_id == effective_uid)
+        else:
+            # No scope -> cannot access any nurse
+            raise HTTPException(status_code=404, detail="Nurse not found")
     
     nurse = query.first()
     

@@ -398,8 +398,16 @@ export default function SchedulerPage() {
       setOrganizationNursesLoading(true);
       try {
         const token = await getToken();
-        const authHeaders = token ? { Authorization: `Bearer ${token}` } : undefined;
-        const { nurses } = await listNursesAPI(userId, 1, 1000, undefined, authHeaders);
+        const authHeaders = token
+          ? { Authorization: `Bearer ${token}` }
+          : undefined;
+        const { nurses } = await listNursesAPI(
+          userId,
+          1,
+          1000,
+          undefined,
+          authHeaders,
+        );
         if (!cancelled) {
           const allNurses = Array.isArray(nurses) ? nurses : [];
           // Store ALL nurses for name matching (including those on leave)
@@ -2054,6 +2062,12 @@ export default function SchedulerPage() {
     const created: ManualNurse[] = [];
     const linked: ManualNurse[] = [];
 
+    // Get auth headers
+    const token = await getToken();
+    const authHeaders = token
+      ? { Authorization: `Bearer ${token}` }
+      : undefined;
+
     // Create new nurses
     for (const candidate of toCreate) {
       try {
@@ -2072,7 +2086,7 @@ export default function SchedulerPage() {
           is_renal_certified: candidate.isRenalCertified,
           is_charge_certified: candidate.isChargeCertified,
         };
-        await createNurseAPI(userId, nurseData);
+        await createNurseAPI(userId, nurseData, authHeaders);
         created.push({
           name: candidate.name,
           employeeId: candidate.employeeId,
