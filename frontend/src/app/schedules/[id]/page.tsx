@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
+import { useTranslations, useLocale } from "next-intl";
 import Link from "next/link";
 import {
   ArrowLeft,
@@ -9,10 +10,13 @@ import {
   CalendarDays,
   CheckCircle2,
   Clock3,
+  Save,
   Users,
 } from "lucide-react";
 import { fetchOptimizedScheduleByIdAPI } from "../../lib/api";
 import { useOrganization } from "../../context/OrganizationContext";
+import { useScheduleTemplates } from "../../scheduler/hooks/useScheduleTemplates";
+import { SaveTemplateDialog } from "../../scheduler/components/ScheduleTemplateManager";
 
 type ShiftEntry = {
   date?: string;
@@ -34,37 +38,58 @@ type GridRow = {
 export default function ScheduleDetailsPage() {
   const params = useParams<{ id: string }>();
   const scheduleId = params?.id;
-  const { isAdmin } = useOrganization();
+  const t = useTranslations("schedules");
+  const locale = useLocale();
+  const {
+    isAdmin,
+    getAuthHeaders,
+    isLoading: orgLoading,
+    currentOrganization,
+  } = useOrganization();
   const backHref = isAdmin ? "/admin/schedules" : "/schedules";
   const backLabel = isAdmin
-    ? "Back to Schedule Management"
-    : "Back to Team Schedules";
+    ? t("backToScheduleManagement")
+    : t("backToTeamSchedules");
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [schedule, setSchedule] = useState<any>(null);
+  const [showSaveTemplateDialog, setShowSaveTemplateDialog] = useState(false);
+  const [templateSavedName, setTemplateSavedName] = useState<string | null>(
+    null,
+  );
+  const savedToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Template functionality
+  const scheduleTemplates = useScheduleTemplates(
+    currentOrganization?.id ?? null,
+  );
 
   useEffect(() => {
     async function load() {
-      if (!scheduleId) return;
+      if (!scheduleId || orgLoading || !currentOrganization) return;
       try {
         setLoading(true);
-        const data = await fetchOptimizedScheduleByIdAPI(scheduleId);
+        const authHeaders = await getAuthHeaders();
+        const data = await fetchOptimizedScheduleByIdAPI(
+          scheduleId,
+          authHeaders,
+        );
         // Block access to non-finalized schedules for non-admins
         if (!data.is_finalized && !isAdmin) {
-          setError("This schedule has not been finalized yet.");
+          setError(t("scheduleNotFinalized"));
           return;
         }
         setSchedule(data);
       } catch (e) {
         console.error("Failed to load schedule details", e);
-        setError("Failed to load schedule details");
+        setError(t("failedToLoadScheduleDetails"));
       } finally {
         setLoading(false);
       }
     }
     load();
-  }, [scheduleId, isAdmin]);
+  }, [scheduleId, isAdmin, orgLoading, currentOrganization, getAuthHeaders]);
 
   const parsed = useMemo(() => {
     if (!schedule) return { dates: [] as string[], rows: [] as GridRow[] };
@@ -152,12 +177,51 @@ export default function ScheduleDetailsPage() {
 
   function formatDate(dateStr?: string) {
     if (!dateStr) return "N/A";
-    return new Date(dateStr).toLocaleDateString("en-US", {
+    // Normalize date-only strings (YYYY-MM-DD) to local midnight to avoid
+    // UTC-to-local conversion shifting the date back by one day.
+    const normalized = /^\d{4}-\d{2}-\d{2}$/.test(dateStr)
+      ? `${dateStr}T00:00:00`
+      : dateStr;
+    const parsed = new Date(normalized);
+    if (Number.isNaN(parsed.getTime())) return "N/A";
+    return parsed.toLocaleDateString(locale, {
       month: "short",
       day: "numeric",
       year: "numeric",
     });
   }
+
+  const handleSaveTemplate = (name: string, notes?: string) => {
+    if (!schedule || !parsed.rows.length) return;
+
+    const startDate = schedule.start_date || parsed.dates[0];
+    const endDate =
+      schedule.end_date || parsed.dates[Math.max(0, parsed.dates.length - 1)];
+
+    if (!startDate || !endDate) return;
+
+    try {
+      const result = scheduleTemplates.saveTemplate(
+        name,
+        parsed.rows,
+        startDate,
+        endDate,
+        undefined,
+        notes,
+      );
+      if (result) {
+        setShowSaveTemplateDialog(false);
+        setTemplateSavedName(name);
+        if (savedToastTimer.current) clearTimeout(savedToastTimer.current);
+        savedToastTimer.current = setTimeout(
+          () => setTemplateSavedName(null),
+          3000,
+        );
+      }
+    } catch (error) {
+      console.error("Failed to save template:", error);
+    }
+  };
 
   if (loading) {
     return (
@@ -178,7 +242,7 @@ export default function ScheduleDetailsPage() {
           {backLabel}
         </Link>
         <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl p-4">
-          {error || "Schedule not found"}
+          {error || t("scheduleNotFound")}
         </div>
       </div>
     );
@@ -208,29 +272,41 @@ export default function ScheduleDetailsPage() {
                 </p>
               )}
             </div>
-            <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border bg-emerald-50 text-emerald-700 border-emerald-200">
-              <CheckCircle2 className="w-4 h-4" />
-              {schedule?.is_finalized ? "Finalized" : "Draft"}
+            <div className="flex items-center gap-3">
+              {schedule?.is_finalized && isAdmin && (
+                <button
+                  onClick={() => setShowSaveTemplateDialog(true)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100 transition-colors"
+                  title={t("saveAsTemplate")}
+                >
+                  <Save className="w-4 h-4" />
+                  {t("saveAsTemplate")}
+                </button>
+              )}
+              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border bg-emerald-50 text-emerald-700 border-emerald-200">
+                <CheckCircle2 className="w-4 h-4" />
+                {schedule?.is_finalized ? t("finalized") : t("draft")}
+              </div>
             </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-5">
             <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-              <p className="text-xs text-slate-500">Nurses</p>
+              <p className="text-xs text-slate-500">{t("nurses")}</p>
               <p className="text-lg font-semibold text-slate-900 inline-flex items-center gap-1.5">
                 <Users className="w-4 h-4 text-slate-500" />
                 {stats.nurses}
               </p>
             </div>
             <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-              <p className="text-xs text-slate-500">Days</p>
+              <p className="text-xs text-slate-500">{t("days")}</p>
               <p className="text-lg font-semibold text-slate-900 inline-flex items-center gap-1.5">
                 <Calendar className="w-4 h-4 text-slate-500" />
                 {stats.days}
               </p>
             </div>
             <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-              <p className="text-xs text-slate-500">Assigned shifts</p>
+              <p className="text-xs text-slate-500">{t("assignedShifts")}</p>
               <p className="text-lg font-semibold text-slate-900 inline-flex items-center gap-1.5">
                 <Clock3 className="w-4 h-4 text-slate-500" />
                 {stats.assignments}
@@ -242,13 +318,13 @@ export default function ScheduleDetailsPage() {
         <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
           <div className="flex flex-wrap items-center gap-2 mb-4 text-xs">
             <span className="px-2 py-1 rounded-full border border-amber-200 bg-amber-50 text-amber-700">
-              Day shift
+              {t("dayShift")}
             </span>
             <span className="px-2 py-1 rounded-full border border-indigo-200 bg-indigo-50 text-indigo-700">
-              Night shift
+              {t("nightShift")}
             </span>
             <span className="px-2 py-1 rounded-full border border-slate-200 bg-slate-100 text-slate-500">
-              Off
+              {t("off")}
             </span>
           </div>
 
@@ -262,7 +338,7 @@ export default function ScheduleDetailsPage() {
                         {showDateSubtitle ? dateRangeLabel : scheduleTitle}
                       </div>
                       <div className="font-semibold text-slate-700 leading-none">
-                        Nurse
+                        {t("nurse")}
                       </div>
                     </th>
                     {parsed.dates.map((date) => (
@@ -271,12 +347,20 @@ export default function ScheduleDetailsPage() {
                         className="sticky top-0 z-20 bg-white px-1.5 py-2 text-center border-b border-slate-200 min-w-[84px]"
                       >
                         <div className="text-[10px] text-slate-500 leading-none mb-0.5">
-                          {new Date(date).toLocaleDateString("en-US", {
+                          {new Date(
+                            /^\d{4}-\d{2}-\d{2}$/.test(date)
+                              ? `${date}T00:00:00`
+                              : date,
+                          ).toLocaleDateString(locale, {
                             weekday: "short",
                           })}
                         </div>
                         <div className="font-semibold text-slate-700 leading-none">
-                          {new Date(date).toLocaleDateString("en-US", {
+                          {new Date(
+                            /^\d{4}-\d{2}-\d{2}$/.test(date)
+                              ? `${date}T00:00:00`
+                              : date,
+                          ).toLocaleDateString(locale, {
                             month: "short",
                             day: "numeric",
                           })}
@@ -322,11 +406,26 @@ export default function ScheduleDetailsPage() {
             </div>
           ) : (
             <div className="text-center py-12 text-slate-500">
-              No schedule rows found
+              {t("noScheduleRows")}
             </div>
           )}
         </div>
+
+        <SaveTemplateDialog
+          open={showSaveTemplateDialog}
+          onClose={() => setShowSaveTemplateDialog(false)}
+          onSave={handleSaveTemplate}
+          defaultName={scheduleTitle}
+        />
       </div>
+
+      {/* Success toast */}
+      {templateSavedName && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 bg-emerald-600 text-white px-5 py-3 rounded-xl shadow-lg text-sm font-medium animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          <span>Template &ldquo;{templateSavedName}&rdquo; saved</span>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
+import { useTranslations } from "next-intl";
 import { useOrganization } from "../context/OrganizationContext";
 import {
   Building2,
@@ -22,6 +23,8 @@ export function OrganizationSwitcher({
   onJoinOrg,
   onShareCode,
 }: OrganizationSwitcherProps) {
+  const t = useTranslations("organization");
+  const tCommon = useTranslations("common");
   const {
     currentOrganization,
     currentMembership,
@@ -86,7 +89,7 @@ export function OrganizationSwitcher({
               className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
             >
               <Plus className="w-4 h-4" />
-              <span>Create organization</span>
+              <span>{t("createNewOrganization")}</span>
             </button>
             <button
               onClick={() => {
@@ -96,7 +99,7 @@ export function OrganizationSwitcher({
               className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
             >
               <LogIn className="w-4 h-4" />
-              <span>Join organization</span>
+              <span>{t("joinAnotherOrganization")}</span>
             </button>
           </div>
         )}
@@ -136,7 +139,7 @@ export function OrganizationSwitcher({
         <div className="absolute top-full left-0 mt-2 w-72 bg-white rounded-xl shadow-lg border border-gray-200 py-2 z-[120]">
           <div className="px-3 py-2 border-b border-gray-100">
             <p className="text-xs font-medium text-gray-500 uppercase">
-              Your Organizations
+              {t("yourOrganizations")}
             </p>
           </div>
 
@@ -190,7 +193,7 @@ export function OrganizationSwitcher({
               className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
             >
               <Plus className="w-4 h-4" />
-              <span>Create new organization</span>
+              <span>{t("createNewOrganization")}</span>
             </button>
             <button
               onClick={() => {
@@ -200,7 +203,7 @@ export function OrganizationSwitcher({
               className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 transition-colors"
             >
               <Users className="w-4 h-4" />
-              <span>Join another organization</span>
+              <span>{t("joinAnotherOrganization")}</span>
             </button>
             {isAdmin && (
               <button
@@ -223,7 +226,7 @@ export function OrganizationSwitcher({
                     d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"
                   />
                 </svg>
-                <span>Share invite code</span>
+                <span>{t("shareInviteCode")}</span>
               </button>
             )}
           </div>

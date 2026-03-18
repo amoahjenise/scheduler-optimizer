@@ -17,7 +17,8 @@ import {
   NurseUpdate,
   listNursesAPI,
 } from "../lib/api";
-import { useUser, useAuth } from "@clerk/nextjs";
+import { useUser } from "@clerk/nextjs";
+import { useOrganization } from "../context/OrganizationContext";
 import { loadStaffingDefaults } from "./StaffRequirementsEditor";
 
 interface Nurse {
@@ -79,7 +80,7 @@ export default function ConstraintsConfirmation({
   isOptimizing = false,
 }: Props) {
   const { user } = useUser();
-  const { getToken } = useAuth();
+  const { getAuthHeaders } = useOrganization();
 
   const parseLocalDate = (value: string) => {
     const normalized = /^\d{4}-\d{2}-\d{2}$/.test(value)
@@ -197,10 +198,7 @@ export default function ConstraintsConfirmation({
 
     try {
       // Fetch existing nurses to map names to database IDs
-      const token = await getToken();
-      const authHeaders = token
-        ? { Authorization: `Bearer ${token}` }
-        : undefined;
+      const authHeaders = await getAuthHeaders();
       const existingNursesResponse = await listNursesAPI(
         userId,
         1,
@@ -636,7 +634,7 @@ export default function ConstraintsConfirmation({
                           )}
                         </div>
                         <div className="mt-2 flex items-center gap-4 text-sm text-gray-600">
-                          <span>Max: {nurse.maxWeeklyHours}h/2wk</span>
+                          <span>Max: {nurse.maxWeeklyHours}h/2sem.</span>
                           {nurse.offRequests &&
                             nurse.offRequests.length > 0 && (
                               <span className="text-orange-600">

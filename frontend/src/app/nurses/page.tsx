@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useUser } from "@clerk/nextjs";
+import { useTranslations } from "next-intl";
 import {
   listNursesAPI,
   createNurseAPI,
@@ -32,7 +33,12 @@ interface FormData {
 
 export default function NursesPage() {
   const { user } = useUser();
-  const { currentOrganization, getAuthHeaders } = useOrganization();
+  const {
+    currentOrganization,
+    getAuthHeaders,
+    isLoading: orgLoading,
+  } = useOrganization();
+  const t = useTranslations("nurses");
   const fullTimeBiWeeklyTarget =
     currentOrganization?.full_time_weekly_target ?? 75;
   const partTimeBiWeeklyTarget =
@@ -63,11 +69,11 @@ export default function NursesPage() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (user?.id) {
+    if (user?.id && !orgLoading && currentOrganization) {
       loadNurses();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, searchTerm]);
+  }, [user?.id, orgLoading, currentOrganization, searchTerm]);
 
   const loadNurses = async () => {
     if (!user?.id) return;
@@ -170,7 +176,7 @@ export default function NursesPage() {
 
   const handleDelete = async (nurseId: string) => {
     if (!user?.id) return;
-    if (!confirm("Are you sure you want to delete this nurse?")) return;
+    if (!confirm(t("deleteConfirm"))) return;
 
     try {
       const authHeaders = await getAuthHeaders();
@@ -190,16 +196,16 @@ export default function NursesPage() {
             href="/dashboard"
             className="text-sm text-blue-600 hover:underline mb-1 inline-block"
           >
-            ← Back to Dashboard
+            {t("backToDashboard")}
           </Link>
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-semibold text-gray-900">
-                Staff Management
+                {t("staffManagement")}
               </h1>
               <p className="text-gray-500 text-sm mt-1">
                 {nurses.length}{" "}
-                {nurses.length === 1 ? "team member" : "team members"}
+                {nurses.length === 1 ? t("teamMember") : t("teamMembers")}
               </p>
             </div>
             <button
@@ -219,7 +225,7 @@ export default function NursesPage() {
                   d="M12 4v16m8-8H4"
                 />
               </svg>
-              Add Staff Member
+              {t("addStaffMember")}
             </button>
           </div>
         </div>
@@ -242,7 +248,7 @@ export default function NursesPage() {
             </svg>
             <input
               type="text"
-              placeholder="Search by name or employee ID..."
+              placeholder={t("searchPlaceholder")}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-10 pr-4 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
@@ -254,7 +260,7 @@ export default function NursesPage() {
         {loading ? (
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-16 text-center">
             <div className="inline-block animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
-            <p className="mt-4 text-gray-500 text-sm">Loading staff...</p>
+            <p className="mt-4 text-gray-500 text-sm">{t("loadingStaff")}</p>
           </div>
         ) : nurses.length === 0 ? (
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-16 text-center">
@@ -274,28 +280,26 @@ export default function NursesPage() {
               </svg>
             </div>
             <p className="text-gray-900 font-medium text-lg mb-1">
-              No staff members yet
+              {t("noStaffYet")}
             </p>
-            <p className="text-gray-500 text-sm">
-              Add your first team member to get started
-            </p>
+            <p className="text-gray-500 text-sm">{t("addFirstMember")}</p>
           </div>
         ) : (
           <div className="grid gap-4">
             {nurses.map((nurse) => {
               const badges = [];
               if (nurse.is_chemo_certified)
-                badges.push({ label: "Chemo", color: "green", icon: "💉" });
+                badges.push({ label: t("chemo"), color: "green", icon: "💉" });
               if (nurse.is_transplant_certified)
                 badges.push({
-                  label: "Transplant",
+                  label: t("transplant"),
                   color: "purple",
                   icon: "🫀",
                 });
               if (nurse.is_renal_certified)
-                badges.push({ label: "Renal", color: "blue", icon: "🩺" });
+                badges.push({ label: t("renal"), color: "blue", icon: "🩺" });
               if (nurse.is_charge_certified)
-                badges.push({ label: "Charge", color: "amber", icon: "⭐" });
+                badges.push({ label: t("charge"), color: "amber", icon: "⭐" });
 
               // Check if nurse is on any leave
               const isOnLeave =
@@ -304,9 +308,9 @@ export default function NursesPage() {
                 nurse.is_on_sabbatical;
               const leaveTypes = [];
               if (nurse.is_on_maternity_leave)
-                leaveTypes.push("Maternity/Paternity");
-              if (nurse.is_on_sick_leave) leaveTypes.push("Sick");
-              if (nurse.is_on_sabbatical) leaveTypes.push("Sabbatical");
+                leaveTypes.push(t("maternityShort"));
+              if (nurse.is_on_sick_leave) leaveTypes.push(t("sickShort"));
+              if (nurse.is_on_sabbatical) leaveTypes.push(t("sabbaticalShort"));
 
               return (
                 <div
@@ -345,14 +349,13 @@ export default function NursesPage() {
                           </h3>
                           {isOnLeave && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-orange-100 text-orange-700 text-xs font-medium rounded-full">
-                              🚫 On Leave
+                              🚫 {t("onLeave")}
                             </span>
                           )}
                         </div>
                         {isOnLeave && (
                           <p className="text-xs text-orange-600 mt-0.5">
-                            {leaveTypes.join(" + ")} Leave — Not available for
-                            scheduling
+                            {leaveTypes.join(" + ")} Leave — {t("notAvailable")}
                           </p>
                         )}
                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-sm text-gray-500">
@@ -400,11 +403,11 @@ export default function NursesPage() {
                             }`}
                           >
                             {nurse.employment_type === "full-time"
-                              ? "Full-Time"
-                              : "Part-Time"}
+                              ? t("fullTime")
+                              : t("partTime")}
                           </span>
                           <span className="text-gray-600">
-                            {nurse.max_weekly_hours}h/2wk
+                            {nurse.max_weekly_hours} {t("hoursPerBiweekly")}
                           </span>
                         </div>
 
@@ -487,7 +490,7 @@ export default function NursesPage() {
               {/* Header */}
               <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
                 <h2 className="text-xl font-semibold text-gray-900">
-                  {editingNurse ? "Edit Staff Member" : "Add Staff Member"}
+                  {editingNurse ? t("editStaffMember") : t("addStaffMember")}
                 </h2>
                 <button
                   onClick={() => setShowModal(false)}
@@ -518,7 +521,7 @@ export default function NursesPage() {
                   {/* Name */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      Full Name <span className="text-red-500">*</span>
+                      {t("fullName")} <span className="text-red-500">*</span>
                     </label>
                     <input
                       type="text"
@@ -536,7 +539,7 @@ export default function NursesPage() {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                        Employee ID
+                        {t("employeeIdLabel")}
                       </label>
                       <input
                         type="text"
@@ -574,7 +577,7 @@ export default function NursesPage() {
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                        Employment Type
+                        {t("employmentType")}
                       </label>
                       <div className="flex gap-2">
                         <button
@@ -592,7 +595,7 @@ export default function NursesPage() {
                               : "bg-gray-100 text-gray-600 hover:bg-gray-200"
                           }`}
                         >
-                          Full-Time
+                          {t("fullTime")}
                         </button>
                         <button
                           type="button"
@@ -609,13 +612,13 @@ export default function NursesPage() {
                               : "bg-gray-100 text-gray-600 hover:bg-gray-200"
                           }`}
                         >
-                          Part-Time
+                          {t("partTime")}
                         </button>
                       </div>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                        Hours / Bi-weekly
+                        {t("hoursPerBiweekly")}
                       </label>
                       <input
                         type="number"
@@ -639,7 +642,7 @@ export default function NursesPage() {
                   {/* Certifications */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-3">
-                      Certifications
+                      {t("certifications")}
                     </label>
                     <div className="grid grid-cols-2 gap-3">
                       <label
@@ -662,7 +665,7 @@ export default function NursesPage() {
                         />
                         <span className="text-xl">💉</span>
                         <span className="text-sm font-medium text-gray-700">
-                          Chemo
+                          {t("chemo")}
                         </span>
                         {formData.is_chemo_certified && (
                           <svg
@@ -699,7 +702,7 @@ export default function NursesPage() {
                         />
                         <span className="text-xl">🫀</span>
                         <span className="text-sm font-medium text-gray-700">
-                          Transplant
+                          {t("transplant")}
                         </span>
                         {formData.is_transplant_certified && (
                           <svg
@@ -736,7 +739,7 @@ export default function NursesPage() {
                         />
                         <span className="text-xl">🩺</span>
                         <span className="text-sm font-medium text-gray-700">
-                          Renal
+                          {t("renal")}
                         </span>
                         {formData.is_renal_certified && (
                           <svg
@@ -773,7 +776,7 @@ export default function NursesPage() {
                         />
                         <span className="text-xl">⭐</span>
                         <span className="text-sm font-medium text-gray-700">
-                          Charge
+                          {t("charge")}
                         </span>
                         {formData.is_charge_certified && (
                           <svg
@@ -795,7 +798,7 @@ export default function NursesPage() {
                   {/* Other Certifications */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                      Other Certifications
+                      {t("otherCertifications")}
                     </label>
                     <input
                       type="text"
@@ -814,10 +817,10 @@ export default function NursesPage() {
                   {/* Leave Status */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-3">
-                      Leave Status
+                      {t("leaveStatus")}
                     </label>
                     <p className="text-xs text-gray-500 mb-3">
-                      Staff on leave will be excluded from scheduling
+                      {t("leaveNote")}
                     </p>
                     <div className="space-y-2">
                       <label
@@ -840,7 +843,7 @@ export default function NursesPage() {
                         />
                         <span className="text-xl">👶</span>
                         <span className="text-sm font-medium text-gray-700">
-                          Maternity / Paternity Leave
+                          {t("maternityLeave")}
                         </span>
                         {formData.is_on_maternity_leave && (
                           <svg
@@ -877,7 +880,7 @@ export default function NursesPage() {
                         />
                         <span className="text-xl">🏥</span>
                         <span className="text-sm font-medium text-gray-700">
-                          Sick Leave
+                          {t("sickLeave")}
                         </span>
                         {formData.is_on_sick_leave && (
                           <svg
@@ -914,7 +917,7 @@ export default function NursesPage() {
                         />
                         <span className="text-xl">✈️</span>
                         <span className="text-sm font-medium text-gray-700">
-                          Sabbatical Leave
+                          {t("sabbaticalLeave")}
                         </span>
                         {formData.is_on_sabbatical && (
                           <svg
@@ -971,7 +974,7 @@ export default function NursesPage() {
                       />
                     </svg>
                   )}
-                  {editingNurse ? "Save Changes" : "Add Staff Member"}
+                  {editingNurse ? t("saveChanges") : t("addStaffMember")}
                 </button>
               </div>
             </div>

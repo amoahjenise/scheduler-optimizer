@@ -52,8 +52,13 @@ export interface ScheduleTemplate {
 // CONSTANTS
 // ============================================================================
 
-const STORAGE_KEY = "scheduler-templates";
+const STORAGE_KEY_PREFIX = "scheduler-templates";
 const MAX_TEMPLATES = 20; // prevent localStorage bloat
+
+/** Build a storage key scoped to an organization so templates never leak across orgs */
+function getStorageKey(organizationId: string): string {
+  return `${STORAGE_KEY_PREFIX}-${organizationId}`;
+}
 
 function normalizeTemplateName(name: string): string {
   return String(name || "")
@@ -73,10 +78,10 @@ function generateId(): string {
   return `tpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Read templates from localStorage (safely) */
-function loadTemplatesFromStorage(): ScheduleTemplate[] {
+/** Read templates from localStorage scoped to an organization (safely) */
+function loadTemplatesFromStorage(organizationId: string): ScheduleTemplate[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(getStorageKey(organizationId));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -86,10 +91,16 @@ function loadTemplatesFromStorage(): ScheduleTemplate[] {
   }
 }
 
-/** Persist templates to localStorage */
-function saveTemplatesToStorage(templates: ScheduleTemplate[]): void {
+/** Persist templates to localStorage scoped to an organization */
+function saveTemplatesToStorage(
+  organizationId: string,
+  templates: ScheduleTemplate[],
+): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(templates));
+    localStorage.setItem(
+      getStorageKey(organizationId),
+      JSON.stringify(templates),
+    );
   } catch {
     console.warn("Failed to save templates to localStorage");
   }
@@ -200,13 +211,17 @@ export function templateToGrid(
 // HOOK
 // ============================================================================
 
-export function useScheduleTemplates() {
+export function useScheduleTemplates(organizationId: string | null) {
   const [templates, setTemplates] = useState<ScheduleTemplate[]>([]);
 
-  // Load on mount
+  // Reload templates whenever the active organization changes
   useEffect(() => {
-    setTemplates(loadTemplatesFromStorage());
-  }, []);
+    if (!organizationId) {
+      setTemplates([]);
+      return;
+    }
+    setTemplates(loadTemplatesFromStorage(organizationId));
+  }, [organizationId]);
 
   /** Save a new template from a finalized schedule */
   const saveTemplate = useCallback(
@@ -218,6 +233,11 @@ export function useScheduleTemplates() {
       unit?: string,
       notes?: string,
     ): ScheduleTemplate | null => {
+      if (!organizationId) {
+        console.warn("Cannot save template: no active organization");
+        return null;
+      }
+
       const normalizedName = normalizeTemplateName(name);
       const existingTemplate = templates.find(
         (t) => normalizeTemplateName(t.name) === normalizedName,
@@ -257,34 +277,42 @@ export function useScheduleTemplates() {
           updated = [template, ...prev].slice(0, MAX_TEMPLATES);
         }
 
-        saveTemplatesToStorage(updated);
+        saveTemplatesToStorage(organizationId, updated);
         return updated;
       });
 
       return template;
     },
-    [templates],
+    [organizationId, templates],
   );
 
   /** Delete a template by ID */
-  const deleteTemplate = useCallback((id: string) => {
-    setTemplates((prev) => {
-      const updated = prev.filter((t) => t.id !== id);
-      saveTemplatesToStorage(updated);
-      return updated;
-    });
-  }, []);
+  const deleteTemplate = useCallback(
+    (id: string) => {
+      if (!organizationId) return;
+      setTemplates((prev) => {
+        const updated = prev.filter((t) => t.id !== id);
+        saveTemplatesToStorage(organizationId, updated);
+        return updated;
+      });
+    },
+    [organizationId],
+  );
 
   /** Rename a template */
-  const renameTemplate = useCallback((id: string, newName: string) => {
-    setTemplates((prev) => {
-      const updated = prev.map((t) =>
-        t.id === id ? { ...t, name: newName } : t,
-      );
-      saveTemplatesToStorage(updated);
-      return updated;
-    });
-  }, []);
+  const renameTemplate = useCallback(
+    (id: string, newName: string) => {
+      if (!organizationId) return;
+      setTemplates((prev) => {
+        const updated = prev.map((t) =>
+          t.id === id ? { ...t, name: newName } : t,
+        );
+        saveTemplatesToStorage(organizationId, updated);
+        return updated;
+      });
+    },
+    [organizationId],
+  );
 
   /** Load a template, projecting it onto new dates → GridRow[] + dates */
   const loadTemplate = useCallback(

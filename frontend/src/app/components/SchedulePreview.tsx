@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo, useEffect } from "react";
 import SectionCard from "./SectionCard";
+import { useLocale, useTranslations } from "next-intl";
 import {
   CalendarHeart,
   Undo2,
@@ -10,7 +11,7 @@ import {
   Plus,
   X,
 } from "lucide-react";
-import { format, parseISO } from "date-fns";
+import { parseISO } from "date-fns";
 import {
   DndContext,
   closestCenter,
@@ -415,6 +416,7 @@ function DraggableShift({
     maxHours?: number;
   };
 }) {
+  const t = useTranslations("scheduler");
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id,
   });
@@ -429,19 +431,28 @@ function DraggableShift({
   if (nurseMetadata) {
     if (nurseMetadata.employmentType) {
       tooltipLines.push(
-        `Type: ${nurseMetadata.employmentType === "FT" ? "Full-Time" : nurseMetadata.employmentType === "PT" ? "Part-Time" : nurseMetadata.employmentType}`,
+        `${t("type")}: ${nurseMetadata.employmentType === "FT" ? t("fullTime") : nurseMetadata.employmentType === "PT" ? t("partTime") : nurseMetadata.employmentType}`,
       );
     }
     if (nurseMetadata.isChemoCertified) {
-      tooltipLines.push("✓ Chemo Certified");
+      tooltipLines.push(t("chemoCertified"));
     }
     if (nurseMetadata.maxHours) {
-      tooltipLines.push(`Max: ${nurseMetadata.maxHours}h/week`);
+      tooltipLines.push(
+        t("maxHoursPerWeek", { hours: nurseMetadata.maxHours }),
+      );
     }
   }
   if (!isOff) {
-    tooltipLines.push(`Shift: ${shiftEntry.shift} (${shiftEntry.hours}h)`);
-    tooltipLines.push(`Time: ${shiftEntry.startTime} – ${shiftEntry.endTime}`);
+    tooltipLines.push(
+      t("shiftWithHours", { shift: shiftEntry.shift, hours: shiftEntry.hours }),
+    );
+    tooltipLines.push(
+      t("timeRange", {
+        start: shiftEntry.startTime,
+        end: shiftEntry.endTime,
+      }),
+    );
   } else {
     const offDef = OFF_CODES.find(
       (o) => o.code.toUpperCase() === (shiftEntry.shift || "").toUpperCase(),
@@ -456,7 +467,7 @@ function DraggableShift({
     : [
         {
           code: shiftEntry.shift,
-          label: "Current shift",
+          label: t("currentShift"),
           type:
             shiftEntry.shiftType === "combined" ? "day" : shiftEntry.shiftType,
           hours: shiftEntry.hours,
@@ -501,9 +512,9 @@ function DraggableShift({
         onMouseDown={(e) => e.stopPropagation()}
         onTouchStart={(e) => e.stopPropagation()}
         className="text-[9px] font-semibold bg-white/60 border-0 rounded px-0.5 py-0 w-[32px] shrink-0 focus:outline-none focus:ring-1 focus:ring-blue-400 appearance-none cursor-pointer"
-        aria-label={`Change shift code for ${nurse}`}
+        aria-label={t("changeShiftCodeFor", { nurse })}
       >
-        <optgroup label="Day Shifts">
+        <optgroup label={t("dayShifts")}>
           {shiftOptions
             .filter((o) => o.type === "day")
             .map((option) => (
@@ -512,7 +523,7 @@ function DraggableShift({
               </option>
             ))}
         </optgroup>
-        <optgroup label="Night Shifts">
+        <optgroup label={t("nightShifts")}>
           {shiftOptions
             .filter((o) => o.type === "night")
             .map((option) => (
@@ -521,7 +532,7 @@ function DraggableShift({
               </option>
             ))}
         </optgroup>
-        <optgroup label="Off / Holiday">
+        <optgroup label={t("offHoliday")}>
           {shiftOptions
             .filter((o) => o.type === "off")
             .map((option) => (
@@ -538,7 +549,7 @@ function DraggableShift({
           e.stopPropagation();
           onDelete();
         }}
-        title="Delete"
+        title={t("delete")}
         type="button"
         className="focus:outline-none opacity-0 group-hover:opacity-70 hover:!opacity-100 transition-opacity flex-shrink-0"
       >
@@ -579,6 +590,8 @@ function DroppableDay({
       }
     | undefined;
 }) {
+  const t = useTranslations("scheduler");
+  const locale = useLocale();
   const { setNodeRef } = useDroppable({ id: date });
   const parsedDate = parseISO(date);
   const isWeekend = parsedDate.getDay() === 0 || parsedDate.getDay() === 6;
@@ -657,13 +670,13 @@ function DroppableDay({
           <div
             className={`text-xs font-bold ${isWeekend ? "text-orange-600" : "text-gray-800"}`}
           >
-            {format(parsedDate, "EEE")}
+            {parsedDate.toLocaleDateString(locale, { weekday: "short" })}
           </div>
           <div className="text-sm font-bold text-gray-900">
-            {format(parsedDate, "d")}
+            {parsedDate.getDate()}
           </div>
           <div className="text-[10px] text-gray-400">
-            {format(parsedDate, "MMM")}
+            {parsedDate.toLocaleDateString(locale, { month: "short" })}
           </div>
         </div>
         <div
@@ -683,7 +696,7 @@ function DroppableDay({
       {dayShifts.length > 0 && (
         <div className="mb-1">
           <div className="text-[10px] uppercase tracking-wider text-amber-600 font-semibold mb-0.5 flex items-center gap-1">
-            <span>☀️</span> Day ({dayShifts.length})
+            <span>☀️</span> {t("day", { count: dayShifts.length })}
           </div>
           <div className="flex flex-col gap-0.5">
             <SortableContext
@@ -717,7 +730,7 @@ function DroppableDay({
       {nightShifts.length > 0 && (
         <div className="mb-1">
           <div className="text-[10px] uppercase tracking-wider text-indigo-600 font-semibold mb-0.5 flex items-center gap-1">
-            <span>🌙</span> Night ({nightShifts.length})
+            <span>🌙</span> {t("night", { count: nightShifts.length })}
           </div>
           <div className="flex flex-col gap-0.5">
             <SortableContext
@@ -751,7 +764,7 @@ function DroppableDay({
       {offShifts.length > 0 && (
         <div className="mb-1">
           <div className="text-[10px] uppercase tracking-wider text-gray-400 font-semibold mb-1 flex items-center gap-1">
-            <span>🏖️</span> Off ({offShifts.length})
+            <span>🏖️</span> {t("offCount", { count: offShifts.length })}
           </div>
           <div className="flex flex-col gap-0.5">
             <SortableContext
@@ -787,7 +800,7 @@ function DroppableDay({
           <div className="text-center">
             <div className="text-lg mb-0.5">⚠️</div>
             <div className="text-[10px] text-red-500 font-medium">
-              No Coverage
+              {t("noCoverage")}
             </div>
           </div>
         </div>
@@ -800,7 +813,7 @@ function DroppableDay({
         type="button"
       >
         <Plus className="w-2.5 h-2.5" />
-        Add
+        {t("add")}
       </button>
 
       {/* Add Nurse Modal */}
@@ -815,7 +828,12 @@ function DroppableDay({
           >
             <div className="flex justify-between items-center mb-3">
               <h3 className="font-semibold text-gray-900">
-                Add Nurse to {format(parsedDate, "MMM d")}
+                {t("addNurseToDate", {
+                  date: parsedDate.toLocaleDateString(locale, {
+                    month: "short",
+                    day: "numeric",
+                  }),
+                })}
               </h3>
               <button
                 onClick={() => setShowAddModal(false)}
@@ -828,14 +846,14 @@ function DroppableDay({
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">
-                  Select Nurse
+                  {t("selectNurse")}
                 </label>
                 <select
                   value={selectedNurse}
                   onChange={(e) => setSelectedNurse(e.target.value)}
                   className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 >
-                  <option value="">Choose a nurse...</option>
+                  <option value="">{t("chooseNurse")}</option>
                   {unassignedNurses.map((nurse) => (
                     <option key={nurse} value={nurse}>
                       {nurse}
@@ -844,22 +862,22 @@ function DroppableDay({
                 </select>
                 {unassignedNurses.length === 0 && (
                   <p className="text-xs text-amber-600 mt-1">
-                    All nurses already assigned to this day
+                    {t("allNursesAssigned")}
                   </p>
                 )}
               </div>
 
               <div>
                 <label className="block text-xs font-medium text-gray-600 mb-1">
-                  Select Shift
+                  {t("selectShift")}
                 </label>
                 <select
                   value={selectedShift}
                   onChange={(e) => setSelectedShift(e.target.value)}
                   className="w-full px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 >
-                  <option value="">Choose a shift...</option>
-                  <optgroup label="Day Shifts">
+                  <option value="">{t("chooseShift")}</option>
+                  <optgroup label={t("dayShifts")}>
                     {SHIFT_CODES.filter((s) => s.type === "day").map(
                       (shift) => (
                         <option key={shift.code} value={shift.code}>
@@ -868,7 +886,7 @@ function DroppableDay({
                       ),
                     )}
                   </optgroup>
-                  <optgroup label="Night Shifts">
+                  <optgroup label={t("nightShifts")}>
                     {SHIFT_CODES.filter((s) => s.type === "night").map(
                       (shift) => (
                         <option key={shift.code} value={shift.code}>
@@ -877,7 +895,7 @@ function DroppableDay({
                       ),
                     )}
                   </optgroup>
-                  <optgroup label="Off / Holiday (CF)">
+                  <optgroup label={t("offHolidayCf")}>
                     {OFF_CODES.map((shift) => (
                       <option key={shift.code} value={shift.code}>
                         {shift.code} - {shift.label}
@@ -893,7 +911,7 @@ function DroppableDay({
                   className="flex-1 px-3 py-1.5 text-sm text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg"
                   type="button"
                 >
-                  Cancel
+                  {t("cancel")}
                 </button>
                 <button
                   onClick={handleAddSubmit}
@@ -901,7 +919,7 @@ function DroppableDay({
                   className="flex-1 px-3 py-1.5 text-sm text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg"
                   type="button"
                 >
-                  Add
+                  {t("add")}
                 </button>
               </div>
             </div>
@@ -919,6 +937,8 @@ export default function SchedulePreview({
   onChange,
   onAsteriskDetected,
 }: SchedulePreviewProps) {
+  const t = useTranslations("scheduler");
+  const locale = useLocale();
   const gridDataKey = useMemo(() => {
     return buildGridDataKey(ocrGrid);
   }, [ocrGrid]);
@@ -1257,16 +1277,16 @@ export default function SchedulePreview({
 
   return (
     <SectionCard
-      title="Schedule Calendar"
+      title={t("scheduleCalendar")}
       icon={<CalendarHeart className="text-pink-600" />}
       actions={
         <div className="flex gap-2 items-center">
           <span className="text-xs text-gray-500 mr-2">
-            {ocrDates.length} days • {ocrGrid.length} staff
+            {t("daysStaff", { days: ocrDates.length, staff: ocrGrid.length })}
           </span>
           <button
             onClick={handleUndo}
-            title="Undo"
+            title={t("undo")}
             className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
             type="button"
             disabled={history.length === 0}
@@ -1277,7 +1297,7 @@ export default function SchedulePreview({
           </button>
           <button
             onClick={handleReset}
-            title="Reset"
+            title={t("reset")}
             className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors"
             type="button"
             disabled={isAtBaseline}
@@ -1293,17 +1313,23 @@ export default function SchedulePreview({
       <div className="flex gap-4 mb-4 pb-3 border-b border-gray-200">
         <div className="flex items-center gap-2">
           <span className="text-sm">☀️</span>
-          <span className="text-xs font-medium text-gray-600">Day Shift</span>
+          <span className="text-xs font-medium text-gray-600">
+            {t("dayShift")}
+          </span>
           <div className="w-4 h-4 rounded bg-gradient-to-r from-amber-100 to-yellow-100 border border-amber-200" />
         </div>
         <div className="flex items-center gap-2">
           <span className="text-sm">🌙</span>
-          <span className="text-xs font-medium text-gray-600">Night Shift</span>
+          <span className="text-xs font-medium text-gray-600">
+            {t("nightShift")}
+          </span>
           <div className="w-4 h-4 rounded bg-gradient-to-r from-indigo-100 to-purple-100 border border-indigo-200" />
         </div>
         <div className="flex items-center gap-2">
           <div className="w-4 h-4 rounded bg-orange-50 border-2 border-orange-200" />
-          <span className="text-xs font-medium text-gray-600">Weekend</span>
+          <span className="text-xs font-medium text-gray-600">
+            {t("weekend")}
+          </span>
         </div>
       </div>
 
@@ -1314,40 +1340,46 @@ export default function SchedulePreview({
         onDragEnd={handleDragEndWithMove}
         onDragOver={handleDragOver}
       >
-        <div className="space-y-6">
-          {rows.map((week, weekIdx) => (
-            <div key={weekIdx}>
-              {/* Week header */}
-              <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                Week {weekIdx + 1}
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
-                {week.map((date) => {
-                  const parsedDate = parseISO(date);
-                  const displayDate = format(parsedDate, "EEE, MMM d");
-                  const shifts = shiftMapWithTimes.get(date) || [];
+        <div className="w-full overflow-x-auto">
+          <div className="min-w-full space-y-6">
+            {rows.map((week, weekIdx) => (
+              <div key={weekIdx}>
+                {/* Week header */}
+                <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
+                  {t("weekNumber", { week: weekIdx + 1 })}
+                </div>
+                <div className="grid grid-cols-7 gap-1.5 sm:gap-2 md:gap-3 min-w-[700px]">
+                  {week.map((date) => {
+                    const parsedDate = parseISO(date);
+                    const displayDate = parsedDate.toLocaleDateString(locale, {
+                      weekday: "short",
+                      month: "short",
+                      day: "numeric",
+                    });
+                    const shifts = shiftMapWithTimes.get(date) || [];
 
-                  return (
-                    <DroppableDay
-                      key={date}
-                      date={date}
-                      shifts={shifts}
-                      displayDate={displayDate}
-                      handleDelete={handleDelete}
-                      onUpdateShift={handleUpdateShift}
-                      onAddShift={handleAddShift}
-                      availableNurses={availableNurses}
-                      getNurseMetadata={getNurseMetadata}
-                    />
-                  );
-                })}
-                {week.length < 7 &&
-                  Array.from({ length: 7 - week.length }).map((_, i) => (
-                    <div key={`empty-${i}`} className="invisible" />
-                  ))}
+                    return (
+                      <DroppableDay
+                        key={date}
+                        date={date}
+                        shifts={shifts}
+                        displayDate={displayDate}
+                        handleDelete={handleDelete}
+                        onUpdateShift={handleUpdateShift}
+                        onAddShift={handleAddShift}
+                        availableNurses={availableNurses}
+                        getNurseMetadata={getNurseMetadata}
+                      />
+                    );
+                  })}
+                  {week.length < 7 &&
+                    Array.from({ length: 7 - week.length }).map((_, i) => (
+                      <div key={`empty-${i}`} className="invisible" />
+                    ))}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       </DndContext>
     </SectionCard>

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useUser, useAuth } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
+import { useLocale, useTranslations } from "next-intl";
 import { motion } from "framer-motion";
 import UploadInput from "../components/UploadInput";
 import EditableOCRGrid from "../components/EditableOCRGrid";
@@ -156,6 +157,8 @@ async function clearPersistedScreenshots(key: string) {
 export default function SchedulerPage() {
   const { user } = useUser();
   const { getToken } = useAuth();
+  const locale = useLocale();
+  const tScheduler = useTranslations("scheduler");
   const userId = user?.id || "";
 
   // Step management
@@ -279,8 +282,7 @@ export default function SchedulerPage() {
   >([]);
   const selfScheduling = useSelfScheduling();
 
-  // ── Schedule Templates ──
-  const scheduleTemplates = useScheduleTemplates();
+  // ── Schedule Templates — initialized below after useOrganization ──
   const [showSaveTemplateDialog, setShowSaveTemplateDialog] = useState(false);
   const [
     hasSavedTemplateForCurrentResult,
@@ -320,7 +322,12 @@ export default function SchedulerPage() {
     currentOrganization,
     isAdmin,
     isLoading: orgLoading,
+    getAuthHeaders,
   } = useOrganization();
+  // ── Schedule Templates (org-scoped) ──
+  const scheduleTemplates = useScheduleTemplates(
+    currentOrganization?.id ?? null,
+  );
   const fullTimeBiWeeklyTarget =
     currentOrganization?.full_time_weekly_target ?? 75;
   const partTimeBiWeeklyTarget =
@@ -390,17 +397,14 @@ export default function SchedulerPage() {
   }, [currentStep]);
 
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || orgLoading || !currentOrganization) return;
 
     let cancelled = false;
 
     (async () => {
       setOrganizationNursesLoading(true);
       try {
-        const token = await getToken();
-        const authHeaders = token
-          ? { Authorization: `Bearer ${token}` }
-          : undefined;
+        const authHeaders = await getAuthHeaders();
         const { nurses } = await listNursesAPI(
           userId,
           1,
@@ -452,7 +456,7 @@ export default function SchedulerPage() {
     return () => {
       cancelled = true;
     };
-  }, [userId]);
+  }, [userId, orgLoading, currentOrganization, getAuthHeaders]);
 
   // Load saved scheduling rules from DB on mount
   useEffect(() => {
@@ -1262,6 +1266,7 @@ export default function SchedulerPage() {
     requiredStaff,
     startDate,
     endDate,
+    getAuthHeaders,
     onOptimized: handleOptimizedSchedule,
   });
 
@@ -1637,12 +1642,7 @@ export default function SchedulerPage() {
 
   // Explicitly delete the current draft from the backend and clear local state
   async function discardDraft() {
-    if (
-      !confirm(
-        "Are you sure you want to delete this draft? This cannot be undone.",
-      )
-    )
-      return;
+    if (!confirm(tScheduler("confirmDeleteDraft"))) return;
     await deleteDraftAndReset();
     router.replace("/schedules");
     console.log("Draft deleted and redirected to schedule list");
@@ -1653,6 +1653,7 @@ export default function SchedulerPage() {
     startDate,
     endDate,
     userId,
+    getToken,
     organizationNurses,
     allOrganizationNurses,
     getDefaultMaxWeeklyHours,
@@ -1996,10 +1997,7 @@ export default function SchedulerPage() {
         grid: scheduleRows,
       };
 
-      const token = await getToken();
-      const authHeaders = token
-        ? { Authorization: `Bearer ${token}` }
-        : undefined;
+      const authHeaders = await getAuthHeaders();
 
       const result = await saveAndFinalizeScheduleAPI(
         scheduleData,
@@ -2063,10 +2061,7 @@ export default function SchedulerPage() {
     const linked: ManualNurse[] = [];
 
     // Get auth headers
-    const token = await getToken();
-    const authHeaders = token
-      ? { Authorization: `Bearer ${token}` }
-      : undefined;
+    const authHeaders = await getAuthHeaders();
 
     // Create new nurses
     for (const candidate of toCreate) {
@@ -2399,10 +2394,10 @@ export default function SchedulerPage() {
                 href="/dashboard"
                 className="text-sm text-blue-600 hover:underline mb-1 inline-block"
               >
-                ← Back to Dashboard
+                {tScheduler("backToDashboard")}
               </a>
               <h1 className="text-2xl font-semibold text-gray-900">
-                Schedule Optimizer
+                {tScheduler("scheduleOptimizer")}
               </h1>
             </div>
 
@@ -2441,19 +2436,21 @@ export default function SchedulerPage() {
                       />
                     </svg>
                   )}
-                  {draftSaveStatus === "saving" && "Saving draft..."}
+                  {draftSaveStatus === "saving" && tScheduler("savingDraft")}
                   {draftSaveStatus === "saved" && (
                     <>
-                      <span>✓ Draft saved</span>
+                      <span>{tScheduler("draftSaved")}</span>
                       {lastDraftSavedAt && (
                         <span className="opacity-70">
-                          {new Date(lastDraftSavedAt).toLocaleTimeString()}
+                          {new Date(lastDraftSavedAt).toLocaleTimeString(
+                            locale,
+                          )}
                         </span>
                       )}
                     </>
                   )}
-                  {draftSaveStatus === "error" && "Save failed"}
-                  {draftSaveStatus === "idle" && "Draft"}
+                  {draftSaveStatus === "error" && tScheduler("saveFailed")}
+                  {draftSaveStatus === "idle" && tScheduler("draft")}
                 </div>
               )}
 
@@ -2467,7 +2464,7 @@ export default function SchedulerPage() {
               <div className="group relative">
                 <button
                   className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-all duration-200 border border-transparent hover:border-gray-200"
-                  title="Schedule actions"
+                  title={tScheduler("scheduleActions")}
                 >
                   <svg
                     className="w-5 h-5"
@@ -2502,7 +2499,7 @@ export default function SchedulerPage() {
                           d="M12 4v16m8-8H4"
                         />
                       </svg>
-                      Start New Schedule
+                      {tScheduler("startNewSchedule")}
                     </button>
                     {savedScheduleId && !isFinalized && (
                       <button
@@ -2522,7 +2519,7 @@ export default function SchedulerPage() {
                             d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
                           />
                         </svg>
-                        Delete This Draft
+                        {tScheduler("deleteThisDraft")}
                       </button>
                     )}
                   </div>
@@ -2539,11 +2536,10 @@ export default function SchedulerPage() {
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div>
               <p className="text-sm font-semibold text-blue-900">
-                Guided workflow
+                {tScheduler("guidedWorkflow")}
               </p>
               <p className="text-xs text-blue-700">
-                Follow the next action below to complete scheduling with fewer
-                clicks.
+                {tScheduler("guidedWorkflowDesc")}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -3595,14 +3591,14 @@ export default function SchedulerPage() {
               </svg>
               <div className="flex-1">
                 <h3 className="font-semibold text-green-800">
-                  Optimization Complete!
+                  {tScheduler("optimizationComplete")}
                 </h3>
                 <p className="text-sm text-green-700">
                   {isFinalized
-                    ? "Your schedule has been finalized and saved to the database."
+                    ? tScheduler("finalizedSavedMessage")
                     : savedScheduleId
-                      ? "Draft saved. You can leave now and continue later from Schedule Management."
-                      : "Review your optimized schedule below. Click 'Finalize & Save' to save it permanently."}
+                      ? tScheduler("draftSavedContinueMessage")
+                      : tScheduler("reviewAndFinalizeMessage")}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -3632,7 +3628,7 @@ export default function SchedulerPage() {
                     onClick={handleFinalizeSchedule}
                     className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700"
                   >
-                    Finalize & Save
+                    {tScheduler("finalizeAndSave")}
                   </button>
                 )}
               </div>
@@ -3661,7 +3657,7 @@ export default function SchedulerPage() {
               )}
               <div className="flex items-center justify-between mb-3">
                 <h3 className="font-semibold text-gray-700">
-                  Optimization Results
+                  {tScheduler("optimizationResults")}
                 </h3>
                 <div className="flex items-center gap-4">
                   <button
@@ -3672,29 +3668,39 @@ export default function SchedulerPage() {
                         : "bg-gray-200 text-gray-600 hover:bg-gray-300"
                     }`}
                   >
-                    {showHoursBreakdown ? "Hide" : "Show"} Hours Breakdown
+                    {showHoursBreakdown
+                      ? tScheduler("hideHoursBreakdown")
+                      : tScheduler("showHoursBreakdown")}
                   </button>
                   <span className="text-xs text-gray-500">
-                    {filteredOptimizedGrid.length} nurses scheduled over{" "}
-                    {scheduleDatesForStats.length} days
+                    {tScheduler("nursesScheduledOverDays", {
+                      nurses: filteredOptimizedGrid.length,
+                      days: scheduleDatesForStats.length,
+                    })}
                   </span>
                 </div>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-4 text-sm mb-4">
                 <div className="bg-white p-3 rounded-lg border">
-                  <span className="text-gray-500 text-xs">Visible Nurses</span>
+                  <span className="text-gray-500 text-xs">
+                    {tScheduler("visibleNurses")}
+                  </span>
                   <p className="text-xl font-bold text-gray-900">
                     {filteredOptimizedGrid.length}
                   </p>
                 </div>
                 <div className="bg-white p-3 rounded-lg border">
-                  <span className="text-gray-500 text-xs">Hidden</span>
+                  <span className="text-gray-500 text-xs">
+                    {tScheduler("hidden")}
+                  </span>
                   <p className="text-xl font-bold text-gray-400">
                     {excludedNurses.size}
                   </p>
                 </div>
                 <div className="bg-white p-3 rounded-lg border">
-                  <span className="text-gray-500 text-xs">From OCR</span>
+                  <span className="text-gray-500 text-xs">
+                    {tScheduler("fromOcr")}
+                  </span>
                   <p className="text-xl font-bold text-blue-600">
                     {filteredOptimizedGrid.length +
                       excludedNurses.size -
@@ -3702,13 +3708,17 @@ export default function SchedulerPage() {
                   </p>
                 </div>
                 <div className="bg-white p-3 rounded-lg border">
-                  <span className="text-gray-500 text-xs">Manual Nurses</span>
+                  <span className="text-gray-500 text-xs">
+                    {tScheduler("manualNurses")}
+                  </span>
                   <p className="text-xl font-bold text-green-600">
                     {manualNurses.length}
                   </p>
                 </div>
                 <div className="bg-white p-3 rounded-lg border">
-                  <span className="text-gray-500 text-xs">Total Hours</span>
+                  <span className="text-gray-500 text-xs">
+                    {tScheduler("totalHours")}
+                  </span>
                   <p className="text-xl font-bold text-purple-600">
                     {formatQuarterHours(
                       nurseHoursStats.reduce((sum, n) => sum + n.totalHours, 0),
@@ -3720,19 +3730,22 @@ export default function SchedulerPage() {
 
               <div className="mb-4 grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="bg-white p-3 rounded-lg border">
-                  <p className="text-xs text-gray-500">Coverage Compliance</p>
+                  <p className="text-xs text-gray-500">
+                    {tScheduler("coverageCompliance")}
+                  </p>
                   <p className="text-lg font-semibold text-emerald-600">
                     {formatPercent(operationalQualitySnapshot.coveragePct)}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {operationalQualitySnapshot.daysMeetingCoverage}/
-                    {operationalQualitySnapshot.totalDates} days met minimum
-                    staffing
+                    {tScheduler("daysMetMinimumStaffing", {
+                      met: operationalQualitySnapshot.daysMeetingCoverage,
+                      total: operationalQualitySnapshot.totalDates,
+                    })}
                   </p>
                 </div>
                 <div className="bg-white p-3 rounded-lg border">
                   <p className="text-xs text-gray-500">
-                    Off-Request Protection
+                    {tScheduler("offRequestProtection")}
                   </p>
                   <p className="text-lg font-semibold text-blue-600">
                     {formatPercent(
@@ -3740,13 +3753,17 @@ export default function SchedulerPage() {
                     )}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {operationalQualitySnapshot.respectedOffRequests}/
-                    {operationalQualitySnapshot.totalOffRequests} requested days
-                    respected
+                    {tScheduler("requestedDaysRespected", {
+                      respected:
+                        operationalQualitySnapshot.respectedOffRequests,
+                      total: operationalQualitySnapshot.totalOffRequests,
+                    })}
                   </p>
                 </div>
                 <div className="bg-white p-3 rounded-lg border">
-                  <p className="text-xs text-gray-500">Avg Hour Delta</p>
+                  <p className="text-xs text-gray-500">
+                    {tScheduler("avgHourDelta")}
+                  </p>
                   <p className="text-lg font-semibold text-purple-600">
                     {formatQuarterHours(
                       operationalQualitySnapshot.avgAbsoluteHourDelta,
@@ -3754,7 +3771,7 @@ export default function SchedulerPage() {
                     h
                   </p>
                   <p className="text-xs text-gray-500">
-                    vs contract target · lower is better
+                    {tScheduler("vsContractTargetLowerBetter")}
                   </p>
                 </div>
               </div>
@@ -3859,11 +3876,12 @@ export default function SchedulerPage() {
                                 scheduleDatesForStats.length / 14.0;
                               // If exactly 2 weeks (1 bi-weekly period), show simplified text
                               if (Math.abs(numBiWeeks - 1) < 0.01) {
-                                return null; // Don't show redundant "75h/2wk" when target is already 75h
+                                return null; // Don't show redundant "75h/2sem." when target is already 75h
                               }
                               return (
                                 <div className="text-xs text-gray-400">
-                                  {formatQuarterHours(nurse.biWeeklyHours)}h/2wk
+                                  {formatQuarterHours(nurse.biWeeklyHours)}
+                                  h/2sem.
                                 </div>
                               );
                             })()}
@@ -4300,7 +4318,7 @@ export default function SchedulerPage() {
                           d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
                         />
                       </svg>
-                      AI Insights
+                      {tScheduler("aiInsights")}
                     </>
                   )}
                 </button>
@@ -4331,7 +4349,7 @@ export default function SchedulerPage() {
                       d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
                     />
                   </svg>
-                  Re-optimize
+                  {tScheduler("reOptimize")}
                 </button>
                 <button
                   onClick={() => {
@@ -4339,7 +4357,7 @@ export default function SchedulerPage() {
                   }}
                   className="px-6 py-2 text-gray-600 font-medium border border-gray-300 rounded-lg hover:bg-gray-50"
                 >
-                  Start New
+                  {tScheduler("startNew")}
                 </button>
                 <button
                   onClick={async () => {
@@ -4364,11 +4382,11 @@ export default function SchedulerPage() {
                       "Nurse",
                       ...ocrDates.map((d) => {
                         const date = new Date(d);
-                        const dayName = date.toLocaleDateString("en-US", {
+                        const dayName = date.toLocaleDateString(locale, {
                           weekday: "short",
                         });
                         const dayNum = date.getDate();
-                        const month = date.toLocaleDateString("en-US", {
+                        const month = date.toLocaleDateString(locale, {
                           month: "short",
                         });
                         return `${dayName}\n${month} ${dayNum}`;
@@ -4610,7 +4628,7 @@ export default function SchedulerPage() {
                     onClick={handleSelectAllNurseCandidates}
                     className="mt-3 inline-flex items-center rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors"
                   >
-                    Select All
+                    {tScheduler("selectAll")}
                   </button>
                 </div>
                 <button
@@ -4841,7 +4859,7 @@ export default function SchedulerPage() {
                                       : "Part-Time"}
                                   </span>
                                   <span>
-                                    {match.dbNurse.max_weekly_hours}h/2wk
+                                    {match.dbNurse.max_weekly_hours}h/2sem.
                                   </span>
                                   {match.dbNurse.is_chemo_certified && (
                                     <span>💉</span>
@@ -5012,7 +5030,7 @@ export default function SchedulerPage() {
                               }
                               className="w-14 px-2 py-1 text-sm border border-gray-200 rounded text-center focus:outline-none focus:border-blue-400"
                             />
-                            <span className="text-gray-500">h/2wk</span>
+                            <span className="text-gray-500">h/2sem.</span>
                           </div>
                         </div>
 
@@ -5296,7 +5314,7 @@ export default function SchedulerPage() {
                   />
                 </svg>
                 <h3 className="text-xl font-bold text-gray-900">
-                  AI Schedule Insights
+                  {tScheduler("aiScheduleInsights")}
                 </h3>
               </div>
               <button
@@ -5342,7 +5360,7 @@ export default function SchedulerPage() {
                     />
                   </svg>
                   <p className="text-gray-500 text-sm">
-                    Analyzing schedule with AI…
+                    {tScheduler("analyzingScheduleWithAI")}
                   </p>
                 </div>
               )}
@@ -5537,7 +5555,7 @@ export default function SchedulerPage() {
                               }}
                               className="rounded border-gray-300"
                             />
-                            Select All
+                            {tScheduler("selectAll")}
                           </label>
                           {selectedGapFills.size > 0 && (
                             <button
@@ -5557,7 +5575,9 @@ export default function SchedulerPage() {
                                   d="M5 13l4 4L19 7"
                                 />
                               </svg>
-                              Apply {selectedGapFills.size} to Calendar
+                              {tScheduler("applyToCalendar", {
+                                count: selectedGapFills.size,
+                              })}
                             </button>
                           )}
                         </div>
@@ -5612,7 +5632,7 @@ export default function SchedulerPage() {
                                       <span className="text-sm font-semibold text-gray-900">
                                         {new Date(
                                           gf.date + "T12:00:00",
-                                        ).toLocaleDateString("en-US", {
+                                        ).toLocaleDateString(locale, {
                                           weekday: "short",
                                           month: "short",
                                           day: "numeric",
@@ -6172,19 +6192,21 @@ export default function SchedulerPage() {
           <div className="w-full max-w-3xl rounded-2xl bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
               <h3 className="text-lg font-semibold text-gray-900">
-                Manage Templates
+                {tScheduler("manageTemplates")}
               </h3>
               <button
                 onClick={() => setShowManageTemplatesModal(false)}
                 className="rounded-lg px-3 py-1 text-sm text-gray-600 hover:bg-gray-100"
               >
-                Close
+                {tScheduler("close")}
               </button>
             </div>
 
             <div className="max-h-[70vh] overflow-y-auto p-6">
               {scheduleTemplates.templates.length === 0 ? (
-                <p className="text-sm text-gray-500">No templates saved yet.</p>
+                <p className="text-sm text-gray-500">
+                  {tScheduler("noTemplatesSavedYet")}
+                </p>
               ) : (
                 <div className="space-y-3">
                   {scheduleTemplates.templates.map((tpl) => (
@@ -6205,7 +6227,7 @@ export default function SchedulerPage() {
                         <button
                           onClick={() => {
                             const next = window.prompt(
-                              "Rename template",
+                              tScheduler("renameTemplate"),
                               tpl.name,
                             );
                             if (next && next.trim()) {
@@ -6217,7 +6239,7 @@ export default function SchedulerPage() {
                           }}
                           className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100"
                         >
-                          Rename
+                          {tScheduler("rename")}
                         </button>
                         <button
                           onClick={() => {
@@ -6266,9 +6288,6 @@ export default function SchedulerPage() {
                   {(optimizationElapsedSeconds % 60)
                     .toString()
                     .padStart(2, "0")}
-                </p>
-                <p className="mt-2 text-xs font-medium text-blue-700">
-                  Please do not click Preview & Optimize again.
                 </p>
               </div>
             </div>

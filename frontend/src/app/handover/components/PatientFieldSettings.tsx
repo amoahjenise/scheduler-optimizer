@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import {
   PatientFieldConfig,
   FieldConfig,
@@ -81,6 +82,7 @@ export default function PatientFieldSettings({
   onSave,
   onClose,
 }: PatientFieldSettingsProps) {
+  const t = useTranslations("handover");
   const [draft, setDraft] = useState<PatientFieldConfig>(() =>
     JSON.parse(JSON.stringify(config)),
   );
@@ -141,7 +143,7 @@ export default function PatientFieldSettings({
               />
             </svg>
             <span className="font-semibold text-base">
-              Hand-Off Report — Field Settings
+              {t("fieldSettingsTitle")}
             </span>
           </div>
           <button
@@ -169,13 +171,13 @@ export default function PatientFieldSettings({
           {/* Hand-off Report Settings Section */}
           <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 mb-4">
             <h3 className="text-sm font-semibold text-gray-800 mb-1">
-              Hand-off Report Settings
+              {t("handoffReportSettingsTitle")}
             </h3>
             <p className="text-xs text-gray-500 mb-3">
-              Configure how hand-off reports are created for each patient.
+              {t("handoffReportSettingsDesc")}
             </p>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Report Frequency
+              {t("reportFrequency")}
             </label>
             <div className="flex gap-3">
               <label className="flex items-center gap-2 cursor-pointer">
@@ -190,10 +192,10 @@ export default function PatientFieldSettings({
                 />
                 <div>
                   <div className="text-sm font-medium text-gray-800">
-                    Daily Report
+                    {t("dailyReportTitle")}
                   </div>
                   <div className="text-xs text-gray-600">
-                    One report per patient per day
+                    {t("dailyReportDesc")}
                   </div>
                 </div>
               </label>
@@ -209,10 +211,10 @@ export default function PatientFieldSettings({
                 />
                 <div>
                   <div className="text-sm font-medium text-gray-800">
-                    Shift Report
+                    {t("shiftReportTitle")}
                   </div>
                   <div className="text-xs text-gray-600">
-                    Separate reports for day/night shifts
+                    {t("shiftReportDesc")}
                   </div>
                 </div>
               </label>
@@ -221,10 +223,10 @@ export default function PatientFieldSettings({
 
           {/* Column headers */}
           <div className="grid grid-cols-[1fr,11rem,1fr,1fr] gap-3 px-2 pb-2 border-b border-gray-300 text-xs font-semibold text-gray-700 uppercase">
-            <span>Field Name</span>
-            <span className="text-center">Visibility / Required</span>
-            <span>Display Label</span>
-            <span>Info Tip (hover hint)</span>
+            <span>{t("fieldName")}</span>
+            <span className="text-center">{t("visibilityRequired")}</span>
+            <span>{t("displayLabel")}</span>
+            <span>{t("infoTipHint")}</span>
           </div>
 
           {FIELD_META.map(({ key, description, canRequire }) => {
@@ -250,7 +252,7 @@ export default function PatientFieldSettings({
                   {/* Visible toggle */}
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs text-gray-600 font-medium">
-                      Visible
+                      {t("visible")}
                     </span>
                     <button
                       type="button"
@@ -264,7 +266,7 @@ export default function PatientFieldSettings({
                       className={`w-9 h-5 rounded-full transition-all relative flex-shrink-0 ${
                         field.show ? "bg-green-500" : "bg-gray-300"
                       }`}
-                      title={field.show ? "Hide field" : "Show field"}
+                      title={field.show ? t("hideField") : t("showField")}
                     >
                       <span
                         className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
@@ -281,7 +283,7 @@ export default function PatientFieldSettings({
                         <span
                           className={`text-xs font-medium ${!field.show ? "text-gray-300" : "text-gray-600"}`}
                         >
-                          Required
+                          {t("required")}
                         </span>
                         <button
                           type="button"
@@ -298,10 +300,10 @@ export default function PatientFieldSettings({
                           }`}
                           title={
                             !field.show
-                              ? "Enable field first"
+                              ? t("enableFieldFirst")
                               : field.required
-                                ? "Make optional"
-                                : "Make required"
+                                ? t("makeOptional")
+                                : t("makeRequired")
                           }
                         >
                           <span
@@ -341,7 +343,7 @@ export default function PatientFieldSettings({
                     onChange={(e) =>
                       update(key, { infoTip: e.target.value || undefined })
                     }
-                    placeholder="e.g. Epic: Demographics tab"
+                    placeholder={t("infoTipPlaceholder")}
                     className="w-full text-sm border border-gray-300 bg-white rounded px-2 py-1.5 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                   />
                 </div>
@@ -352,11 +354,10 @@ export default function PatientFieldSettings({
           {/* Diagnosis Suggestions Section */}
           <div className="mt-6 bg-purple-50 border border-purple-200 rounded-lg p-4">
             <h3 className="text-sm font-semibold text-gray-800 mb-1">
-              Diagnosis Suggestions
+              {t("diagnosisSuggestionsTitle")}
             </h3>
             <p className="text-xs text-gray-500 mb-3">
-              Manage the diagnoses that appear in autocomplete dropdowns. Nurses
-              can also add new diagnoses on the fly when creating a report.
+              {t("diagnosisSuggestionsDesc")}
             </p>
 
             {/* Add new diagnosis */}
@@ -379,7 +380,7 @@ export default function PatientFieldSettings({
                     setNewDiag("");
                   }
                 }}
-                placeholder="Add a diagnosis…"
+                placeholder={t("addDiagnosisPlaceholder")}
                 className="flex-1 text-sm border border-gray-300 rounded px-2 py-1.5 focus:ring-1 focus:ring-purple-500 focus:border-purple-500"
               />
               <button
@@ -399,7 +400,7 @@ export default function PatientFieldSettings({
                 }}
                 className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-300 text-white text-sm font-medium rounded transition-colors"
               >
-                Add
+                {t("add")}
               </button>
             </div>
 
@@ -417,7 +418,7 @@ export default function PatientFieldSettings({
                       setDiagDraft((prev) => prev.filter((d) => d !== diag))
                     }
                     className="ml-0.5 text-gray-400 hover:text-red-500 transition-colors"
-                    title="Remove"
+                    title={t("remove")}
                   >
                     <svg
                       className="w-3 h-3"
@@ -439,7 +440,7 @@ export default function PatientFieldSettings({
 
             {diagDraft.length === 0 && (
               <p className="text-xs text-gray-400 italic mt-1">
-                No diagnoses configured. Defaults will be used.
+                {t("noDiagnosesConfigured")}
               </p>
             )}
           </div>
@@ -465,7 +466,7 @@ export default function PatientFieldSettings({
                 d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
               />
             </svg>
-            Reset to defaults
+            {t("resetToDefaults")}
           </button>
           <div className="flex gap-2">
             <button
@@ -473,14 +474,14 @@ export default function PatientFieldSettings({
               onClick={onClose}
               className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-200 rounded-lg font-medium transition-colors"
             >
-              Cancel
+              {t("cancel")}
             </button>
             <button
               type="button"
               onClick={handleSave}
               className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg shadow-sm transition-colors"
             >
-              Save Changes
+              {t("saveChanges")}
             </button>
           </div>
         </div>

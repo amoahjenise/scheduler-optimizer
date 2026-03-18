@@ -5,12 +5,14 @@ export const dynamic = "force-dynamic";
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
+import { useLocale, useTranslations } from "next-intl";
 import Link from "next/link";
 import {
   Patient,
   Handover,
   ShiftType,
   fetchPatientsAPI,
+  fetchHandoversAPI,
   fetchTodaysHandoversAPI,
   createHandoverAPI,
   deletePatientAPI,
@@ -80,8 +82,15 @@ function mergePatientWithHandoverPatient(
 
 export default function HandoverPage() {
   const { user } = useUser();
-  const { getAuthHeaders } = useOrganization();
+  const {
+    getAuthHeaders,
+    isLoading: orgLoading,
+    currentOrganization,
+  } = useOrganization();
   const router = useRouter();
+  const t = useTranslations("handover");
+  const tCommon = useTranslations("common");
+  const locale = useLocale();
   const [urlParams, setUrlParams] = useState<URLSearchParams | null>(null);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [handovers, setHandovers] = useState<Handover[]>([]);
@@ -135,25 +144,82 @@ export default function HandoverPage() {
   }, [urlParams]);
 
   // Fetch data - load handovers for BOTH shifts so we can switch
+  // Reload when user changes to ensure auth headers are available
+  // CRITICAL: Wait for organization context to load to ensure X-Organization-ID header is set
   useEffect(() => {
-    loadData();
-  }, []);
+    if (user?.id && !orgLoading && currentOrganization) {
+      loadData();
+    }
+  }, [user?.id, orgLoading, currentOrganization]);
 
   async function loadData() {
     try {
       setLoading(true);
       const authHeaders = await getAuthHeaders();
-      const [patientsRes, dayHandovers, nightHandovers] = await Promise.all([
-        fetchPatientsAPI({ active_only: true }, authHeaders),
-        fetchTodaysHandoversAPI("day", authHeaders),
-        fetchTodaysHandoversAPI("night", authHeaders),
-      ]);
-      setPatients(patientsRes.patients);
+
+      // Debug: Log auth headers to verify X-Organization-ID is present
+      console.log("[HandoverPage] Loading data with headers:", authHeaders);
+      console.log(
+        "[HandoverPage] Organization loaded:",
+        currentOrganization?.id,
+      );
+
+      const [patientsResult, dayResult, nightResult] = await Promise.allSettled(
+        [
+          fetchPatientsAPI({ active_only: true }, authHeaders),
+          fetchTodaysHandoversAPI("day", authHeaders),
+          fetchTodaysHandoversAPI("night", authHeaders),
+        ],
+      );
+
+      // Debug: Log results to verify data is returned
+      console.log("[HandoverPage] dayResult:", dayResult);
+      console.log("[HandoverPage] nightResult:", nightResult);
+
+      const nextPatients =
+        patientsResult.status === "fulfilled"
+          ? patientsResult.value.patients
+          : [];
+      setPatients(nextPatients);
+
+      const dayHandovers =
+        dayResult.status === "fulfilled" ? dayResult.value.handovers : [];
+      const nightHandovers =
+        nightResult.status === "fulfilled" ? nightResult.value.handovers : [];
+
+      if (
+        dayResult.status === "rejected" ||
+        nightResult.status === "rejected"
+      ) {
+        console.warn("Failed to load one or more today's handover feeds", {
+          dayError:
+            dayResult.status === "rejected"
+              ? String(dayResult.reason)
+              : undefined,
+          nightError:
+            nightResult.status === "rejected"
+              ? String(nightResult.reason)
+              : undefined,
+        });
+      }
+
       // Combine both shift handovers
-      const allHandovers = [
-        ...dayHandovers.handovers,
-        ...nightHandovers.handovers,
-      ];
+      let allHandovers = [...dayHandovers, ...nightHandovers];
+
+      // Fallback: if "today" is empty (timezone/date-window edge cases),
+      // load latest available handovers so the list does not disappear on refresh.
+      if (allHandovers.length === 0) {
+        try {
+          const latestHandovers = await fetchHandoversAPI(
+            undefined,
+            authHeaders,
+          );
+          allHandovers = latestHandovers.handovers || [];
+        } catch (fallbackError) {
+          console.error("Fallback handover load failed:", fallbackError);
+        }
+      }
+
       // Auto-mark past-date handovers as completed (locally) so they appear
       // as finished in the UI without requiring manual action.
       const marked = allHandovers.map((h) =>
@@ -163,7 +229,7 @@ export default function HandoverPage() {
       );
       setHandovers(marked);
       return {
-        patients: patientsRes.patients,
+        patients: nextPatients,
         handovers: marked,
       };
     } catch (err) {
@@ -224,9 +290,7 @@ export default function HandoverPage() {
       }
     }
 
-    setError(
-      "No hand-off report exists to open. Use Duplicate to today's date (or add a new patient) to create one.",
-    );
+    setError(t("noHandoffToOpen"));
     return null;
   }
 
@@ -360,10 +424,10 @@ export default function HandoverPage() {
       setDeleteConfirm(null);
 
       if (deleteFailed) {
-        setError("Some records could not be deleted. Please try again.");
+        setError(t("someRecordsNotDeleted"));
       }
     } catch {
-      setError("Failed to delete patient");
+      setError(t("failedToDeletePatient"));
     }
   }
 
@@ -382,6 +446,7 @@ export default function HandoverPage() {
     const currentData = selectedHandover;
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
+    const authHeaders = await getAuthHeaders();
 
     // Helper to check if a handover is from today
     const isFromToday = (h: Handover): boolean => {
@@ -402,62 +467,67 @@ export default function HandoverPage() {
       );
       if (existing) return existing;
 
-      return await createHandoverAPI({
-        // Only pass a real patient_id (not virtual/embedded IDs)
-        patient_id: selectedPatient.id.startsWith("embedded-")
-          ? undefined
-          : selectedPatient.id,
-        // Embed patient info directly on the handover
-        p_first_name:
-          currentData.p_first_name || selectedPatient.first_name || "",
-        p_last_name: currentData.p_last_name || selectedPatient.last_name || "",
-        p_room_number:
-          currentData.p_room_number || selectedPatient.room_number || "",
-        p_bed: currentData.p_bed || selectedPatient.bed || "",
-        p_mrn: currentData.p_mrn || selectedPatient.mrn || "",
-        p_diagnosis: currentData.p_diagnosis || selectedPatient.diagnosis || "",
-        p_date_of_birth:
-          currentData.p_date_of_birth ||
-          selectedPatient.date_of_birth ||
-          undefined,
-        p_age: currentData.p_age || selectedPatient.age || "",
-        p_attending_physician: currentData.p_attending_physician || "",
-        shift_date: new Date().toISOString(),
-        shift_type: targetShift,
-        outgoing_nurse: currentData.outgoing_nurse || "",
-        // Carry over status fields
-        status: currentData.status,
-        acuity: currentData.acuity,
-        isolation: currentData.isolation,
-        code_status: currentData.code_status,
-        // Pre-fill only static carryover data (NOT labs, VS, GU, fluid readings)
-        pertinent_issues: currentData.pertinent_issues,
-        admit_date: currentData.admit_date,
-        anticipated_discharge: currentData.anticipated_discharge,
-        allergies: currentData.allergies,
-        medications_summary: currentData.medications_summary,
-        prn_medications: currentData.prn_medications,
-        chemotherapies: currentData.chemotherapies,
-        iv_access: currentData.iv_access,
-        cvad_type: currentData.cvad_type,
-        cvad_dressing: currentData.cvad_dressing,
-        tpn: currentData.tpn,
-        tube_type: currentData.tube_type,
-        diet: currentData.diet,
-        activity: currentData.activity,
-        oxygen_needs: currentData.oxygen_needs,
-        braden_q_score: currentData.braden_q_score,
-        skin_care_plan: currentData.skin_care_plan,
-        mobility_restrictions: currentData.mobility_restrictions,
-        assistive_devices: currentData.assistive_devices,
-        positioning: currentData.positioning,
-        expected_discharge_date: currentData.expected_discharge_date,
-        discharge_teaching: currentData.discharge_teaching,
-        discharge_prescriptions: currentData.discharge_prescriptions,
-        home_enteral_feeding: currentData.home_enteral_feeding,
-        followup_appointments: currentData.followup_appointments,
-        // NOTE: labs, VS/pain, fluid intake, GU readings are NOT copied
-      });
+      return await createHandoverAPI(
+        {
+          // Only pass a real patient_id (not virtual/embedded IDs)
+          patient_id: selectedPatient.id.startsWith("embedded-")
+            ? undefined
+            : selectedPatient.id,
+          // Embed patient info directly on the handover
+          p_first_name:
+            currentData.p_first_name || selectedPatient.first_name || "",
+          p_last_name:
+            currentData.p_last_name || selectedPatient.last_name || "",
+          p_room_number:
+            currentData.p_room_number || selectedPatient.room_number || "",
+          p_bed: currentData.p_bed || selectedPatient.bed || "",
+          p_mrn: currentData.p_mrn || selectedPatient.mrn || "",
+          p_diagnosis:
+            currentData.p_diagnosis || selectedPatient.diagnosis || "",
+          p_date_of_birth:
+            currentData.p_date_of_birth ||
+            selectedPatient.date_of_birth ||
+            undefined,
+          p_age: currentData.p_age || selectedPatient.age || "",
+          p_attending_physician: currentData.p_attending_physician || "",
+          shift_date: new Date().toISOString(),
+          shift_type: targetShift,
+          outgoing_nurse: currentData.outgoing_nurse || "",
+          // Carry over status fields
+          status: currentData.status,
+          acuity: currentData.acuity,
+          isolation: currentData.isolation,
+          code_status: currentData.code_status,
+          // Pre-fill only static carryover data (NOT labs, VS, GU, fluid readings)
+          pertinent_issues: currentData.pertinent_issues,
+          admit_date: currentData.admit_date,
+          anticipated_discharge: currentData.anticipated_discharge,
+          allergies: currentData.allergies,
+          medications_summary: currentData.medications_summary,
+          prn_medications: currentData.prn_medications,
+          chemotherapies: currentData.chemotherapies,
+          iv_access: currentData.iv_access,
+          cvad_type: currentData.cvad_type,
+          cvad_dressing: currentData.cvad_dressing,
+          tpn: currentData.tpn,
+          tube_type: currentData.tube_type,
+          diet: currentData.diet,
+          activity: currentData.activity,
+          oxygen_needs: currentData.oxygen_needs,
+          braden_q_score: currentData.braden_q_score,
+          skin_care_plan: currentData.skin_care_plan,
+          mobility_restrictions: currentData.mobility_restrictions,
+          assistive_devices: currentData.assistive_devices,
+          positioning: currentData.positioning,
+          expected_discharge_date: currentData.expected_discharge_date,
+          discharge_teaching: currentData.discharge_teaching,
+          discharge_prescriptions: currentData.discharge_prescriptions,
+          home_enteral_feeding: currentData.home_enteral_feeding,
+          followup_appointments: currentData.followup_appointments,
+          // NOTE: labs, VS/pain, fluid intake, GU readings are NOT copied
+        },
+        authHeaders,
+      );
     };
 
     try {
@@ -481,9 +551,7 @@ export default function HandoverPage() {
       setShiftType("day");
       setSelectedHandover(dayHandover);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to create new handovers",
-      );
+      setError(err instanceof Error ? err.message : t("failedCreateHandovers"));
     }
   }
 
@@ -697,7 +765,7 @@ export default function HandoverPage() {
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-3" />
-          <p className="text-gray-600">Loading hand-off reports...</p>
+          <p className="text-gray-600">{t("loadingHandoffReports")}...</p>
         </div>
       </div>
     );
@@ -730,9 +798,7 @@ export default function HandoverPage() {
         setShiftType(newShift);
         setSelectedHandover(existingHandover);
       } else {
-        setError(
-          "No hand-off report exists for that shift. Use Duplicate to today's date to create it.",
-        );
+        setError(t("noHandoffReportForShift"));
       }
     };
 
@@ -763,20 +829,20 @@ export default function HandoverPage() {
                       d="M15 19l-7-7 7-7"
                     />
                   </svg>
-                  Back
+                  {t("back")}
                 </button>
                 <div className="h-6 w-px bg-gray-300" />
                 <div>
                   <h1 className="text-lg font-semibold text-gray-900">
-                    Room {selectedPatient.room_number}
+                    {tCommon("room")} {selectedPatient.room_number}
                     {selectedPatient.bed ? `-${selectedPatient.bed}` : ""}:{" "}
                     {selectedPatient.last_name}, {selectedPatient.first_name}
                   </h1>
                   <p className="text-sm text-gray-500">
-                    {selectedPatient.diagnosis || "No diagnosis"}
+                    {selectedPatient.diagnosis || t("noDiagnosis")}
                     {isFromPastDate && (
                       <span className="ml-2 px-2 py-0.5 bg-amber-100 text-amber-700 text-xs font-medium rounded">
-                        Read Only
+                        {t("readOnly")}
                       </span>
                     )}
                   </p>
@@ -802,7 +868,7 @@ export default function HandoverPage() {
                       d="M12 4v16m8-8H4"
                     />
                   </svg>
-                  Start Today&apos;s Report
+                  {t("startTodaysReport")}
                 </button>
               )}
             </div>
@@ -850,13 +916,13 @@ export default function HandoverPage() {
                   href="/dashboard"
                   className="text-sm text-blue-600 hover:underline mb-1 inline-block"
                 >
-                  ← Back to Dashboard
+                  {t("backToDashboard")}
                 </Link>
                 <h1 className="text-xl font-semibold text-gray-900">
-                  Hand-off Report
+                  {t("handoffReport")}
                 </h1>
                 <p className="text-sm text-gray-500">
-                  {new Date().toLocaleDateString("en-US", {
+                  {new Date().toLocaleDateString(locale, {
                     weekday: "long",
                     month: "long",
                     day: "numeric",
@@ -884,7 +950,7 @@ export default function HandoverPage() {
                 </svg>
                 <input
                   type="text"
-                  placeholder="Search patient or room…"
+                  placeholder={t("searchPatientOrRoom")}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full pl-9 pr-4 py-2 text-sm border border-gray-200 rounded-lg bg-gray-50 focus:bg-white focus:ring-2 focus:ring-blue-500/20 focus:border-blue-400 outline-none transition-all"
@@ -918,20 +984,20 @@ export default function HandoverPage() {
                 className="text-sm text-gray-500"
                 title={
                   patientConfig.reportMode === "daily"
-                    ? "All reports"
-                    : `${shiftType.charAt(0).toUpperCase() + shiftType.slice(1)} shift reports only`
+                    ? t("allReports")
+                    : `${shiftType === "day" ? t("dayShift") : t("nightShift")} ${t("shiftType")} ${t("reports")}`
                 }
               >
                 {completedCount}/{totalCount}{" "}
                 {patientConfig.reportMode === "daily"
-                  ? "reports"
-                  : `${shiftType} reports`}
+                  ? t("reports")
+                  : `${shiftType === "day" ? t("dayShift") : t("nightShift")} ${t("reports")}`}
               </span>
 
               <button
                 onClick={() => setShowFieldSettings(true)}
                 className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-                title="Hand-off report field settings"
+                title={t("handoffReportFieldSettings")}
               >
                 <svg
                   className="w-4 h-4"
@@ -970,7 +1036,7 @@ export default function HandoverPage() {
                     d="M12 6v6m0 0v6m0-6h6m-6 0H6"
                   />
                 </svg>
-                New Hand-Off Report
+                {t("newHandoffReport")}
               </button>
             </div>
           </div>
@@ -1010,18 +1076,17 @@ export default function HandoverPage() {
               />
             </svg>
             <h3 className="text-lg font-medium text-gray-900 mb-2">
-              No hand-off reports yet
+              {t("noHandoffReportsYet")}
             </h3>
             <p className="text-sm text-gray-500 mb-4 max-w-sm mx-auto">
-              Create your first hand-off report to get started. Patient details
-              are captured directly in the report.
+              {t("createFirstHandoffDesc")}
             </p>
             <div className="flex justify-center gap-3">
               <button
                 onClick={() => setShowNewReport(true)}
                 className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
               >
-                New Hand-Off Report
+                {t("newHandOffReportButton")}
               </button>
             </div>
           </div>
@@ -1033,10 +1098,11 @@ export default function HandoverPage() {
                 className="bg-white rounded-xl border border-gray-200 overflow-hidden"
               >
                 <div className="bg-gray-50 px-4 py-2 border-b border-gray-200 flex items-center justify-between">
-                  <h3 className="font-semibold text-gray-700">Room {room}</h3>
+                  <h3 className="font-semibold text-gray-700">
+                    {tCommon("room")} {room}
+                  </h3>
                   <span className="text-xs text-gray-400">
-                    {patientsByRoom[room].length} patient
-                    {patientsByRoom[room].length !== 1 ? "s" : ""}
+                    {t("patientCount", { count: patientsByRoom[room].length })}
                   </span>
                 </div>
                 <div className="divide-y divide-gray-100">
@@ -1085,7 +1151,9 @@ export default function HandoverPage() {
                                   {displayPatient.first_name}
                                 </span>
                                 <span className="text-xs text-gray-500">
-                                  Room {displayPatient.room_number || "N/A"}
+                                  {tCommon("room")}{" "}
+                                  {displayPatient.room_number ||
+                                    t("notAvailable")}
                                 </span>
                                 {displayPatient.mrn && (
                                   <span className="text-xs text-gray-500">
@@ -1100,18 +1168,34 @@ export default function HandoverPage() {
                                           ? "bg-amber-100 text-amber-700"
                                           : "bg-indigo-100 text-indigo-700"
                                       }`}
-                                      title={`${currentHandover.shift_type === "day" ? "Day" : "Night"} shift report`}
+                                      title={
+                                        currentHandover.shift_type === "day"
+                                          ? t("dayShiftReportTitle")
+                                          : t("nightShiftReportTitle")
+                                      }
                                     >
                                       {currentHandover.shift_type === "day"
-                                        ? "D"
-                                        : "N"}
+                                        ? t("dayShiftShort")
+                                        : t("nightShiftShort")}
                                     </div>
                                   )}
                                 {currentHandover && (
                                   <span
                                     className={`px-2 py-0.5 text-xs font-medium rounded-full ${statusColors[currentHandover.status] || statusColors.stable}`}
                                   >
-                                    {currentHandover.status}
+                                    {currentHandover.status === "stable"
+                                      ? t("stable")
+                                      : currentHandover.status === "improved"
+                                        ? t("improved")
+                                        : currentHandover.status === "unchanged"
+                                          ? t("unchanged")
+                                          : currentHandover.status ===
+                                              "worsening"
+                                            ? t("worsening")
+                                            : currentHandover.status ===
+                                                "critical"
+                                              ? t("critical")
+                                              : currentHandover.status}
                                   </span>
                                 )}
                                 {currentHandover?.is_completed && (
@@ -1133,16 +1217,16 @@ export default function HandoverPage() {
                               <div className="flex items-center gap-3 mt-1">
                                 <p className="text-sm text-gray-500 truncate">
                                   {displayPatient.diagnosis ||
-                                    "No diagnosis specified"}
+                                    t("noDiagnosisSpecified")}
                                 </p>
                                 {/* Critical clinical alerts */}
                                 <CriticalAlerts handover={currentHandover} />
                                 {currentHandover?.updated_at && (
                                   <span className="text-xs text-gray-400 shrink-0">
-                                    Last updated{" "}
+                                    {t("lastUpdated")}{" "}
                                     {new Date(
                                       currentHandover.updated_at,
-                                    ).toLocaleString(undefined, {
+                                    ).toLocaleString(locale, {
                                       month: "short",
                                       day: "numeric",
                                       hour: "numeric",
@@ -1179,7 +1263,7 @@ export default function HandoverPage() {
                                   );
                                 }}
                                 className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                                title="Print report"
+                                title={t("printReport")}
                               >
                                 <svg
                                   className="w-4 h-4"
@@ -1201,7 +1285,7 @@ export default function HandoverPage() {
                                 openPatientHandover(displayPatient)
                               }
                               className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                              title="Open handover form"
+                              title={t("openHandoverForm")}
                             >
                               <svg
                                 className="w-4 h-4"
@@ -1223,7 +1307,7 @@ export default function HandoverPage() {
                                 openHandoverHistory(displayPatient)
                               }
                               className="p-2 text-gray-400 hover:text-purple-600 hover:bg-purple-50 rounded-lg transition-colors"
-                              title="View handover history"
+                              title={t("viewHandoverHistory")}
                             >
                               <svg
                                 className="w-4 h-4"
@@ -1262,9 +1346,7 @@ export default function HandoverPage() {
                                   );
 
                                 if (todayTargetShiftExists) {
-                                  alert(
-                                    "A handover report already exists for today for that shift.",
-                                  );
+                                  alert(t("handoverExistsForShiftToday"));
                                   return;
                                 }
 
@@ -1307,6 +1389,8 @@ export default function HandoverPage() {
 
                                 if (latestForPatient) {
                                   try {
+                                    const authHeadersDup =
+                                      await getAuthHeaders();
                                     const newHandover = await createHandoverAPI(
                                       {
                                         patient_id: patient.id.startsWith(
@@ -1403,6 +1487,7 @@ export default function HandoverPage() {
                                           latestForPatient.followup_appointments,
                                         events_this_shift: "", // Clear daily notes for new day
                                       },
+                                      authHeadersDup,
                                     );
                                     setHandovers((prev) => [
                                       ...prev,
@@ -1416,17 +1501,15 @@ export default function HandoverPage() {
                                     setError(
                                       err instanceof Error
                                         ? err.message
-                                        : "Failed to create new handover",
+                                        : t("failedCreateHandover"),
                                     );
                                   }
                                 } else {
-                                  setError(
-                                    "No existing hand-off found to duplicate for this patient.",
-                                  );
+                                  setError(t("noExistingHandoffToDuplicate"));
                                 }
                               }}
                               className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors"
-                              title="Duplicate to today (copies medical info, clears daily notes)"
+                              title={t("duplicateToTodayTitle")}
                             >
                               <svg
                                 className="w-4 h-4"
@@ -1451,20 +1534,20 @@ export default function HandoverPage() {
                                   }
                                   className="px-2 py-1 text-xs font-medium text-white bg-red-600 rounded hover:bg-red-700"
                                 >
-                                  Confirm
+                                  {tCommon("confirm")}
                                 </button>
                                 <button
                                   onClick={() => setDeleteConfirm(null)}
                                   className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 rounded hover:bg-gray-200"
                                 >
-                                  Cancel
+                                  {tCommon("cancel")}
                                 </button>
                               </div>
                             ) : (
                               <button
                                 onClick={() => setDeleteConfirm(patient.id)}
                                 className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                                title="Delete patient"
+                                title={tCommon("delete")}
                               >
                                 <svg
                                   className="w-4 h-4"
@@ -1532,7 +1615,9 @@ export default function HandoverPage() {
           }}
           config={patientConfig}
           shiftType={shiftType}
-          outgoingNurse={user?.fullName || user?.firstName || "Nurse"}
+          outgoingNurse={
+            user?.fullName || user?.firstName || t("nurseFallback")
+          }
         />
       )}
 
@@ -1566,11 +1651,12 @@ export default function HandoverPage() {
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
               <div>
                 <h2 className="text-lg font-semibold text-gray-900">
-                  Handover History
+                  {t("handoverHistory")}
                 </h2>
                 <p className="text-sm text-gray-500">
-                  {historyPatient.last_name}, {historyPatient.first_name} — Room{" "}
-                  {historyPatient.room_number || "N/A"}
+                  {historyPatient.last_name}, {historyPatient.first_name} —{" "}
+                  {tCommon("room")}{" "}
+                  {historyPatient.room_number || t("notAvailable")}
                 </p>
               </div>
               <button
@@ -1601,25 +1687,27 @@ export default function HandoverPage() {
               {historyLoading ? (
                 <div className="flex items-center justify-center py-12">
                   <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600" />
-                  <span className="ml-3 text-gray-500">Loading history…</span>
+                  <span className="ml-3 text-gray-500">
+                    {t("loadingHistory")}
+                  </span>
                 </div>
               ) : historyHandovers.length === 0 ? (
                 <div className="text-center py-12 text-gray-500">
-                  No handover history found for this patient.
+                  {t("noHistoryForPatient")}
                 </div>
               ) : (
                 <div className="space-y-2">
                   {historyHandovers.map((h, idx) => {
                     const dateStr = h.shift_date
-                      ? new Date(h.shift_date).toLocaleDateString("en-US", {
+                      ? new Date(h.shift_date).toLocaleDateString(locale, {
                           weekday: "short",
                           month: "short",
                           day: "numeric",
                           year: "numeric",
                         })
-                      : "Unknown date";
+                      : t("unknownDate");
                     const timeStr = h.updated_at
-                      ? new Date(h.updated_at).toLocaleTimeString(undefined, {
+                      ? new Date(h.updated_at).toLocaleTimeString(locale, {
                           hour: "numeric",
                           minute: "2-digit",
                         })
@@ -1668,24 +1756,27 @@ export default function HandoverPage() {
                                 </span>
                                 {patientConfig.reportMode === "shift" && (
                                   <span className="text-xs text-gray-500 capitalize">
-                                    {h.shift_type} shift
+                                    {h.shift_type === "day"
+                                      ? t("dayShift")
+                                      : t("nightShift")}{" "}
+                                    {t("shift")}
                                   </span>
                                 )}
                                 {isLatest && (
                                   <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-blue-100 text-blue-700">
-                                    LATEST
+                                    {t("latest")}
                                   </span>
                                 )}
                               </div>
                               <div className="flex items-center gap-2 mt-0.5">
                                 {h.outgoing_nurse && (
                                   <span className="text-xs text-gray-500">
-                                    By {h.outgoing_nurse}
+                                    {t("byNurse", { nurse: h.outgoing_nurse })}
                                   </span>
                                 )}
                                 {timeStr && (
                                   <span className="text-xs text-gray-400">
-                                    at {timeStr}
+                                    {t("atTime", { time: timeStr })}
                                   </span>
                                 )}
                               </div>
@@ -1720,7 +1811,17 @@ export default function HandoverPage() {
                                         : "bg-gray-100 text-gray-700"
                               }`}
                             >
-                              {h.status}
+                              {h.status === "stable"
+                                ? t("stable")
+                                : h.status === "improved"
+                                  ? t("improved")
+                                  : h.status === "unchanged"
+                                    ? t("unchanged")
+                                    : h.status === "worsening"
+                                      ? t("worsening")
+                                      : h.status === "critical"
+                                        ? t("critical")
+                                        : h.status}
                             </span>
                             <svg
                               className="w-4 h-4 text-gray-400"
@@ -1747,7 +1848,7 @@ export default function HandoverPage() {
             {/* Footer */}
             <div className="px-6 py-3 border-t border-gray-200 bg-gray-50 rounded-b-xl">
               <p className="text-xs text-gray-400 text-center">
-                Click any entry to view or edit that handover report
+                {t("historyFooterHint")}
               </p>
             </div>
           </div>

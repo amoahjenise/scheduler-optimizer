@@ -12,3 +12,7 @@ from .schedule_demand import ScheduleDemand, ShiftTemplate
 from .time_off_request import TimeOffRequest, NurseHoursReconciliation
 from .recurrence import ScheduleRecurrence, EmployeePreferredSchedule, GeneratedScheduleSnapshot
 from .schedule_rule import ScheduleRule
+
+# Quebec Compliance Models
+from .privacy import PrivacyConsent, DataAccessRequest, PrivacyAuditLog, PrivacyBreach, DataRetentionPolicy
+from .analytics import AnalyticsEvent, SchedulingMetrics, HandoverMetrics, UserActivityMetrics, PilotStudyReport

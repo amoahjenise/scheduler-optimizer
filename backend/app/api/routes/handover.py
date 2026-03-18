@@ -102,11 +102,11 @@ def get_todays_handovers(
     """
     now_utc = datetime.now(timezone.utc)
     today_utc = now_utc.date()
-    # Use a tight window for today: from yesterday 18:00 UTC (to catch evening
-    # shifts stored near midnight in local-tz) through end of today UTC+1.
-    # This is narrower than the old 3-day window which pulled stale records.
-    start = datetime.combine(today_utc - timedelta(days=1), datetime.min.time().replace(hour=18))
-    end = datetime.combine(today_utc + timedelta(days=1), datetime.min.time())
+    # Use a very wide window to accommodate ALL global timezones (UTC-12 to UTC+14):
+    # From yesterday 08:00 UTC through tomorrow 20:00 UTC (64-hour window).
+    # This ensures handovers created "today" in ANY timezone on Earth are captured.
+    start = datetime.combine(today_utc - timedelta(days=1), datetime.min.time().replace(hour=8), tzinfo=timezone.utc)
+    end = datetime.combine(today_utc + timedelta(days=1), datetime.min.time().replace(hour=20), tzinfo=timezone.utc)
     query = db.query(Handover).options(joinedload(Handover.patient)).filter(
         Handover.shift_date >= start,
         Handover.shift_date < end

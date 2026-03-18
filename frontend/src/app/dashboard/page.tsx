@@ -3,6 +3,7 @@
 import { useUser } from "@clerk/nextjs";
 import Link from "next/link";
 import { useState, useEffect } from "react";
+import { useTranslations, useLocale } from "next-intl";
 import {
   fetchPatientsAPI,
   fetchTodaysHandoversAPI,
@@ -101,6 +102,8 @@ export default function Dashboard() {
     getAuthHeaders,
     isLoading: orgLoading,
   } = useOrganization();
+  const t = useTranslations("dashboard");
+  const locale = useLocale();
   const [stats, setStats] = useState({
     activePatients: 0,
     completedHandovers: 0,
@@ -132,9 +135,9 @@ export default function Dashboard() {
 
         // Fetch independently so one group failing doesn't zero-out the other
         const [patientsRes, dayHandovers, nightHandovers] = await Promise.all([
-          fetchPatientsAPI({ active_only: true }),
-          fetchTodaysHandoversAPI("day"),
-          fetchTodaysHandoversAPI("night"),
+          fetchPatientsAPI({ active_only: true }, authHeaders),
+          fetchTodaysHandoversAPI("day", authHeaders),
+          fetchTodaysHandoversAPI("night", authHeaders),
         ]);
 
         let schedulesList: OptimizedSchedule[] = [];
@@ -200,8 +203,10 @@ export default function Dashboard() {
           (handover) => ({
             id: `handover-${handover.id}`,
             type: "handover",
-            title: `Hand-off completed by ${handover.outgoing_nurse}`,
-            subtitle: `${handover.shift_type === "day" ? "Day" : "Night"} shift • ${new Date(handover.shift_date).toLocaleDateString()}`,
+            title: t("handoverCompletedByActivity", {
+              nurse: handover.outgoing_nurse,
+            }),
+            subtitle: `${handover.shift_type === "day" ? t("dayShiftLabel") : t("nightShiftLabel")} ${t("shift")} • ${new Date(handover.shift_date).toLocaleDateString()}`,
             timestamp: new Date(handover.shift_date).getTime(),
           }),
         );
@@ -211,8 +216,10 @@ export default function Dashboard() {
         ).map((patient: Patient) => ({
           id: `patient-${patient.id}`,
           type: "patient",
-          title: `Patient added: ${patient.last_name}, ${patient.first_name}`,
-          subtitle: `Room ${patient.room_number}${patient.bed ? ` • Bed ${patient.bed}` : ""}`,
+          title: t("patientAddedActivity", {
+            name: `${patient.last_name}, ${patient.first_name}`,
+          }),
+          subtitle: `${t("room")} ${patient.room_number}${patient.bed ? ` • ${t("bed")} ${patient.bed}` : ""}`,
           timestamp: new Date(patient.created_at).getTime(),
         }));
 
@@ -256,7 +263,7 @@ export default function Dashboard() {
           const start = startRaw || fallbackDates[0];
           const end = endRaw || fallbackDates[fallbackDates.length - 1];
 
-          if (!start || !end) return "Schedule period unavailable";
+          if (!start || !end) return t("schedulePeriodUnavailable");
 
           const startDate = new Date(
             /^\d{4}-\d{2}-\d{2}$/.test(start) ? `${start}T00:00:00` : start,
@@ -269,7 +276,7 @@ export default function Dashboard() {
             Number.isNaN(startDate.getTime()) ||
             Number.isNaN(endDate.getTime())
           ) {
-            return "Schedule period unavailable";
+            return t("schedulePeriodUnavailable");
           }
 
           return `${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()}`;
@@ -277,21 +284,86 @@ export default function Dashboard() {
 
         const scheduleActivities: RecentActivityItem[] = (
           Array.isArray(schedulesList) ? schedulesList : []
-        ).map((schedule) => ({
-          id: `schedule-${schedule.id}`,
-          type: "schedule",
-          title: `${schedule.is_finalized ? "Schedule finalized" : "Draft schedule saved"}: ${formatSchedulePeriod(schedule)}`,
-          subtitle: `Created ${new Date(schedule.created_at).toLocaleDateString()}`,
-          timestamp: new Date(schedule.created_at).getTime(),
-        }));
+        ).map((schedule) => {
+          const rawSchedule = schedule as OptimizedSchedule & {
+            created_by_name?: string;
+            created_by?: string;
+          };
+
+          const scheduleDataRaw =
+            typeof schedule.schedule_data === "string"
+              ? (() => {
+                  try {
+                    return JSON.parse(schedule.schedule_data);
+                  } catch {
+                    return {};
+                  }
+                })()
+              : (schedule.schedule_data ?? {});
+
+          const scheduleData =
+            scheduleDataRaw && typeof scheduleDataRaw === "object"
+              ? (scheduleDataRaw as Record<string, any>)
+              : {};
+
+          const fallbackUserName =
+            user?.fullName ||
+            user?.firstName ||
+            user?.primaryEmailAddress?.emailAddress ||
+            "";
+
+          const rawCreatedBy =
+            rawSchedule.created_by_name ||
+            rawSchedule.created_by ||
+            scheduleData.created_by_name ||
+            scheduleData.createdByName ||
+            scheduleData.created_by ||
+            scheduleData.createdBy;
+
+          const authorName =
+            rawCreatedBy === user?.id && fallbackUserName
+              ? fallbackUserName
+              : rawCreatedBy || null;
+
+          const createdDate = new Date(
+            schedule.created_at,
+          ).toLocaleDateString();
+
+          return {
+            id: `schedule-${schedule.id}`,
+            type: "schedule" as const,
+            title: schedule.is_finalized
+              ? t("scheduleFinalizedActivity", {
+                  period: formatSchedulePeriod(schedule),
+                })
+              : t("draftScheduleSavedActivity", {
+                  period: formatSchedulePeriod(schedule),
+                }),
+            subtitle: authorName
+              ? t("createdByOn", {
+                  name: String(authorName),
+                  date: createdDate,
+                })
+              : t("createdOn", { date: createdDate }),
+            timestamp: new Date(schedule.created_at).getTime(),
+          };
+        });
 
         const deletionRecentActivities: RecentActivityItem[] = (
           Array.isArray(deletionActivities) ? deletionActivities : []
         ).map((activity: DeletionActivity) => ({
           id: `deletion-${activity.id}`,
           type: activity.object_type,
-          title: `${activity.object_type === "patient" ? "Patient" : activity.object_type === "schedule" ? "Schedule" : "Hand-off"} deleted: ${activity.object_label}`,
-          subtitle: `Deleted by ${activity.performed_by_name || "Unknown user"}${activity.details ? ` • ${activity.details}` : ""}`,
+          title:
+            activity.object_type === "patient"
+              ? t("patientDeleted", { label: activity.object_label })
+              : activity.object_type === "schedule"
+                ? t("scheduleDeleted", { label: activity.object_label })
+                : t("handoverDeleted", { label: activity.object_label }),
+          subtitle:
+            t("deletedByActivity", {
+              name: activity.performed_by_name || "?",
+            }) + (activity.details ? ` • ${activity.details}` : ""),
           timestamp: new Date(activity.occurred_at).getTime(),
         }));
 
@@ -479,12 +551,15 @@ export default function Dashboard() {
 
   const greeting =
     currentTime.getHours() < 12
-      ? "Good morning"
+      ? t("goodMorning")
       : currentTime.getHours() < 18
-        ? "Good afternoon"
-        : "Good evening";
+        ? t("goodAfternoon")
+        : t("goodEvening");
 
-  const weekDays = ["S", "M", "T", "W", "T", "F", "S"];
+  const weekDays = Array.from({ length: 7 }, (_, index) => {
+    const dayDate = new Date(2024, 0, 7 + index);
+    return dayDate.toLocaleDateString(locale, { weekday: "narrow" });
+  });
   const today = currentTime.getDay();
 
   // Generate week dates
@@ -508,7 +583,7 @@ export default function Dashboard() {
           <div className="flex items-start justify-between mb-6">
             <div>
               <p className="text-gray-400 text-sm mb-1">
-                {currentTime.toLocaleDateString("en-US", {
+                {currentTime.toLocaleDateString(locale, {
                   weekday: "long",
                   month: "long",
                   day: "numeric",
@@ -526,8 +601,8 @@ export default function Dashboard() {
                   }`}
                 >
                   {isDayShiftActive
-                    ? "☀️ Current shift: Day (7AM - 7PM)"
-                    : "🌙 Current shift: Night (7PM - 7AM)"}
+                    ? t("currentShiftDay")
+                    : t("currentShiftNight")}
                 </span>
               </div>
             </div>
@@ -540,15 +615,15 @@ export default function Dashboard() {
                 <RefreshCw
                   className={`w-4 h-4 ${stats.loading ? "animate-spin" : ""}`}
                 />
-                {stats.loading ? "Refreshing..." : "Refresh"}
+                {stats.loading ? t("refreshing") : t("refresh")}
               </button>
               <p className="text-[11px] text-gray-400 min-h-[16px]">
                 {stats.loading
-                  ? "Updating dashboard..."
+                  ? t("updatingDashboard")
                   : refreshError
                     ? refreshError
                     : lastRefreshedAt
-                      ? `Updated ${lastRefreshedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                      ? `${t("updated")} ${lastRefreshedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
                       : ""}
               </p>
             </div>
@@ -569,7 +644,7 @@ export default function Dashboard() {
                     <Activity className="w-5 h-5 text-[#1A5CFF]" />
                   </div>
                   <span className="text-xs font-medium text-[#1A5CFF] flex items-center gap-1">
-                    View details <ChevronRight className="w-3 h-3" />
+                    {t("viewDetails")} <ChevronRight className="w-3 h-3" />
                   </span>
                 </div>
                 <div className="flex items-end justify-between">
@@ -603,7 +678,7 @@ export default function Dashboard() {
                   <FileText className="w-5 h-5 text-emerald-600" />
                 </div>
                 <span className="text-xs font-medium text-emerald-600 flex items-center gap-1">
-                  View details <ChevronRight className="w-3 h-3" />
+                  {t("viewDetails")} <ChevronRight className="w-3 h-3" />
                 </span>
               </div>
               <div className="flex items-end justify-between">
@@ -614,7 +689,7 @@ export default function Dashboard() {
                       : `${stats.completedHandovers}/${stats.totalHandovers}`}
                   </p>
                   <p className="text-sm text-gray-500 mt-1">
-                    Hand-Offs Completed
+                    {t("handoffsCompleted")}
                   </p>
                 </div>
                 <div className="flex items-end gap-1 h-12">
@@ -639,7 +714,7 @@ export default function Dashboard() {
                   <Calendar className="w-5 h-5 text-purple-600" />
                 </div>
                 <span className="text-xs font-medium text-purple-600 flex items-center gap-1">
-                  View details <ChevronRight className="w-3 h-3" />
+                  {t("viewDetails")} <ChevronRight className="w-3 h-3" />
                 </span>
               </div>
               <div className="flex items-end justify-between">
@@ -653,8 +728,8 @@ export default function Dashboard() {
                   </p>
                   <p className="text-sm text-gray-500 mt-1">
                     {isAdmin
-                      ? "Finalized / Total Schedules"
-                      : "Finalized Schedules"}
+                      ? t("finalizedTotalSchedules")
+                      : t("finalizedSchedulesLabel")}
                   </p>
                 </div>
                 <div className="flex items-end gap-1 h-12">
@@ -674,10 +749,10 @@ export default function Dashboard() {
           <div className="mb-6 bg-gray-50 border border-gray-200 rounded-2xl p-4 shadow-sm">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-gray-900">
-                Quick Actions
+                {t("quickActions")}
               </h2>
               <span className="text-xs text-gray-500">
-                Most-used tasks for shift workflow
+                {t("quickActionsSubtitle")}
               </span>
             </div>
             <div
@@ -692,11 +767,9 @@ export default function Dashboard() {
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-gray-900">
-                    New Hand-Off
+                    {t("newHandOff")}
                   </p>
-                  <p className="text-xs text-gray-500">
-                    Create a new hand-off report
-                  </p>
+                  <p className="text-xs text-gray-500">{t("newHandOffDesc")}</p>
                 </div>
               </Link>
 
@@ -728,12 +801,12 @@ export default function Dashboard() {
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-gray-900">
-                    {isAdmin ? "Schedule Optimizer" : "Schedules"}
+                    {isAdmin ? t("scheduleOptimizer") : t("schedulesAction")}
                   </p>
                   <p className="text-xs text-gray-500">
                     {isAdmin
-                      ? "Create or refine staffing plan"
-                      : "Review finalized roster"}
+                      ? t("scheduleOptimizerDesc")
+                      : t("schedulesActionDesc")}
                   </p>
                 </div>
               </Link>
@@ -759,12 +832,12 @@ export default function Dashboard() {
                     </div>
                     <div>
                       <p className="font-semibold text-gray-900">
-                        Current Shift
+                        {t("currentShiftLabel")}
                       </p>
                       <p className="text-xs text-gray-500">
                         {isDayShiftActive
-                          ? "Day Shift (7AM - 7PM)"
-                          : "Night Shift (7PM - 7AM)"}
+                          ? t("dayShiftHours")
+                          : t("nightShiftHours")}
                       </p>
                     </div>
                   </div>
@@ -850,10 +923,10 @@ export default function Dashboard() {
                   <div className="text-center py-6">
                     <Calendar className="w-10 h-10 text-gray-300 mx-auto mb-3" />
                     <p className="text-sm font-medium text-gray-600 mb-1">
-                      No Active Schedule
+                      {t("noActiveSchedule")}
                     </p>
                     <p className="text-xs text-gray-400">
-                      Create a schedule to see staff assignments
+                      {t("createSchedulePrompt")}
                     </p>
                   </div>
                 )}
@@ -865,10 +938,12 @@ export default function Dashboard() {
               {/* Week Calendar */}
               <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
                 <div className="mb-4 flex items-center justify-between">
-                  <h3 className="font-semibold text-gray-900">This Week</h3>
+                  <h3 className="font-semibold text-gray-900">
+                    {t("thisWeek")}
+                  </h3>
                   <div className="inline-flex items-center gap-1 rounded-full border border-gray-200 bg-gray-50 px-2 py-1 text-[10px] font-medium text-gray-600">
                     <Clock className="h-3 w-3" />
-                    Live
+                    {t("live")}
                   </div>
                 </div>
                 <div className="grid grid-cols-7 gap-1.5">
@@ -926,7 +1001,7 @@ export default function Dashboard() {
                             onMouseLeave={() => setHoveredDay(null)}
                           >
                             <div className="text-xs font-semibold text-gray-900 mb-2">
-                              {dayDate.toLocaleDateString("en-US", {
+                              {dayDate.toLocaleDateString(locale, {
                                 weekday: "short",
                                 month: "short",
                                 day: "numeric",
@@ -988,13 +1063,13 @@ export default function Dashboard() {
               <div className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="font-semibold text-gray-900">
-                    Recent Activity
+                    {t("recentActivity")}
                   </h3>
                   <Link
                     href="/activities"
                     className="text-xs font-medium text-[#1A5CFF] hover:underline"
                   >
-                    View all
+                    {t("viewAll")}
                   </Link>
                 </div>
                 <div className="space-y-2.5">
@@ -1034,7 +1109,7 @@ export default function Dashboard() {
                   ) : (
                     <div className="text-center py-5">
                       <p className="text-sm text-gray-400">
-                        No activity today yet
+                        {t("noActivityToday")}
                       </p>
                       <Link
                         href="/handover"

@@ -8,6 +8,7 @@ import {
   PatientStatus,
   updateHandoverAPI,
 } from "../../lib/api";
+import { useOrganization } from "../../context/OrganizationContext";
 
 interface BatchHandoverGridProps {
   patients: Patient[];
@@ -166,6 +167,8 @@ export default function BatchHandoverGrid({
 }: BatchHandoverGridProps) {
   const [savingId, setSavingId] = useState<string | null>(null);
 
+  const { getAuthHeaders } = useOrganization();
+
   const getHandoverForPatient = useCallback(
     (patientId: string) => {
       return handovers.find((h) => h.patient_id === patientId);
@@ -177,7 +180,12 @@ export default function BatchHandoverGrid({
     async (handoverId: string, field: keyof HandoverUpdate, value: string) => {
       setSavingId(handoverId);
       try {
-        const updated = await updateHandoverAPI(handoverId, { [field]: value });
+        const authHeaders = await getAuthHeaders();
+        const updated = await updateHandoverAPI(
+          handoverId,
+          { [field]: value },
+          authHeaders,
+        );
         onHandoverUpdate(updated);
       } catch (err) {
         console.error("Failed to update:", err);

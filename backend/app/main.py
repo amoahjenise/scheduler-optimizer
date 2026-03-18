@@ -4,12 +4,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import user, schedule, system_prompts, webhook, patient, handover, nurse, organization, shift_codes, deletion_activity, scheduling
 from app.api.routes import optimized_schedule
 from app.api.routes import schedule_rules
+from app.api.routes import fhir
+from app.api.routes import analytics
+# from app.api.routes import privacy  # TODO: Fix parameter ordering
 from app.core.config import settings
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-app = FastAPI()
+app = FastAPI(
+    title="Chronofy API",
+    description="Healthcare scheduling platform API with HL7 FHIR R5 support for Quebec Bill S-5 compliance",
+    version="1.0.0"
+)
 
 # CORS defaults are explicit to keep browser behavior predictable and secure.
 # Browsers reject credentialed requests when allow_origins includes '*'.
@@ -44,3 +51,12 @@ app.include_router(shift_codes.router, tags=["Shift Codes"])
 app.include_router(scheduling.router)
 app.include_router(webhook.router)
 app.include_router(schedule_rules.router, tags=["Schedule Rules"])
+
+# FHIR R5 API for healthcare interoperability (Bill S-5 compliance)
+app.include_router(fhir.router, prefix="/fhir/r5", tags=["FHIR R5"])
+
+# Analytics API for pilot study ROI tracking
+app.include_router(analytics.router, prefix="/analytics", tags=["Analytics"])
+
+# Privacy API for Law 25 (Quebec) compliance
+# app.include_router(privacy.router, prefix="/privacy", tags=["Privacy"])  # TODO: Fix parameter ordering
