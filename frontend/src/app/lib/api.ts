@@ -263,14 +263,24 @@ export async function fetchOptimizedSchedulesAPI(
 }
 
 // Fetch a specific optimized schedule by ID
-export async function fetchOptimizedScheduleByIdAPI(scheduleId: string) {
-  return apiRequest<any>(`/optimize/${scheduleId}`, { retryCount: 2 });
+export async function fetchOptimizedScheduleByIdAPI(
+  scheduleId: string,
+  headers?: Record<string, string>,
+) {
+  return apiRequest<any>(`/optimize/${scheduleId}`, {
+    headers,
+    retryCount: 2,
+  });
 }
 
 // Finalize (approve) an optimized schedule
-export async function finalizeScheduleAPI(scheduleId: string) {
+export async function finalizeScheduleAPI(
+  scheduleId: string,
+  headers?: Record<string, string>,
+) {
   return apiRequest<any>(`/optimize/${scheduleId}/finalize`, {
     method: "PATCH",
+    headers,
   });
 }
 
@@ -349,12 +359,16 @@ export async function fetchSystemPromptsAPI() {
 }
 
 // Save a new system prompt with name and content
-export async function saveSystemPromptAPI(name: string, content: string) {
+export async function saveSystemPromptAPI(
+  name: string,
+  content: string,
+  headers?: Record<string, string>,
+) {
   return apiRequest<{ id: number; name: string; content: string }>(
     "/system-prompt/",
     {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(headers || {}) },
       body: JSON.stringify({ name, content }),
     },
   );
@@ -367,12 +381,12 @@ export async function getSystemPromptById(id: number) {
   );
 }
 
-export async function resetSystemPromptAPI() {
+export async function resetSystemPromptAPI(headers?: Record<string, string>) {
   return apiRequest<{ id: number; name: string; content: string }>(
     "/system-prompt/reset",
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(headers || {}) },
     },
   );
 }
@@ -435,7 +449,10 @@ export async function fetchPatientsAPI(
   return res.json();
 }
 
-export async function createPatientAPI(data: PatientCreate): Promise<Patient> {
+export async function createPatientAPI(
+  data: PatientCreate,
+  headers?: Record<string, string>,
+): Promise<Patient> {
   // Clean up empty strings to null for datetime fields
   const cleanedData = {
     ...data,
@@ -445,7 +462,7 @@ export async function createPatientAPI(data: PatientCreate): Promise<Patient> {
   };
   const res = await fetch(`${API_BASE}/patients/`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
     body: JSON.stringify(cleanedData),
   });
   if (!res.ok) {
@@ -458,6 +475,7 @@ export async function createPatientAPI(data: PatientCreate): Promise<Patient> {
 export async function updatePatientAPI(
   id: string,
   data: Partial<PatientCreate>,
+  headers?: Record<string, string>,
 ): Promise<Patient> {
   // Clean up empty strings to null for datetime fields
   const cleanedData = {
@@ -468,7 +486,7 @@ export async function updatePatientAPI(
   };
   const res = await fetch(`${API_BASE}/patients/${id}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
     body: JSON.stringify(cleanedData),
   });
   if (!res.ok) {
@@ -494,10 +512,11 @@ export async function deletePatientAPI(
 
 export async function createBulkPatientsAPI(
   patients: PatientCreate[],
+  headers?: Record<string, string>,
 ): Promise<Patient[]> {
   const res = await fetch(`${API_BASE}/patients/bulk`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
     body: JSON.stringify(patients),
   });
   if (!res.ok) {
@@ -1071,10 +1090,11 @@ export async function fetchHandoverAPI(id: string): Promise<Handover> {
 
 export async function createHandoverAPI(
   data: HandoverCreate,
+  headers?: Record<string, string>,
 ): Promise<Handover> {
   const res = await fetch(`${API_BASE}/handovers/`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
     body: JSON.stringify(data),
   });
   if (!res.ok) {
@@ -1087,10 +1107,11 @@ export async function createHandoverAPI(
 export async function updateHandoverAPI(
   id: string,
   data: HandoverUpdate,
+  headers?: Record<string, string>,
 ): Promise<Handover> {
   const res = await fetch(`${API_BASE}/handovers/${id}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
     body: JSON.stringify(data),
   });
   if (!res.ok) {
@@ -1103,6 +1124,7 @@ export async function updateHandoverAPI(
 export async function completeHandoverAPI(
   id: string,
   incoming_nurse: string,
+  headers?: Record<string, string>,
 ): Promise<Handover> {
   const urls = [
     `${API_BASE}/handovers/${id}/complete`,
@@ -1116,7 +1138,7 @@ export async function completeHandoverAPI(
     for (const method of methods) {
       const res = await fetch(url, {
         method,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(headers || {}) },
         body: JSON.stringify({ incoming_nurse }),
       });
 
@@ -1160,11 +1182,13 @@ export interface CleanupResult {
 
 export async function cleanupOldHandoversAPI(
   daysToKeep: number = 30,
+  headers?: Record<string, string>,
 ): Promise<CleanupResult> {
   const res = await fetch(
     `${API_BASE}/handovers/cleanup?days_to_keep=${daysToKeep}`,
     {
       method: "DELETE",
+      headers,
     },
   );
   if (!res.ok) {
@@ -1174,15 +1198,18 @@ export async function cleanupOldHandoversAPI(
   return res.json();
 }
 
-export async function createBulkHandoversAPI(data: {
-  patient_ids: string[];
-  shift_date: string;
-  shift_type: ShiftType;
-  outgoing_nurse: string;
-}): Promise<Handover[]> {
+export async function createBulkHandoversAPI(
+  data: {
+    patient_ids: string[];
+    shift_date: string;
+    shift_type: ShiftType;
+    outgoing_nurse: string;
+  },
+  headers?: Record<string, string>,
+): Promise<Handover[]> {
   const res = await fetch(`${API_BASE}/handovers/bulk`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
     body: JSON.stringify(data),
   });
   if (!res.ok) {
@@ -1486,19 +1513,22 @@ export async function getShiftCodesAPI(
   return res.json();
 }
 
-export async function createShiftCodeAPI(shiftCode: {
-  organization_id?: string;
-  code: string;
-  label: string;
-  start_time: string;
-  end_time: string;
-  hours: number;
-  shift_type: "day" | "night" | "combined";
-  display_order?: number;
-}): Promise<unknown> {
+export async function createShiftCodeAPI(
+  shiftCode: {
+    organization_id?: string;
+    code: string;
+    label: string;
+    start_time: string;
+    end_time: string;
+    hours: number;
+    shift_type: "day" | "night" | "combined";
+    display_order?: number;
+  },
+  headers?: Record<string, string>,
+): Promise<unknown> {
   const res = await fetch(`${API_BASE}/shift-codes`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
     body: JSON.stringify(shiftCode),
   });
 
@@ -1510,9 +1540,13 @@ export async function createShiftCodeAPI(shiftCode: {
   return res.json();
 }
 
-export async function deleteShiftCodeAPI(shiftCodeId: string): Promise<void> {
+export async function deleteShiftCodeAPI(
+  shiftCodeId: string,
+  headers?: Record<string, string>,
+): Promise<void> {
   const res = await fetch(`${API_BASE}/shift-codes/${shiftCodeId}`, {
     method: "DELETE",
+    headers,
   });
 
   if (!res.ok) {
@@ -1523,10 +1557,14 @@ export async function deleteShiftCodeAPI(shiftCodeId: string): Promise<void> {
 
 export async function initializeDefaultShiftCodesAPI(
   organizationId: string,
+  headers?: Record<string, string>,
 ): Promise<{ message: string }> {
   const res = await fetch(
     `${API_BASE}/shift-codes/initialize-defaults?organization_id=${organizationId}`,
-    { method: "POST" },
+    {
+      method: "POST",
+      headers,
+    },
   );
 
   if (!res.ok) {

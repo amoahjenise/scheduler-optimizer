@@ -39,14 +39,12 @@ def get_handovers(
     """
     query = db.query(Handover).options(joinedload(Handover.patient))
     
-    # Filter by organization if available (include NULL org for legacy records)
+    # Filter strictly by organization - no legacy NULL fallback to prevent data leakage
     if auth.is_authenticated and auth.organization_id:
-        query = query.filter(
-            or_(
-                Handover.organization_id == auth.organization_id,
-                Handover.organization_id.is_(None),
-            )
-        )
+        query = query.filter(Handover.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> return empty list to prevent data leakage
+        return HandoverListResponse(handovers=[], total=0)
     
     if shift_date:
         # Filter by date portion
@@ -114,14 +112,12 @@ def get_todays_handovers(
         Handover.shift_date < end
     )
     
-    # Filter by organization if available (include NULL org for legacy records)
+    # Filter strictly by organization - no legacy NULL fallback to prevent data leakage
     if auth.is_authenticated and auth.organization_id:
-        query = query.filter(
-            or_(
-                Handover.organization_id == auth.organization_id,
-                Handover.organization_id.is_(None),
-            )
-        )
+        query = query.filter(Handover.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> return empty list to prevent data leakage
+        return HandoverListResponse(handovers=[], total=0)
     
     if shift_type:
         query = query.filter(Handover.shift_type == shift_type)
@@ -161,9 +157,12 @@ def get_handover(handover_id: str, auth: OptionalAuth, request: Request, db: Ses
         joinedload(Handover.patient)
     ).filter(Handover.id == handover_id)
     
-    # Filter by organization if available
+    # Filter strictly by organization - no legacy NULL fallback to prevent data leakage
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Handover.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> cannot access any handover
+        raise HTTPException(status_code=404, detail="Handover not found")
     
     handover = query.first()
     
@@ -190,7 +189,7 @@ def get_handover(handover_id: str, auth: OptionalAuth, request: Request, db: Ses
 @router.post("/", response_model=HandoverResponse, status_code=201)
 def create_handover(handover_data: HandoverCreate, auth: OptionalAuth, request: Request, db: Session = Depends(get_db)):
     """
-    Create a new handover record.
+    Create a new handover record. Requires authentication.
     
     Supports two modes:
     1. Legacy: provide patient_id to link to an existing patient row.
@@ -198,13 +197,17 @@ def create_handover(handover_data: HandoverCreate, auth: OptionalAuth, request: 
        directly.  No patient row is created — all PII lives on the handover itself,
        which is treated as temporary shift communication.
     """
-    org_id = auth.organization_id if auth.is_authenticated else None
+    if not auth.is_authenticated or not auth.organization_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    org_id = auth.organization_id
     
     # If patient_id is provided, verify the patient exists (backward compat)
     if handover_data.patient_id:
-        patient_query = db.query(Patient).filter(Patient.id == handover_data.patient_id)
-        if org_id:
-            patient_query = patient_query.filter(Patient.organization_id == org_id)
+        patient_query = db.query(Patient).filter(
+            Patient.id == handover_data.patient_id,
+            Patient.organization_id == org_id
+        )
         patient = patient_query.first()
         if not patient:
             raise HTTPException(status_code=404, detail="Patient not found")
@@ -321,9 +324,12 @@ def update_handover(
     """
     query = db.query(Handover).filter(Handover.id == handover_id)
     
-    # Filter by organization if available
+    # Filter strictly by organization - no legacy NULL fallback to prevent data leakage
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Handover.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> cannot access any handover
+        raise HTTPException(status_code=404, detail="Handover not found")
     
     handover = query.first()
     if not handover:
@@ -389,9 +395,12 @@ def complete_handover(
     """
     query = db.query(Handover).filter(Handover.id == handover_id)
     
-    # Filter by organization if available
+    # Filter strictly by organization - no access without auth
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Handover.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> cannot access any handover
+        raise HTTPException(status_code=404, detail="Handover not found")
     
     handover = query.first()
     if not handover:
@@ -437,15 +446,12 @@ def delete_handover(handover_id: str, auth: OptionalAuth, request: Request, db: 
     """
     query = db.query(Handover).filter(Handover.id == handover_id)
     
-    # Filter by organization if available — also include handovers with no
-    # org_id so records created before multi-tenancy can still be deleted.
+    # Filter strictly by organization - no legacy NULL fallback to prevent data leakage
     if auth.is_authenticated and auth.organization_id:
-        query = query.filter(
-            or_(
-                Handover.organization_id == auth.organization_id,
-                Handover.organization_id.is_(None),
-            )
-        )
+        query = query.filter(Handover.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> cannot access any handover
+        raise HTTPException(status_code=404, detail="Handover not found")
     
     handover = query.first()
     if not handover:
@@ -492,17 +498,21 @@ def create_handovers_bulk(
     db: Session = Depends(get_db)
 ):
     """
-    Create handover drafts for multiple patients at once.
+    Create handover drafts for multiple patients at once. Requires authentication.
     Useful for starting end-of-shift handover process.
     """
-    org_id = auth.organization_id if auth.is_authenticated else None
+    if not auth.is_authenticated or not auth.organization_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    org_id = auth.organization_id
     created_handovers = []
     
     for patient_id in bulk_data.patient_ids:
         # Verify patient exists
-        patient_query = db.query(Patient).filter(Patient.id == patient_id)
-        if org_id:
-            patient_query = patient_query.filter(Patient.organization_id == org_id)
+        patient_query = db.query(Patient).filter(
+            Patient.id == patient_id,
+            Patient.organization_id == org_id
+        )
         patient = patient_query.first()
         if not patient:
             continue
@@ -513,10 +523,9 @@ def create_handovers_bulk(
             Handover.shift_date >= datetime.combine(bulk_data.shift_date.date(), datetime.min.time()),
             Handover.shift_date < datetime.combine(bulk_data.shift_date.date(), datetime.max.time()),
             Handover.shift_type == bulk_data.shift_type.value,
-            Handover.is_completed == False
+            Handover.is_completed == False,
+            Handover.organization_id == org_id
         )
-        if org_id:
-            existing_query = existing_query.filter(Handover.organization_id == org_id)
         
         if existing_query.first():
             continue
@@ -561,9 +570,12 @@ def get_latest_handover_for_patient(
         Handover.patient_id == patient_id
     )
     
-    # Filter by organization if available
+    # Filter strictly by organization - no legacy NULL fallback to prevent data leakage
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Handover.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> cannot access any handover
+        return None
     
     handover = query.order_by(
         Handover.shift_date.desc(),
@@ -591,9 +603,12 @@ def get_handover_history_for_patient(
         Handover.patient_id == patient_id
     )
 
-    # Filter by organization if available
+    # Filter strictly by organization - no legacy NULL fallback to prevent data leakage
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Handover.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> return empty list
+        return HandoverListResponse(handovers=[], total=0)
 
     total = query.count()
     handovers = query.order_by(
@@ -633,6 +648,9 @@ def cleanup_old_handovers(
     # Filter by organization if available
     if auth.is_authenticated and auth.organization_id:
         query = query.filter(Handover.organization_id == auth.organization_id)
+    else:
+        # No auth or no organization -> cannot perform cleanup
+        raise HTTPException(status_code=403, detail="Organization membership required for cleanup")
     
     # Count before deleting
     count = query.count()

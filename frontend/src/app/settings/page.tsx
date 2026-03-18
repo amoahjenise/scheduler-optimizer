@@ -96,14 +96,17 @@ export default function SettingsPage() {
   // Pending members state (admin only)
   interface PendingMember {
     id: string;
+    user_id: string;
     user_email?: string;
     user_name?: string;
     is_approved: boolean;
     joined_at: string;
   }
   const [pendingMembers, setPendingMembers] = useState<PendingMember[]>([]);
+  const [approvedMembers, setApprovedMembers] = useState<PendingMember[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [transferringAdmin, setTransferringAdmin] = useState(false);
 
   // Fetch members for approval (admin only)
   useEffect(() => {
@@ -122,6 +125,7 @@ export default function SettingsPage() {
           const members: PendingMember[] = await res.json();
           if (!cancelled) {
             setPendingMembers(members.filter((m) => !m.is_approved));
+            setApprovedMembers(members.filter((m) => m.is_approved));
           }
         }
       } catch (err) {
@@ -160,6 +164,45 @@ export default function SettingsPage() {
       console.error("Failed to reject member:", err);
     } finally {
       setApprovingId(null);
+    }
+  };
+
+  const handleTransferAdmin = async (
+    newAdminMemberId: string,
+    newAdminName: string,
+  ) => {
+    if (!currentOrganization) return;
+    if (
+      !confirm(
+        `Are you sure you want to transfer admin role to ${newAdminName}?\n\nYou will become a regular member and will no longer have admin privileges. This action cannot be undone by you.`,
+      )
+    )
+      return;
+
+    setTransferringAdmin(true);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000"}/organizations/${currentOrganization.id}/members/${newAdminMemberId}/transfer-admin`,
+        {
+          method: "POST",
+          headers,
+        },
+      );
+
+      if (!res.ok) {
+        const error = await res.json().catch(() => null);
+        throw new Error(error?.detail || "Failed to transfer admin role");
+      }
+
+      // Refresh page to update permissions
+      window.location.reload();
+    } catch (err) {
+      alert(
+        err instanceof Error ? err.message : "Failed to transfer admin role",
+      );
+    } finally {
+      setTransferringAdmin(false);
     }
   };
 
@@ -753,10 +796,13 @@ export default function SettingsPage() {
                         >
                           <div>
                             <p className="font-medium text-gray-900 text-sm">
-                              {member.user_name || "Unknown User"}
+                              {member.user_name ||
+                                member.user_email ||
+                                `User ${member.user_id.substring(0, 8)}...`}
                             </p>
                             <p className="text-xs text-gray-500">
-                              {member.user_email || "No email"} · Requested{" "}
+                              {member.user_email || `ID: ${member.user_id}`} ·
+                              Requested{" "}
                               {new Date(member.joined_at).toLocaleDateString()}
                             </p>
                           </div>
@@ -787,6 +833,64 @@ export default function SettingsPage() {
                     <p className="text-sm text-gray-400">
                       Checking for pending member requests...
                     </p>
+                  </div>
+                )}
+
+                {/* Transfer Admin Role - Admin only */}
+                {isAdmin && approvedMembers.length > 0 && (
+                  <div className="pt-4 border-t border-gray-200">
+                    <label className="block text-sm font-medium text-gray-600 mb-2">
+                      <Users className="w-4 h-4 inline mr-1" />
+                      Transfer Admin Role
+                    </label>
+                    <p className="text-xs text-gray-500 mb-3">
+                      Transfer your admin role to another approved member. You
+                      will become a regular member after the transfer.
+                    </p>
+                    <div className="space-y-2">
+                      {approvedMembers
+                        .filter((m) => m.id !== currentMembership?.id)
+                        .map((member) => (
+                          <div
+                            key={member.id}
+                            className="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-lg px-4 py-3"
+                          >
+                            <div>
+                              <p className="font-medium text-gray-900 text-sm">
+                                {member.user_name ||
+                                  member.user_email ||
+                                  `User ${member.user_id.substring(0, 8)}...`}
+                              </p>
+                              <p className="text-xs text-gray-500">
+                                {member.user_email || `ID: ${member.user_id}`}
+                              </p>
+                            </div>
+                            <button
+                              onClick={() =>
+                                handleTransferAdmin(
+                                  member.id,
+                                  member.user_name ||
+                                    member.user_email ||
+                                    `User ${member.user_id.substring(0, 8)}...`,
+                                )
+                              }
+                              disabled={transferringAdmin}
+                              className="px-3 py-1.5 text-xs font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50"
+                            >
+                              {transferringAdmin
+                                ? "Transferring..."
+                                : "Transfer Admin"}
+                            </button>
+                          </div>
+                        ))}
+                      {approvedMembers.filter(
+                        (m) => m.id !== currentMembership?.id,
+                      ).length === 0 && (
+                        <p className="text-sm text-gray-500 italic">
+                          No other approved members to transfer admin role to.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 )}
 

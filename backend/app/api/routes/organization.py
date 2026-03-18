@@ -6,6 +6,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from clerk_backend_api import Clerk
 
 from app.db.deps import get_db
 from app.models.organization import Organization, OrganizationMember, MemberRole
@@ -20,9 +21,13 @@ from app.core.auth import (
     RequiredAuth, OrgAuth, AdminAuth, AuthContext,
     get_required_auth, get_org_required_auth, get_admin_auth
 )
+from app.core.config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# Initialize Clerk client
+clerk_client = Clerk(bearer_auth=settings.CLERK_SECRET_KEY)
 
 
 def generate_slug(name: str, db: Session) -> str:
@@ -333,6 +338,7 @@ def list_members(
 ):
     """
     List all members of an organization (including pending approval).
+    Enriches member data with user information from Clerk.
     """
     if auth.organization_id != org_id:
         raise HTTPException(status_code=403, detail="Cannot view members of a different organization")
@@ -341,6 +347,34 @@ def list_members(
         OrganizationMember.organization_id == org_id,
         OrganizationMember.is_active == True
     ).all()
+    
+    # Enrich members with Clerk user data
+    for member in members:
+        try:
+            clerk_user = clerk_client.users.get(user_id=member.user_id)
+            # Build full name from first and last name
+            first_name = clerk_user.first_name or ""
+            last_name = clerk_user.last_name or ""
+            full_name = f"{first_name} {last_name}".strip()
+            
+            # Update member data
+            if full_name:
+                member.user_name = full_name
+            
+            # Get primary email
+            if clerk_user.email_addresses:
+                for email in clerk_user.email_addresses:
+                    if hasattr(email, 'id') and email.id == clerk_user.primary_email_address_id:
+                        member.user_email = email.email_address
+                        break
+                # Fallback to first email if primary not found
+                if not member.user_email and clerk_user.email_addresses:
+                    member.user_email = clerk_user.email_addresses[0].email_address
+                    
+        except Exception as e:
+            logger.warning(f"Failed to fetch Clerk user data for {member.user_id}: {e}")
+            # Keep existing data if Clerk fetch fails
+            pass
     
     return members
 

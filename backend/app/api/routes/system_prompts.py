@@ -5,6 +5,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.db.deps import get_db
 from app.models.system_prompt import SystemPrompt as SystemPromptModel
 from app.schemas.system_prompt import SystemPrompt as SystemPromptSchema, SystemPromptUpdate
+from app.core.auth import OrgAuth, AdminAuth
 import logging
 import json
 from typing import List, Dict, Any, Optional
@@ -357,7 +358,12 @@ def get_system_prompt(db: Session) -> SystemPromptModel:
 # ---------------------------------------------------------------------------
 
 @router.get("/", response_model=SystemPromptSchema)
-def read_system_prompt(db: Session = Depends(get_db)):
+def read_system_prompt(
+    auth: OrgAuth,
+    db: Session = Depends(get_db)
+):
+    """Get the system prompt. Requires organization membership."""
+    # OrgAuth already validates auth and org - if we get here, auth is valid
     try:
         prompt = get_global_prompt(db)
         if prompt:
@@ -370,7 +376,13 @@ def read_system_prompt(db: Session = Depends(get_db)):
 
 
 @router.put("/", response_model=SystemPromptSchema)
-def update_system_prompt(prompt_in: SystemPromptUpdate, db: Session = Depends(get_db)):
+def update_system_prompt(
+    prompt_in: SystemPromptUpdate,
+    auth: AdminAuth,
+    db: Session = Depends(get_db)
+):
+    """Update the system prompt. Requires admin role."""
+    # AdminAuth already validates auth and admin role
     try:
         prompt = get_global_prompt(db)
         if not prompt:
@@ -392,8 +404,12 @@ def update_system_prompt(prompt_in: SystemPromptUpdate, db: Session = Depends(ge
 
 
 @router.post("/reset", response_model=SystemPromptSchema)
-def reset_system_prompt(db: Session = Depends(get_db)):
-    """Delete any custom global prompt and return a fresh default built from DB shift codes."""
+def reset_system_prompt(
+    auth: AdminAuth,
+    db: Session = Depends(get_db)
+):
+    """Delete any custom global prompt and return a fresh default. Requires admin role."""
+    # AdminAuth already validates auth and admin role
     try:
         prompt = get_global_prompt(db)
         if prompt:

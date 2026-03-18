@@ -647,10 +647,14 @@ export default function Dashboard() {
                   <p className="text-3xl font-bold text-gray-900">
                     {stats.loading
                       ? "–"
-                      : `${stats.finalizedSchedules}/${stats.schedulesCreated}`}
+                      : isAdmin
+                        ? `${stats.finalizedSchedules}/${stats.schedulesCreated}`
+                        : stats.finalizedSchedules}
                   </p>
                   <p className="text-sm text-gray-500 mt-1">
-                    Finalized Schedules
+                    {isAdmin
+                      ? "Finalized / Total Schedules"
+                      : "Finalized Schedules"}
                   </p>
                 </div>
                 <div className="flex items-end gap-1 h-12">

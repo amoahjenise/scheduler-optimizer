@@ -31,3 +31,4 @@ ortools
 PyJWT[crypto]
 tenacity>=8.2.3
 setuptools
+clerk-backend-api

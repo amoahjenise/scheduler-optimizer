@@ -10,6 +10,7 @@ from app.schemas.shift_code import (
     TimeSlotCreate, TimeSlotUpdate, TimeSlotResponse,
     ShiftCodeFrontend, TimeSlotFrontend, ShiftCodesListResponse
 )
+from app.core.auth import OrgAuth, OptionalAuth
 
 router = APIRouter(prefix="/shift-codes", tags=["Shift Codes"])
 
@@ -41,7 +42,7 @@ DEFAULT_TIME_SLOTS = [
 
 @router.get("", response_model=ShiftCodesListResponse)
 async def get_shift_codes(
-    organization_id: Optional[str] = Query(None),
+    auth: OrgAuth,
     db: Session = Depends(get_db)
 ):
     """
@@ -52,48 +53,49 @@ async def get_shift_codes(
     shift_codes = []
     time_slots = []
     
-    if organization_id:
-        # Get organization-specific or system defaults (where organization_id is null)
-        db_shift_codes = db.query(ShiftCode).filter(
-            or_(
-                ShiftCode.organization_id == organization_id,
-                ShiftCode.organization_id.is_(None)
-            ),
-            ShiftCode.is_active == True
-        ).order_by(ShiftCode.display_order).all()
-        
-        db_time_slots = db.query(TimeSlot).filter(
-            or_(
-                TimeSlot.organization_id == organization_id,
-                TimeSlot.organization_id.is_(None)
-            ),
-            TimeSlot.is_active == True
-        ).order_by(TimeSlot.display_order).all()
-        
-        if db_shift_codes:
-            shift_codes = [
-                ShiftCodeFrontend(
-                    code=sc.code,
-                    start=sc.start_time,
-                    end=sc.end_time,
-                    hours=sc.hours,
-                    type=sc.shift_type.value,
-                    label=sc.label
-                )
-                for sc in db_shift_codes
-            ]
-        
-        if db_time_slots:
-            time_slots = [
-                TimeSlotFrontend(
-                    slot=ts.slot,
-                    category=ts.category,
-                    duration=ts.duration,
-                    mapsTo=[s.strip() for s in ts.maps_to.split(",")],
-                    label=ts.label
-                )
-                for ts in db_time_slots
-            ]
+    organization_id = auth.organization_id
+    
+    # Get organization-specific or system defaults (where organization_id is null)
+    db_shift_codes = db.query(ShiftCode).filter(
+        or_(
+            ShiftCode.organization_id == organization_id,
+            ShiftCode.organization_id.is_(None)
+        ),
+        ShiftCode.is_active == True
+    ).order_by(ShiftCode.display_order).all()
+    
+    db_time_slots = db.query(TimeSlot).filter(
+        or_(
+            TimeSlot.organization_id == organization_id,
+            TimeSlot.organization_id.is_(None)
+        ),
+        TimeSlot.is_active == True
+    ).order_by(TimeSlot.display_order).all()
+    
+    if db_shift_codes:
+        shift_codes = [
+            ShiftCodeFrontend(
+                code=sc.code,
+                start=sc.start_time,
+                end=sc.end_time,
+                hours=sc.hours,
+                type=sc.shift_type.value,
+                label=sc.label
+            )
+            for sc in db_shift_codes
+        ]
+    
+    if db_time_slots:
+        time_slots = [
+            TimeSlotFrontend(
+                slot=ts.slot,
+                category=ts.category,
+                duration=ts.duration,
+                mapsTo=[s.strip() for s in ts.maps_to.split(",")],
+                label=ts.label
+            )
+            for ts in db_time_slots
+        ]
     
     # Fall back to defaults if no organization-specific codes
     if not shift_codes:
@@ -108,11 +110,12 @@ async def get_shift_codes(
 @router.post("", response_model=ShiftCodeResponse)
 async def create_shift_code(
     shift_code: ShiftCodeCreate,
+    auth: OrgAuth,
     db: Session = Depends(get_db)
 ):
     """Create a new shift code for an organization."""
     db_shift_code = ShiftCode(
-        organization_id=shift_code.organization_id,
+        organization_id=auth.organization_id,
         code=shift_code.code,
         label=shift_code.label,
         start_time=shift_code.start_time,
@@ -132,10 +135,14 @@ async def create_shift_code(
 async def update_shift_code(
     shift_code_id: str,
     shift_code: ShiftCodeUpdate,
+    auth: OrgAuth,
     db: Session = Depends(get_db)
 ):
     """Update an existing shift code."""
-    db_shift_code = db.query(ShiftCode).filter(ShiftCode.id == shift_code_id).first()
+    db_shift_code = db.query(ShiftCode).filter(
+        ShiftCode.id == shift_code_id,
+        ShiftCode.organization_id == auth.organization_id
+    ).first()
     if not db_shift_code:
         raise HTTPException(status_code=404, detail="Shift code not found")
     
@@ -154,10 +161,14 @@ async def update_shift_code(
 @router.delete("/{shift_code_id}")
 async def delete_shift_code(
     shift_code_id: str,
+    auth: OrgAuth,
     db: Session = Depends(get_db)
 ):
     """Delete a shift code."""
-    db_shift_code = db.query(ShiftCode).filter(ShiftCode.id == shift_code_id).first()
+    db_shift_code = db.query(ShiftCode).filter(
+        ShiftCode.id == shift_code_id,
+        ShiftCode.organization_id == auth.organization_id
+    ).first()
     if not db_shift_code:
         raise HTTPException(status_code=404, detail="Shift code not found")
     
@@ -170,11 +181,12 @@ async def delete_shift_code(
 @router.post("/time-slots", response_model=TimeSlotResponse)
 async def create_time_slot(
     time_slot: TimeSlotCreate,
+    auth: OrgAuth,
     db: Session = Depends(get_db)
 ):
     """Create a new time slot for an organization."""
     db_time_slot = TimeSlot(
-        organization_id=time_slot.organization_id,
+        organization_id=auth.organization_id,
         slot=time_slot.slot,
         label=time_slot.label,
         category=time_slot.category,
@@ -193,10 +205,14 @@ async def create_time_slot(
 async def update_time_slot(
     time_slot_id: str,
     time_slot: TimeSlotUpdate,
+    auth: OrgAuth,
     db: Session = Depends(get_db)
 ):
     """Update an existing time slot."""
-    db_time_slot = db.query(TimeSlot).filter(TimeSlot.id == time_slot_id).first()
+    db_time_slot = db.query(TimeSlot).filter(
+        TimeSlot.id == time_slot_id,
+        TimeSlot.organization_id == auth.organization_id
+    ).first()
     if not db_time_slot:
         raise HTTPException(status_code=404, detail="Time slot not found")
     
@@ -212,10 +228,14 @@ async def update_time_slot(
 @router.delete("/time-slots/{time_slot_id}")
 async def delete_time_slot(
     time_slot_id: str,
+    auth: OrgAuth,
     db: Session = Depends(get_db)
 ):
     """Delete a time slot."""
-    db_time_slot = db.query(TimeSlot).filter(TimeSlot.id == time_slot_id).first()
+    db_time_slot = db.query(TimeSlot).filter(
+        TimeSlot.id == time_slot_id,
+        TimeSlot.organization_id == auth.organization_id
+    ).first()
     if not db_time_slot:
         raise HTTPException(status_code=404, detail="Time slot not found")
     
@@ -226,7 +246,7 @@ async def delete_time_slot(
 
 @router.post("/initialize-defaults")
 async def initialize_defaults(
-    organization_id: str,
+    auth: OrgAuth,
     db: Session = Depends(get_db)
 ):
     """
@@ -235,7 +255,7 @@ async def initialize_defaults(
     """
     # Check if organization already has codes
     existing_codes = db.query(ShiftCode).filter(
-        ShiftCode.organization_id == organization_id
+        ShiftCode.organization_id == auth.organization_id
     ).count()
     
     if existing_codes > 0:
@@ -247,7 +267,7 @@ async def initialize_defaults(
     # Create shift codes
     for idx, sc_data in enumerate(DEFAULT_SHIFT_CODES):
         db_shift_code = ShiftCode(
-            organization_id=organization_id,
+            organization_id=auth.organization_id,
             code=sc_data["code"],
             label=sc_data["label"],
             start_time=sc_data["start"],
@@ -261,7 +281,7 @@ async def initialize_defaults(
     # Create time slots
     for idx, ts_data in enumerate(DEFAULT_TIME_SLOTS):
         db_time_slot = TimeSlot(
-            organization_id=organization_id,
+            organization_id=auth.organization_id,
             slot=ts_data["slot"],
             label=ts_data["label"],
             category=ts_data["category"],

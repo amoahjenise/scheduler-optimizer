@@ -143,7 +143,12 @@ export default function NursesPage() {
       const authHeaders = await getAuthHeaders();
 
       if (editingNurse) {
-        const updated = await updateNurseAPI(editingNurse.id, user.id, payload, authHeaders);
+        const updated = await updateNurseAPI(
+          editingNurse.id,
+          user.id,
+          payload,
+          authHeaders,
+        );
         console.log("[Nurse Update] Response:", updated);
         // Update the nurse in-place without reloading the entire list
         setNurses((prev) =>

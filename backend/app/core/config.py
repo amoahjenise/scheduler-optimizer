@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
     DEFAULT_PROMPT_ID: int = 0
     GLOBAL_PROMPT_ID: int = 1
+    # Internal API secret for webhook -> user routes. Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+    INTERNAL_API_SECRET: str = ""
     class Config:
         env_file = ".env"
         extra = "forbid"  # Optional: ensures no extra variables are silently accepted

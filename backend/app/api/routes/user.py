@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Header
 from app.schemas.user import UserCreate
 from app.db.deps import get_db
 from app.models.user import User
@@ -8,32 +8,65 @@ from app.models.schedule import Schedule
 from app.models.nurse import Nurse
 from app.models.patient import Patient
 from app.models.handover import Handover
+from app.core.config import settings
 from sqlalchemy.orm import Session
 
 router = APIRouter(redirect_slashes=True)
 logger = logging.getLogger("users")
 
+
+def verify_internal_api_secret(x_internal_secret: str = Header(None, alias="X-Internal-Secret")):
+    """
+    Verify that the request includes a valid internal API secret.
+    This protects internal-only routes that should only be called by the webhook handler.
+    """
+    if not settings.INTERNAL_API_SECRET:
+        # If no secret is configured, reject all requests (fail-secure)
+        logger.warning("INTERNAL_API_SECRET not configured - rejecting internal API request")
+        raise HTTPException(status_code=403, detail="Internal API not configured")
+    
+    if not x_internal_secret or x_internal_secret != settings.INTERNAL_API_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid or missing internal API secret")
+    
+    return True
+
+
 @router.post("/")
-def create_user(user: UserCreate, db: Session = Depends(get_db)):
+def create_user(
+    user: UserCreate,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_internal_api_secret)
+):
+    """Create a user - internal API only, called by webhook handler."""
     db_user = User(id=user.id)
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
     return {"message": "User created", "user_id": db_user.id}
 
+
 @router.get("/{user_id}")
-def get_user(user_id: str, db: Session = Depends(get_db)):
-    """Get a user by ID - used by webhook to check if user exists."""
+def get_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_internal_api_secret)
+):
+    """Get a user by ID - internal API only, called by webhook handler."""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return {"id": user.id, "is_active": user.is_active, "created_at": user.created_at}
 
+
 @router.delete("/{user_id}")
-def delete_user(user_id: str, db: Session = Depends(get_db)):
+def delete_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+    _: bool = Depends(verify_internal_api_secret)
+):
     """
     Delete a user and cascade delete all related data.
-    Called by Clerk webhook when user.deleted event is received.
+    Internal API only - called by Clerk webhook when user.deleted event is received.
     
     If the user is the only admin of an organization:
     - If they're the only member: delete the entire organization
