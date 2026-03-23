@@ -598,6 +598,9 @@ export interface Handover {
   medications_summary?: string;
   prn_medications?: string;
   chemotherapies?: string;
+  diagnosis_details?: string;
+  summary_assessment?: string;
+  treatment_plan?: string;
 
   // Labs
   wbc?: string;
@@ -625,6 +628,10 @@ export interface Handover {
   cvad_dressing?: string;
   iv_infusions?: string;
   tpn?: string;
+  iv_access_type?: string;
+  iv_access_location?: string;
+  iv_access_date?: string;
+  iv_access_status?: string;
 
   // G.U.
   urine_output?: string;
@@ -711,6 +718,7 @@ export interface Handover {
   nj_tube?: boolean;
   gt_tube?: boolean;
   npo?: boolean;
+  npo_status?: string;
   feeding_goal?: string;
   see_feeding_schedule?: boolean;
   tube_type?: string;
@@ -720,6 +728,11 @@ export interface Handover {
   positioning?: string;
   assistive_devices?: string;
   activity?: string;
+  activity_level?: string;
+  fall_risk?: string;
+  fall_precautions?: string;
+  restraints?: string;
+  mobility_aids?: string;
 
   // Skin
   braden_q_score?: string;
@@ -729,6 +742,8 @@ export interface Handover {
   pressure_sore_location?: string;
   pressure_sore_treatment?: string;
   pressure_sore_staging?: string;
+  skin_integrity?: string;
+  wounds?: string;
 
   // Psycho-Social
   psychosocial_notes?: string;
@@ -740,6 +755,10 @@ export interface Handover {
   discharge_prescriptions?: string;
   home_enteral_feeding?: string;
   followup_appointments?: string;
+  discharge_plan?: string;
+  discharge_date?: string;
+  social_work_needs?: string;
+  pt_ot_needs?: string;
 
   // To Do & Follow Up
   todo_items?: string;
