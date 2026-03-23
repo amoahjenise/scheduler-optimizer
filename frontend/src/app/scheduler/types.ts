@@ -17,7 +17,7 @@ export type GridRow = {
   shifts: ShiftEntry[];
 };
 
-export type Step = "setup" | "review" | "optimize" | "result";
+export type Step = "setup" | "upload" | "review" | "optimize" | "result";
 
 export interface ManualNurse {
   name: string;

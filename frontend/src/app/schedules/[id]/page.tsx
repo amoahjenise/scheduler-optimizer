@@ -100,11 +100,11 @@ export default function ScheduleDetailsPage() {
           ? JSON.parse(schedule.schedule_data)
           : schedule.schedule_data || {};
 
-      let dates = Array.isArray(raw?.dates) ? raw.dates : [];
-      const rows = Array.isArray(raw?.schedule)
-        ? raw.schedule
+      let dates: string[] = Array.isArray(raw?.dates) ? (raw.dates as string[]) : [];
+      const rows: GridRow[] = Array.isArray(raw?.schedule)
+        ? (raw.schedule as GridRow[])
         : Array.isArray(raw?.grid)
-          ? raw.grid
+          ? (raw.grid as GridRow[])
           : [];
 
       if (!dates.length) {
@@ -203,7 +203,7 @@ export default function ScheduleDetailsPage() {
     try {
       const result = scheduleTemplates.saveTemplate(
         name,
-        parsed.rows,
+        parsed.rows as import("../../scheduler/types").GridRow[],
         startDate,
         endDate,
         undefined,
