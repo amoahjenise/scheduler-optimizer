@@ -693,6 +693,8 @@ export interface Handover {
   vomiting_quantity?: string;
   nausea?: boolean;
   last_bowel_movement?: string;
+  bowel_amount?: string;
+  bowel_description?: string;
   constipation?: boolean;
   diarrhea?: boolean;
   diarrhea_quantity?: string;
@@ -936,6 +938,26 @@ export interface HandoverUpdate {
   io_16_20_last6h?: string;
   io_20_24?: string;
   io_20_24_last6h?: string;
+  io_00_kghr?: string;
+  io_00_last6h_kghr?: string;
+  io_06_kghr?: string;
+  io_06_last6h_kghr?: string;
+  io_12_kghr?: string;
+  io_12_last6h_kghr?: string;
+  io_18_kghr?: string;
+  io_18_last6h_kghr?: string;
+  io_00_04_kghr?: string;
+  io_00_04_last6h_kghr?: string;
+  io_04_08_kghr?: string;
+  io_04_08_last6h_kghr?: string;
+  io_08_12_kghr?: string;
+  io_08_12_last6h_kghr?: string;
+  io_12_16_kghr?: string;
+  io_12_16_last6h_kghr?: string;
+  io_16_20_kghr?: string;
+  io_16_20_last6h_kghr?: string;
+  io_20_24_kghr?: string;
+  io_20_24_last6h_kghr?: string;
   foley?: boolean;
   urine_sg?: string;
   urine_ph?: string;
@@ -972,6 +994,8 @@ export interface HandoverUpdate {
   vomiting_quantity?: string;
   nausea?: boolean;
   last_bowel_movement?: string;
+  bowel_amount?: string;
+  bowel_description?: string;
   constipation?: boolean;
   diarrhea?: boolean;
   diarrhea_quantity?: string;
@@ -997,6 +1021,7 @@ export interface HandoverUpdate {
   nj_tube?: boolean;
   gt_tube?: boolean;
   npo?: boolean;
+  npo_status?: string;
   feeding_goal?: string;
   see_feeding_schedule?: boolean;
   tube_type?: string;
@@ -1006,6 +1031,11 @@ export interface HandoverUpdate {
   positioning?: string;
   assistive_devices?: string;
   activity?: string;
+  activity_level?: string;
+  fall_risk?: string;
+  fall_precautions?: string;
+  restraints?: string;
+  mobility_aids?: string;
 
   // Skin
   braden_q_score?: string;
@@ -1015,6 +1045,8 @@ export interface HandoverUpdate {
   pressure_sore_location?: string;
   pressure_sore_treatment?: string;
   pressure_sore_staging?: string;
+  skin_integrity?: string;
+  wounds?: string;
 
   // Psycho-Social
   psychosocial_notes?: string;
@@ -1026,6 +1058,19 @@ export interface HandoverUpdate {
   discharge_prescriptions?: string;
   home_enteral_feeding?: string;
   followup_appointments?: string;
+  discharge_plan?: string;
+  discharge_date?: string;
+  social_work_needs?: string;
+  pt_ot_needs?: string;
+
+  // Static info
+  diagnosis_details?: string;
+  summary_assessment?: string;
+  treatment_plan?: string;
+  iv_access_type?: string;
+  iv_access_location?: string;
+  iv_access_date?: string;
+  iv_access_status?: string;
 
   // To Do & Follow Up
   todo_items?: string;

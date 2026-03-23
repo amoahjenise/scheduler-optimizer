@@ -81,7 +81,7 @@ function normalizeShiftEntry(
   return {
     date,
     shift: String(shift.shift || ""),
-    shiftType: shiftType,
+    shiftType: shiftType as ShiftEntry["shiftType"],
     hours,
     startTime,
     endTime,

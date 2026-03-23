@@ -16,9 +16,9 @@ export function useAuthFetch() {
       const headers = await getAuthHeaders();
 
       // Merge headers - don't override Content-Type for FormData
-      const mergedHeaders = {
-        ...headers,
-        ...options.headers,
+      const mergedHeaders: Record<string, string> = {
+        ...(headers as Record<string, string>),
+        ...(options.headers as Record<string, string>),
       };
 
       // Remove Content-Type for FormData (browser sets it automatically with boundary)
