@@ -82,3 +82,4 @@ class InsightsRequest(BaseModel):
     orgContext: Optional[str] = None
     staffNotes: Optional[Dict[str, List[str]]] = None
     markerComments: Optional[str] = None
+    locale: Optional[str] = "en"  # Default to English

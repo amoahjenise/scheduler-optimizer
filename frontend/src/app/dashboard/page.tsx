@@ -308,7 +308,9 @@ export default function Dashboard() {
 
           const fallbackUserName =
             user?.fullName ||
-            user?.firstName ||
+            (user?.firstName
+              ? `${user.firstName.trim().charAt(0).toUpperCase()}${user.firstName.trim().slice(1)}`
+              : undefined) ||
             user?.primaryEmailAddress?.emailAddress ||
             "";
 
@@ -556,6 +558,11 @@ export default function Dashboard() {
         ? t("goodAfternoon")
         : t("goodEvening");
 
+  const firstName = user?.firstName?.trim();
+  const displayFirstName = firstName
+    ? `${firstName.charAt(0).toUpperCase()}${firstName.slice(1)}`
+    : "there";
+
   const weekDays = Array.from({ length: 7 }, (_, index) => {
     const dayDate = new Date(2024, 0, 7 + index);
     return dayDate.toLocaleDateString(locale, { weekday: "narrow" });
@@ -590,7 +597,7 @@ export default function Dashboard() {
                 })}
               </p>
               <h1 className="text-[28px] font-bold text-gray-900">
-                {greeting}, {user?.firstName || "there"}
+                {greeting}, {displayFirstName}
               </h1>
               <div className="mt-2">
                 <span

@@ -221,8 +221,7 @@ export default function SetupStep({
           {screenshots.length > 0 && (
             <div className="mt-3 flex items-center gap-2">
               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                {screenshots.length} file{screenshots.length !== 1 ? "s" : ""}{" "}
-                selected
+                {t("filesSelected", { count: screenshots.length })}
               </span>
             </div>
           )}
@@ -268,10 +267,10 @@ export default function SetupStep({
               {ocrLoading ? (
                 <>
                   <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
-                  Processing…
+                  {t("processing")}
                 </>
               ) : (
-                "Extract & Continue →"
+                t("extractAndContinue")
               )}
             </button>
           </div>

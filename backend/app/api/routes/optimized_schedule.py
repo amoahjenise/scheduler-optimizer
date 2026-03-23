@@ -6004,7 +6004,12 @@ async def get_schedule_insights(request: InsightsRequest):
             marker_comments_section = f"""\n\nDETECTED MARKER COMMENTS (employee notes from the OCR schedule — * markers):
 {request.markerComments}"""
 
-        insights_prompt = f"""You are an expert nurse scheduling analyst. Analyze the following optimized nurse schedule and return a structured JSON report.{org_context_line}
+        # Determine language instruction based on locale
+        language_instruction = ""
+        if request.locale and request.locale.startswith("fr"):
+            language_instruction = "\n\nIMPORTANT: Respond in French. All text in the JSON response (summary, issue titles/descriptions, suggestions) must be in French."
+        
+        insights_prompt = f"""You are an expert nurse scheduling analyst. Analyze the following optimized nurse schedule and return a structured JSON report.{org_context_line}{language_instruction}
 
 SCHEDULE PERIOD: {date_range_str} ({total_days} days, {num_weeks:.1f} weeks)
 

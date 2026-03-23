@@ -1616,7 +1616,11 @@ export default function HandoverPage() {
           config={patientConfig}
           shiftType={shiftType}
           outgoingNurse={
-            user?.fullName || user?.firstName || t("nurseFallback")
+            user?.fullName ||
+            (user?.firstName
+              ? `${user.firstName.trim().charAt(0).toUpperCase()}${user.firstName.trim().slice(1)}`
+              : undefined) ||
+            t("nurseFallback")
           }
         />
       )}

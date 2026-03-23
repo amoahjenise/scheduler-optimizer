@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { useTranslations } from "next-intl";
 import {
   Edit2,
   Check,
@@ -79,6 +80,7 @@ export default function ConstraintsConfirmation({
   onNursesUpdated,
   isOptimizing = false,
 }: Props) {
+  const t = useTranslations("scheduler");
   const { user } = useUser();
   const { getAuthHeaders } = useOrganization();
 
@@ -186,7 +188,7 @@ export default function ConstraintsConfirmation({
 
   const handleSaveAllNurses = async () => {
     if (!user?.id) {
-      alert("Please sign in to save nurses");
+      alert(t("pleaseSignInToSaveNurses"));
       return;
     }
     setSavingNurses(true);
@@ -291,7 +293,7 @@ export default function ConstraintsConfirmation({
       }
     } catch (err) {
       console.error("Failed to fetch existing nurses:", err);
-      alert("Failed to fetch existing nurses. Please try again.");
+      alert(t("failedToFetchNurses"));
       setSavingNurses(false);
       return;
     }
@@ -307,14 +309,16 @@ export default function ConstraintsConfirmation({
     }
 
     const message = [];
-    if (savedCount > 0) message.push(`${savedCount} new nurse(s) created`);
-    if (updatedCount > 0) message.push(`${updatedCount} nurse(s) updated`);
-    if (skippedCount > 0) message.push(`${skippedCount} skipped (no changes)`);
+    if (savedCount > 0) message.push(t("nursesCreated", { count: savedCount }));
+    if (updatedCount > 0)
+      message.push(t("nursesUpdated", { count: updatedCount }));
+    if (skippedCount > 0)
+      message.push(t("nursesSkipped", { count: skippedCount }));
 
     let alertMessage =
-      message.length > 0 ? message.join(", ") : "No changes to save";
+      message.length > 0 ? message.join(", ") : t("noChangesToSave");
     if (errors.length > 0) {
-      alertMessage += "\n\nErrors:\n" + errors.join("\n");
+      alertMessage += "\n\n" + t("errors") + ":\n" + errors.join("\n");
     }
 
     alert(alertMessage);
@@ -329,12 +333,9 @@ export default function ConstraintsConfirmation({
             <div>
               <h2 className="text-2xl font-bold flex items-center gap-2">
                 <AlertCircle className="w-6 h-6" />
-                Review Constraints
+                {t("reviewConstraints")}
               </h2>
-              <p className="text-blue-100 mt-1">
-                AI has parsed the following constraints. Review and edit before
-                optimizing.
-              </p>
+              <p className="text-blue-100 mt-1">{t("reviewConstraintsHelp")}</p>
             </div>
             <button
               onClick={onCancel}
@@ -349,8 +350,13 @@ export default function ConstraintsConfirmation({
         <div className="border-b border-gray-200 bg-gray-50 px-6">
           <div className="flex gap-4">
             {[
-              { key: "overview", label: "Overview" },
-              { key: "nurses", label: `Nurses (${constraints.nurses.length})` },
+              { key: "overview", label: t("overview") },
+              {
+                key: "nurses",
+                label: t("nursesCountLabel", {
+                  count: constraints.nurses.length,
+                }),
+              },
             ].map((tab) => (
               <button
                 key={tab.key}
@@ -374,7 +380,7 @@ export default function ConstraintsConfirmation({
               {/* Date Range */}
               <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
                 <h3 className="font-semibold text-blue-900 mb-2">
-                  Schedule Period
+                  {t("schedulePeriod")}
                 </h3>
                 {(() => {
                   const start = parseLocalDate(constraints.dateRange.start);
@@ -391,7 +397,9 @@ export default function ConstraintsConfirmation({
                     <p className="text-blue-700">
                       {formatLocalDate(constraints.dateRange.start)} →{" "}
                       {formatLocalDate(constraints.dateRange.end)}
-                      <span className="ml-2 text-sm">({dayCount} days)</span>
+                      <span className="ml-2 text-sm">
+                        ({t("daysCount", { count: dayCount })})
+                      </span>
                     </p>
                   );
                 })()}
@@ -400,7 +408,7 @@ export default function ConstraintsConfirmation({
               {/* Minimum Staff Requirements - Per-Category Editable */}
               <div className="bg-white rounded-lg p-4 border border-gray-200">
                 <h3 className="font-semibold text-gray-900 mb-3">
-                  👥 Staffing Requirements (minimum per shift)
+                  👥 {t("staffingRequirementsMinimumPerShift")}
                 </h3>
                 <div className="grid grid-cols-4 gap-3">
                   {[
@@ -408,28 +416,28 @@ export default function ConstraintsConfirmation({
                       key: "07",
                       label: "07:00",
                       icon: "☀️",
-                      desc: "Day (07, Z07)",
+                      desc: t("dayShiftCodes0707"),
                       color: "amber",
                     },
                     {
                       key: "15",
                       label: "15:00",
                       icon: "🌅",
-                      desc: "Eve (E15)",
+                      desc: t("eveShiftCodesE15"),
                       color: "orange",
                     },
                     {
                       key: "19",
                       label: "19:00",
                       icon: "🌙",
-                      desc: "Night (Z19)",
+                      desc: t("nightShiftCodesZ19"),
                       color: "indigo",
                     },
                     {
                       key: "23",
                       label: "23:00",
                       icon: "🌑",
-                      desc: "Night (23, Z23)",
+                      desc: t("nightShiftCodes23Z23"),
                       color: "purple",
                     },
                   ].map(({ key, label, icon, desc, color }) => (
@@ -459,12 +467,12 @@ export default function ConstraintsConfirmation({
                   ))}
                 </div>
                 <p className="text-xs text-gray-400 mt-2">
-                  Day minimum:{" "}
+                  {t("dayMinimum")}{" "}
                   {Math.min(
                     staffingCategories["07"] ?? 5,
                     staffingCategories["15"] ?? 5,
                   )}{" "}
-                  • Night minimum:{" "}
+                  • {t("nightMinimum")}{" "}
                   {Math.min(
                     staffingCategories["19"] ?? 4,
                     staffingCategories["23"] ?? 4,
@@ -475,17 +483,19 @@ export default function ConstraintsConfirmation({
               {/* Nurses Summary */}
               <div className="bg-green-50 rounded-lg p-4 border border-green-200">
                 <h3 className="font-semibold text-green-900 mb-2">
-                  Staff Overview
+                  {t("staffOverview")}
                 </h3>
                 <div className="grid grid-cols-3 gap-4">
                   <div>
-                    <p className="text-sm text-green-700">Total Nurses</p>
+                    <p className="text-sm text-green-700">{t("totalNurses")}</p>
                     <p className="text-2xl font-bold text-green-600">
                       {constraints.nurses.length}
                     </p>
                   </div>
                   <div>
-                    <p className="text-sm text-green-700">Chemo Certified</p>
+                    <p className="text-sm text-green-700">
+                      {t("chemoCertified")}
+                    </p>
                     <p className="text-2xl font-bold text-green-600">
                       {
                         constraints.nurses.filter((n) => n.isChemoCertified)
@@ -494,7 +504,9 @@ export default function ConstraintsConfirmation({
                     </p>
                   </div>
                   <div>
-                    <p className="text-sm text-green-700">With Off Requests</p>
+                    <p className="text-sm text-green-700">
+                      {t("withOffRequests")}
+                    </p>
                     <p className="text-2xl font-bold text-green-600">
                       {
                         constraints.nurses.filter(
@@ -504,7 +516,9 @@ export default function ConstraintsConfirmation({
                     </p>
                   </div>
                   <div>
-                    <p className="text-sm text-green-700">Renal Certified</p>
+                    <p className="text-sm text-green-700">
+                      {t("renalCertified")}
+                    </p>
                     <p className="text-2xl font-bold text-green-600">
                       {
                         constraints.nurses.filter((n) => n.isRenalCertified)
@@ -514,7 +528,7 @@ export default function ConstraintsConfirmation({
                   </div>
                   <div>
                     <p className="text-sm text-green-700">
-                      Transplant Certified
+                      {t("transplantCertified")}
                     </p>
                     <p className="text-2xl font-bold text-green-600">
                       {
@@ -525,7 +539,9 @@ export default function ConstraintsConfirmation({
                     </p>
                   </div>
                   <div>
-                    <p className="text-sm text-green-700">Charge Certified</p>
+                    <p className="text-sm text-green-700">
+                      {t("chargeCertified")}
+                    </p>
                     <p className="text-2xl font-bold text-green-600">
                       {
                         constraints.nurses.filter((n) => n.isChargeCertified)
@@ -608,8 +624,8 @@ export default function ConstraintsConfirmation({
                             }`}
                           >
                             {nurse.employmentType === "part-time"
-                              ? "PT • Part-Time"
-                              : "FT • Full-Time"}
+                              ? t("ptPartTime")
+                              : t("ftFullTime")}
                           </span>
                           {/* Leave status badges */}
                           {nurse.isOnMaternityLeave && (
@@ -638,7 +654,9 @@ export default function ConstraintsConfirmation({
                           {nurse.offRequests &&
                             nurse.offRequests.length > 0 && (
                               <span className="text-orange-600">
-                                {nurse.offRequests.length} off request(s)
+                                {t("offRequestsCount", {
+                                  count: nurse.offRequests.length,
+                                })}
                               </span>
                             )}
                         </div>
@@ -689,7 +707,7 @@ export default function ConstraintsConfirmation({
                         <div className="grid grid-cols-2 gap-4">
                           <div>
                             <label className="block text-xs font-medium text-gray-600 mb-1">
-                              Employee ID
+                              {t("employeeId")}
                             </label>
                             <input
                               type="text"
@@ -700,13 +718,13 @@ export default function ConstraintsConfirmation({
                                 })
                               }
                               disabled={!isEditing}
-                              placeholder="Enter employee ID"
+                              placeholder={t("enterEmployeeId")}
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500"
                             />
                           </div>
                           <div>
                             <label className="block text-xs font-medium text-gray-600 mb-1">
-                              Employment Type
+                              {t("employmentType")}
                             </label>
                             <select
                               value={nurse.employmentType}
@@ -738,13 +756,13 @@ export default function ConstraintsConfirmation({
                               disabled={!isEditing}
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500"
                             >
-                              <option value="full-time">Full Time</option>
-                              <option value="part-time">Part Time</option>
+                              <option value="full-time">{t("fullTime")}</option>
+                              <option value="part-time">{t("partTime")}</option>
                             </select>
                           </div>
                           <div>
                             <label className="block text-xs font-medium text-gray-600 mb-1">
-                              Max Weekly Hours
+                              {t("maxWeeklyHours")}
                             </label>
                             <input
                               type="number"
@@ -764,7 +782,7 @@ export default function ConstraintsConfirmation({
                           </div>
                           <div>
                             <label className="block text-xs font-medium text-gray-600 mb-1">
-                              Certifications
+                              {t("certifications")}
                             </label>
                             <div className="space-y-1">
                               <label className="flex items-center gap-2">
@@ -780,7 +798,7 @@ export default function ConstraintsConfirmation({
                                   className="rounded border-gray-300"
                                 />
                                 <span className="text-sm text-gray-700">
-                                  Chemo Certified
+                                  {t("chemoCertified")}
                                 </span>
                               </label>
                               <label className="flex items-center gap-2">
@@ -796,7 +814,7 @@ export default function ConstraintsConfirmation({
                                   className="rounded border-gray-300"
                                 />
                                 <span className="text-sm text-gray-700">
-                                  Transplant Certified
+                                  {t("transplantCertified")}
                                 </span>
                               </label>
                               <label className="flex items-center gap-2">
@@ -812,7 +830,7 @@ export default function ConstraintsConfirmation({
                                   className="rounded border-gray-300"
                                 />
                                 <span className="text-sm text-gray-700">
-                                  Renal Certified
+                                  {t("renalCertified")}
                                 </span>
                               </label>
                               <label className="flex items-center gap-2">
@@ -828,7 +846,7 @@ export default function ConstraintsConfirmation({
                                   className="rounded border-gray-300"
                                 />
                                 <span className="text-sm text-gray-700">
-                                  Charge Certified
+                                  {t("chargeCertified")}
                                 </span>
                               </label>
                             </div>
@@ -837,7 +855,7 @@ export default function ConstraintsConfirmation({
                         {nurse.offRequests && nurse.offRequests.length > 0 && (
                           <div>
                             <label className="block text-xs font-medium text-gray-600 mb-1">
-                              Off Requests
+                              {t("offRequests")}
                             </label>
                             <div className="flex flex-wrap gap-1">
                               {nurse.offRequests.map((date, i) => (
@@ -878,7 +896,7 @@ export default function ConstraintsConfirmation({
               onClick={onCancel}
               className="px-6 py-2 text-gray-600 font-medium hover:text-gray-900 transition-colors"
             >
-              ← Go Back
+              {t("goBack")}
             </button>
 
             <div className="flex items-center gap-3">
@@ -891,10 +909,10 @@ export default function ConstraintsConfirmation({
               >
                 <Save className="w-4 h-4" />
                 {savingNurses
-                  ? "Saving..."
+                  ? t("saving")
                   : editedNurseIds.size > 0
-                    ? `Save ${editedNurseIds.size} Change${editedNurseIds.size > 1 ? "s" : ""}`
-                    : "Save All to DB"}
+                    ? t("saveChangesCount", { count: editedNurseIds.size })
+                    : t("saveAllToDb")}
               </button>
 
               {/* Confirm & Optimize Button */}
@@ -906,12 +924,12 @@ export default function ConstraintsConfirmation({
                 {isOptimizing ? (
                   <>
                     <span className="animate-spin rounded-full h-5 w-5 border-b-2 border-white" />
-                    Optimizing...
+                    {t("optimizing")}
                   </>
                 ) : (
                   <>
                     <Check className="w-5 h-5" />
-                    Confirm & Optimize
+                    {t("confirmAndOptimize")}
                   </>
                 )}
               </button>
