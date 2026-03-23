@@ -353,10 +353,13 @@ export async function fetchDeletionActivitiesAPI(
 }
 
 // Fetch system prompt
-export async function fetchSystemPromptsAPI() {
+export async function fetchSystemPromptsAPI(headers?: Record<string, string>) {
   return apiRequest<{ id: number; name: string; content: string }>(
     "/system-prompt/",
-    { retryCount: 2 },
+    {
+      retryCount: 2,
+      headers: headers || {},
+    },
   );
 }
 
@@ -1322,6 +1325,7 @@ export async function analyzeScheduleInsightsAPI(payload: {
   orgContext?: string;
   staffNotes?: Record<string, string[]>;
   markerComments?: string;
+  locale?: string;
 }): Promise<{
   summary: string;
   score: number | null;

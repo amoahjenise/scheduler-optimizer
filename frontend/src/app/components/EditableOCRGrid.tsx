@@ -2,6 +2,7 @@
 
 import React from "react";
 import SectionCard from "./SectionCard";
+import { useTranslations } from "next-intl";
 
 type ShiftEntry = {
   date: string;
@@ -52,6 +53,7 @@ export default function EditableOCRGrid({
     hasAsterisk: boolean,
   ) => void;
 }) {
+  const t = useTranslations("scheduler");
   const [colWidths, setColWidths] = React.useState<number[]>(() => {
     const baseWidth = 120;
     const shiftColWidth = 80;
@@ -162,7 +164,7 @@ export default function EditableOCRGrid({
 
   return (
     <SectionCard
-      title="Editable Schedule Grid (OCR Review)"
+      title={t("editableScheduleGridOcrReview")}
       icon={<span>📝</span>}
     >
       <div className="overflow-auto" style={{ maxHeight: "520px" }}>
@@ -185,7 +187,7 @@ export default function EditableOCRGrid({
                   backgroundColor: "#dbeafe",
                 }}
               >
-                Remove
+                {t("remove")}
               </th>
               <th
                 className="border border-blue-200 p-2 relative whitespace-normal break-words"
@@ -200,7 +202,7 @@ export default function EditableOCRGrid({
                   backgroundColor: "#dbeafe",
                 }}
               >
-                Nurse
+                {t("nurse")}
                 <div
                   onMouseDown={(e) => handleMouseDown(e, 0)}
                   className="absolute top-0 right-0 h-full w-1 cursor-col-resize select-none"
@@ -249,7 +251,9 @@ export default function EditableOCRGrid({
                   <button
                     type="button"
                     onClick={() => handleRemoveRow(rowIndex)}
-                    aria-label={`Remove nurse row ${row.nurse || rowIndex + 1}`}
+                    aria-label={t("removeNurseRowAria", {
+                      name: row.nurse || String(rowIndex + 1),
+                    })}
                     className="text-red-600 hover:text-red-800 font-bold px-2 py-1 rounded hover:bg-red-50"
                   >
                     ✕
@@ -272,7 +276,7 @@ export default function EditableOCRGrid({
                     onChange={(e) =>
                       handleNurseChange(rowIndex, e.target.value)
                     }
-                    placeholder="Nurse name"
+                    placeholder={t("nurseName")}
                     className="w-full bg-transparent focus:outline-none resize-y overflow-auto break-words"
                   />
                 </td>
@@ -309,7 +313,7 @@ export default function EditableOCRGrid({
           onClick={handleAddRow}
           className="px-4 py-2 bg-sky-600 text-white rounded hover:bg-sky-700 transition"
         >
-          + Add Nurse
+          + {t("addNurse")}
         </button>
       </div>
     </SectionCard>

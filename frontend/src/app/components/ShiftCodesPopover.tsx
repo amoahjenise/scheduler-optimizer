@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
+import { useTranslations } from "next-intl";
 
 export interface ShiftCodeInfo {
   code: string;
@@ -43,6 +44,7 @@ export default function ShiftCodesPopover({
   size = "sm",
   className = "",
 }: ShiftCodesPopoverProps) {
+  const t = useTranslations("scheduler");
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"codes" | "slots">("codes");
   const ref = useRef<HTMLDivElement>(null);
@@ -70,7 +72,7 @@ export default function ShiftCodesPopover({
         onClick={() => setOpen((v) => !v)}
         onMouseEnter={() => setOpen(true)}
         className="inline-flex items-center gap-1 text-gray-400 hover:text-blue-600 transition-colors focus:outline-none"
-        aria-label="Shift codes reference"
+        aria-label={t("shiftCodesReference")}
       >
         <svg
           className={iconSize}
@@ -99,7 +101,9 @@ export default function ShiftCodesPopover({
           <div className="flex items-center justify-between mb-3">
             <h4 className="text-sm font-semibold text-gray-900 flex items-center gap-1.5">
               <span>🕐</span>{" "}
-              {showingSlots ? "Time Slot Categories" : "Shift Codes Reference"}
+              {showingSlots
+                ? t("timeSlotCategories")
+                : t("shiftCodesReference")}
             </h4>
             <div className="flex items-center gap-2">
               {/* Mode toggle - only show if timeSlots provided */}
@@ -113,7 +117,7 @@ export default function ShiftCodesPopover({
                         : "text-gray-600 hover:text-gray-900"
                     }`}
                   >
-                    Codes
+                    {t("codes")}
                   </button>
                   <button
                     onClick={() => setMode("slots")}
@@ -123,7 +127,7 @@ export default function ShiftCodesPopover({
                         : "text-gray-600 hover:text-gray-900"
                     }`}
                   >
-                    Slots
+                    {t("slots")}
                   </button>
                 </div>
               )}
@@ -151,16 +155,9 @@ export default function ShiftCodesPopover({
           {/* Description */}
           <p className="text-xs text-gray-500 mb-3">
             {showingSlots ? (
-              <>
-                Time slots are <strong>categories</strong> used in
-                self-scheduling. Each slot maps to actual shift codes.
-              </>
+              <>{t("timeSlotsDescription")}</>
             ) : (
-              <>
-                Z-prefixed codes are 12h shifts (11.25h actual). Standard codes
-                are 8h shifts (7.5h actual). &quot;B&quot; suffix = returns at
-                19:00 same day.
-              </>
+              <>{t("shiftCodesDescription")}</>
             )}
           </p>
 
@@ -181,7 +178,9 @@ export default function ShiftCodesPopover({
                     <div className="font-mono font-bold text-xs">
                       {slot.slot}
                     </div>
-                    <div className="text-[9px] text-gray-600">{slot.label}</div>
+                    <div className="text-[9px] text-gray-600">
+                      {t(`timeSlotLabel.${slot.slot}`)}
+                    </div>
                     <div className="text-[8px] text-gray-500 mt-0.5">
                       → {slot.mapsTo.join(", ")}
                     </div>
@@ -225,27 +224,27 @@ export default function ShiftCodesPopover({
           <div className="flex items-center gap-3 mt-2.5 text-[10px] text-gray-500">
             <span className="flex items-center gap-1">
               <span className="inline-block w-2.5 h-2.5 rounded bg-amber-100 border border-amber-200" />
-              Day
+              {t("day")}
             </span>
             {showingSlots && (
               <span className="flex items-center gap-1">
                 <span className="inline-block w-2.5 h-2.5 rounded bg-orange-100 border border-orange-200" />
-                Evening
+                {t("evening")}
               </span>
             )}
             <span className="flex items-center gap-1">
               <span className="inline-block w-2.5 h-2.5 rounded bg-indigo-100 border border-indigo-200" />
-              Night
+              {t("night")}
             </span>
             {!showingSlots && (
               <>
                 <span className="flex items-center gap-1">
                   <span className="inline-block w-2.5 h-2.5 rounded bg-purple-100 border border-purple-200" />
-                  Combined
+                  {t("combined")}
                 </span>
                 <span className="flex items-center gap-1">
                   <span className="inline-block w-2.5 h-2.5 rounded bg-gray-100 border border-gray-300" />
-                  Off
+                  {t("off")}
                 </span>
               </>
             )}

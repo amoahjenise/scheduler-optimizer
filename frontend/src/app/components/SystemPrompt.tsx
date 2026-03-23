@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Stethoscope, Eye, EyeOff, Lock, Pencil } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { useOrganization } from "../context/OrganizationContext";
 import SectionCard from "./SectionCard";
 import {
   fetchSystemPromptsAPI,
@@ -11,7 +13,7 @@ import {
 
 /* ------------------------------------------------------------------ */
 /* Zone splitting – The prompt is divided into alternating zones:      */
-/*   Zone 0 (editable): Start → before "SHIFT CODES REFERENCE"       */
+/*   Zone 0 (locked):   Start → before "SHIFT CODES REFERENCE"       */
 /*   Zone 1 (locked):   "SHIFT CODES REFERENCE" → before "Processing"*/
 /*   Zone 2 (editable): "Processing Instructions:" → before "Input"  */
 /*   Zone 3 (locked):   "Input Data:" → end                          */
@@ -33,16 +35,16 @@ function splitPromptIntoZones(raw: string): PromptZone[] {
   const zones: PromptZone[] = [];
   let remaining = raw;
 
-  // Zone 0 – editable instructions
+  // Zone 0 – locked core instructions & rules
   const idx0 = remaining.indexOf(ZONE_BOUNDARIES[0]);
   if (idx0 === -1) {
-    // Could not find shift codes section – treat entire prompt as editable
-    return [{ text: remaining, locked: false, label: "Instructions" }];
+    // Could not find shift codes section – treat entire prompt as locked
+    return [{ text: remaining, locked: true, label: "Instructions" }];
   }
   zones.push({
     text: remaining.slice(0, idx0),
-    locked: false,
-    label: "Rules & Instructions",
+    locked: true,
+    label: "Core Instructions & Rules",
   });
   remaining = remaining.slice(idx0);
 
@@ -99,6 +101,8 @@ function joinZones(zones: PromptZone[]): string {
 /* ------------------------------------------------------------------ */
 
 export default function SystemPrompt() {
+  const tScheduler = useTranslations("scheduler");
+  const { getAuthHeaders } = useOrganization();
   const [zones, setZones] = useState<PromptZone[]>([]);
   const [loadingPrompt, setLoadingPrompt] = useState(false);
   const [savingPrompt, setSavingPrompt] = useState(false);
@@ -127,7 +131,8 @@ export default function SystemPrompt() {
       setLoadingPrompt(true);
       setPromptError(null);
       try {
-        const data = await fetchSystemPromptsAPI();
+        const headers = await getAuthHeaders();
+        const data = await fetchSystemPromptsAPI(headers);
         const prompt = Array.isArray(data)
           ? data.find((p: any) => p?.name === "global")?.content ||
             data[0]?.content ||
@@ -139,13 +144,13 @@ export default function SystemPrompt() {
         setHasChanges(false);
         setIsEditing(false);
       } catch (error: any) {
-        setPromptError(error.message || "Failed to load system prompt");
+        setPromptError(error.message || tScheduler("failedToLoadSystemPrompt"));
       } finally {
         setLoadingPrompt(false);
       }
     }
     loadPrompt();
-  }, []);
+  }, [getAuthHeaders, tScheduler]);
 
   /* ---- Editable zone change ---- */
   const onZoneChange = useCallback(
@@ -169,7 +174,9 @@ export default function SystemPrompt() {
   function validateBeforeSave(fullText: string) {
     const missing = requiredPlaceholders.filter((ph) => !fullText.includes(ph));
     if (missing.length > 0) {
-      return `Missing required placeholders: ${missing.join(", ")}`;
+      return tScheduler("missingRequiredPlaceholders", {
+        placeholders: missing.join(", "),
+      });
     }
     return null;
   }
@@ -186,13 +193,14 @@ export default function SystemPrompt() {
       return;
     }
     try {
-      await saveSystemPromptAPI("global", fullText);
-      alert("System prompt saved!");
+      const headers = await getAuthHeaders();
+      await saveSystemPromptAPI("global", fullText, headers);
+      alert(tScheduler("systemPromptSaved"));
       originalZones.current = zones.map((z) => ({ ...z }));
       setHasChanges(false);
       setIsEditing(false);
     } catch (error: any) {
-      setPromptError(error.message || "Failed to save system prompt");
+      setPromptError(error.message || tScheduler("failedToSaveSystemPrompt"));
     } finally {
       setSavingPrompt(false);
     }
@@ -208,26 +216,22 @@ export default function SystemPrompt() {
 
   /* ---- Reset ---- */
   async function resetPrompt() {
-    if (
-      !confirm(
-        "Are you sure you want to reset the system prompt to default? All your customizations will be lost.",
-      )
-    )
-      return;
+    if (!confirm(tScheduler("confirmResetSystemPrompt"))) return;
 
     setLoadingPrompt(true);
     setPromptError(null);
     try {
-      const data = await resetSystemPromptAPI();
+      const headers = await getAuthHeaders();
+      const data = await resetSystemPromptAPI(headers);
       const prompt = data.content || "";
       const parsed = splitPromptIntoZones(prompt);
       setZones(parsed);
       originalZones.current = parsed.map((z) => ({ ...z }));
-      alert("System prompt reset to default!");
+      alert(tScheduler("systemPromptReset"));
       setHasChanges(false);
       setIsEditing(false);
     } catch (error: any) {
-      setPromptError(error.message || "Failed to reset system prompt");
+      setPromptError(error.message || tScheduler("failedToResetSystemPrompt"));
     } finally {
       setLoadingPrompt(false);
     }
@@ -246,27 +250,26 @@ export default function SystemPrompt() {
   /* ---- Render ---- */
   return (
     <SectionCard
-      title="System Prompt"
+      title={tScheduler("systemPrompt")}
       icon={<Stethoscope className="text-sky-600" />}
       className="w-full"
     >
       {loadingPrompt ? (
-        <p>Loading prompt...</p>
+        <p>{tScheduler("loadingPrompt")}</p>
       ) : (
         <>
           {promptError && <p className="text-red-600 mb-2">{promptError}</p>}
 
           <p className="mb-3 text-gray-700 text-sm">
-            Edit the system prompt that guides the optimizer.{" "}
+            {tScheduler("editSystemPromptInstructions")}{" "}
             <span className="inline-flex items-center gap-1 text-amber-700 font-medium">
-              <Lock size={12} /> Locked
+              <Lock size={12} /> {tScheduler("locked")}
             </span>{" "}
-            sections are auto-generated from your shift codes and cannot be
-            edited.{" "}
+            {tScheduler("lockedSectionsDescription")}{" "}
             <span className="inline-flex items-center gap-1 text-blue-700 font-medium">
-              <Pencil size={12} /> Editable
+              <Pencil size={12} /> {tScheduler("editable")}
             </span>{" "}
-            sections can be customized.
+            {tScheduler("editableSectionsDescription")}
           </p>
 
           {isEditing ? (
@@ -287,7 +290,9 @@ export default function SystemPrompt() {
                         <Lock size={14} /> {zone.label}
                       </span>
                       <span className="text-xs text-amber-600">
-                        {collapsedLocked.has(idx) ? "▶ Show" : "▼ Collapse"}
+                        {collapsedLocked.has(idx)
+                          ? tScheduler("show")
+                          : tScheduler("collapse")}
                       </span>
                     </button>
                     {!collapsedLocked.has(idx) && (
@@ -337,11 +342,11 @@ export default function SystemPrompt() {
               >
                 {showFullPreview ? (
                   <>
-                    <EyeOff size={16} /> Hide Preview
+                    <EyeOff size={16} /> {tScheduler("hidePreview")}
                   </>
                 ) : (
                   <>
-                    <Eye size={16} /> Show Full Preview
+                    <Eye size={16} /> {tScheduler("showFullPreview")}
                   </>
                 )}
               </button>
@@ -361,14 +366,14 @@ export default function SystemPrompt() {
                       : "bg-green-600 hover:bg-green-700"
                   }`}
                 >
-                  {savingPrompt ? "Saving..." : "Save"}
+                  {savingPrompt ? tScheduler("saving") : tScheduler("save")}
                 </button>
                 <button
                   onClick={cancelEditing}
                   disabled={savingPrompt}
                   className="px-4 py-2 rounded-md font-medium bg-gray-300 hover:bg-gray-400"
                 >
-                  Cancel
+                  {tScheduler("cancel")}
                 </button>
               </>
             ) : (
@@ -376,7 +381,7 @@ export default function SystemPrompt() {
                 onClick={() => setIsEditing(true)}
                 className="px-4 py-2 rounded-md font-medium text-white bg-blue-600 hover:bg-blue-700"
               >
-                Edit
+                {tScheduler("edit")}
               </button>
             )}
 
@@ -389,7 +394,9 @@ export default function SystemPrompt() {
                   : "bg-red-600 hover:bg-red-700"
               }`}
             >
-              {loadingPrompt ? "Resetting..." : "Reset to Default"}
+              {loadingPrompt
+                ? tScheduler("resetting")
+                : tScheduler("resetToDefault")}
             </button>
           </div>
         </>

@@ -181,7 +181,9 @@ export default function ActivitiesPage() {
 
             const fallbackUserName =
               user?.fullName ||
-              user?.firstName ||
+              (user?.firstName
+                ? `${user.firstName.trim().charAt(0).toUpperCase()}${user.firstName.trim().slice(1)}`
+                : undefined) ||
               user?.primaryEmailAddress?.emailAddress ||
               "";
 

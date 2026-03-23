@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import SectionCard from "./SectionCard";
+import { useLocale, useTranslations } from "next-intl";
 
 /**
  * Staffing categories representing time windows that need coverage.
@@ -85,6 +86,8 @@ export default function StaffRequirementsEditor({
     React.SetStateAction<Record<string, Record<string, number>>>
   >;
 }) {
+  const t = useTranslations("scheduler");
+  const locale = useLocale();
   const didPrefill = useRef(false);
 
   // Pre-fill empty cells with defaults on first render when dates are available
@@ -124,7 +127,7 @@ export default function StaffRequirementsEditor({
   }
 
   function handleReset() {
-    if (confirm("Reset all staff requirements to defaults?")) {
+    if (confirm(t("resetStaffRequirementsConfirm"))) {
       const defaults = loadStaffingDefaults();
       const next: Record<string, Record<string, number>> = {};
       for (const shift of shiftTypes) {
@@ -142,7 +145,7 @@ export default function StaffRequirementsEditor({
   function formatDateHeader(dateStr: string) {
     try {
       const d = new Date(dateStr + "T00:00:00");
-      const day = d.toLocaleDateString("en-CA", { weekday: "short" });
+      const day = d.toLocaleDateString(locale, { weekday: "short" });
       const num = d.getDate();
       return (
         <>
@@ -158,23 +161,23 @@ export default function StaffRequirementsEditor({
   }
 
   return (
-    <SectionCard title="Staff Requirements & Shift Hours">
+    <SectionCard title={t("staffRequirementsAndShiftHours")}>
       <div className="mb-4 flex justify-between items-center">
-        <p className="text-sm text-gray-600">
-          Set minimum staff required for each shift per day.
-        </p>
+        <p className="text-sm text-gray-600">{t("setMinimumStaffRequired")}</p>
         <button
           onClick={handleReset}
           className="px-4 py-2 text-sm bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
         >
-          Reset to Defaults
+          {t("resetToDefaults")}
         </button>
       </div>
       <div className="overflow-auto">
         <table className="min-w-full text-sm border border-blue-300">
           <thead>
             <tr className="bg-blue-100">
-              <th className="p-2 border text-left whitespace-nowrap">Shift</th>
+              <th className="p-2 border text-left whitespace-nowrap">
+                {t("shift")}
+              </th>
               {ocrDates.map((date) => (
                 <th key={date} className="p-1 border text-center min-w-[3rem]">
                   {formatDateHeader(date)}

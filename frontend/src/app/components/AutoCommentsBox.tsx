@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback } from "react";
 import SectionCard from "./SectionCard";
+import { useTranslations } from "next-intl";
 import {
   User2,
   Plus,
@@ -52,6 +53,7 @@ export default function AutoCommentsBox({
   setAutoComments: React.Dispatch<React.SetStateAction<string>>;
   validationErrors: string[];
 }) {
+  const t = useTranslations("scheduler");
   const [showRaw, setShowRaw] = useState(false);
   const [findText, setFindText] = useState("");
   const [replaceText, setReplaceText] = useState("");
@@ -180,15 +182,14 @@ export default function AutoCommentsBox({
 
   return (
     <SectionCard
-      title="Employee Notes & Time-Off Requests"
+      title={t("employeeNotesAndTimeOffRequests")}
       icon={<User2 className="text-sky-600" size={24} aria-hidden="true" />}
     >
       {/* Header bar */}
       <div className="flex items-center justify-between mb-3">
         <span className="text-xs text-gray-500">
-          {entries.length} {entries.length === 1 ? "entry" : "entries"} ·{" "}
-          {groupedEntries.length}{" "}
-          {groupedEntries.length === 1 ? "nurse" : "nurses"}
+          {t("entriesCount", { count: entries.length })} ·{" "}
+          {t("nursesCount", { count: groupedEntries.length })}
         </span>
         <div className="flex items-center gap-2">
           <button
@@ -203,21 +204,21 @@ export default function AutoCommentsBox({
           >
             <Plane className="h-3 w-3" />
             {entries.every((e) => e.comment.toUpperCase().startsWith("OFF"))
-              ? "Clear All Time-Off"
-              : "Mark All Time-Off"}
+              ? t("clearAllTimeOff")
+              : t("markAllTimeOff")}
           </button>
           <button
             onClick={() => setShowFindReplace(!showFindReplace)}
             className="text-xs text-gray-500 hover:text-blue-600 flex items-center gap-1 px-2 py-1 rounded hover:bg-gray-50 transition-colors"
           >
             <Search className="h-3 w-3" />
-            Find & Replace
+            {t("findAndReplace")}
           </button>
           <button
             onClick={() => setShowRaw(!showRaw)}
             className="text-xs text-gray-500 hover:text-blue-600 px-2 py-1 rounded hover:bg-gray-50 transition-colors"
           >
-            {showRaw ? "Visual Editor" : "Raw Editor"}
+            {showRaw ? t("visualEditor") : t("rawEditor")}
           </button>
         </div>
       </div>
@@ -300,8 +301,7 @@ export default function AutoCommentsBox({
           {entries.length === 0 && (
             <div className="text-center py-8 text-gray-400 text-sm">
               <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              No employee notes yet. Click &quot;Add Note&quot; or add "*" in
-              the Editable Schedule Grid to auto-detect.
+              {t("noEmployeeNotesYet")}
             </div>
           )}
 
@@ -410,7 +410,7 @@ export default function AutoCommentsBox({
             className="w-full flex items-center justify-center gap-2 py-2 rounded-lg border-2 border-dashed border-gray-200 text-sm text-gray-500 hover:border-blue-300 hover:text-blue-600 transition-colors"
           >
             <Plus className="w-4 h-4" />
-            Add Note
+            {t("addNote")}
           </button>
         </div>
       )}

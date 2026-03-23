@@ -1954,6 +1954,7 @@ export default function SchedulerPage() {
         orgContext: currentOrganization?.name,
         staffNotes: Object.keys(staffNotes).length > 0 ? staffNotes : undefined,
         markerComments: autoComments || undefined,
+        locale: locale,
       });
 
       setInsightsData(data);
@@ -2017,10 +2018,10 @@ export default function SchedulerPage() {
 
   // Step indicators
   const steps: { key: Step; label: string }[] = [
-    { key: "setup", label: "Setup & Upload" },
-    { key: "review", label: "Review" },
-    { key: "optimize", label: "Optimize" },
-    { key: "result", label: "Result" },
+    { key: "setup", label: tScheduler("setupUpload") },
+    { key: "review", label: tScheduler("review") },
+    { key: "optimize", label: tScheduler("optimize") },
+    { key: "result", label: tScheduler("result") },
   ];
 
   const currentStepIndex = steps.findIndex((s) => s.key === currentStep);
@@ -2551,7 +2552,7 @@ export default function SchedulerPage() {
                     : "bg-white text-blue-700 border border-blue-300 hover:bg-blue-100"
                 }`}
               >
-                1) Setup &amp; Upload
+                {tScheduler("step1SetupUpload")}
               </button>
               <button
                 onClick={() => setCurrentStep("review")}
@@ -2562,7 +2563,7 @@ export default function SchedulerPage() {
                     : "bg-white text-blue-700 border border-blue-300 hover:bg-blue-100"
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
-                2) Review
+                {tScheduler("step2Review")}
               </button>
               <button
                 onClick={() => setCurrentStep("optimize")}
@@ -2573,7 +2574,7 @@ export default function SchedulerPage() {
                     : "bg-white text-blue-700 border border-blue-300 hover:bg-blue-100"
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
-                3) Optimize
+                {tScheduler("step3Optimize")}
               </button>
               <button
                 onClick={() => setCurrentStep("result")}
@@ -2584,7 +2585,7 @@ export default function SchedulerPage() {
                     : "bg-white text-blue-700 border border-blue-300 hover:bg-blue-100"
                 } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
-                4) Result
+                {tScheduler("step4Result")}
               </button>
             </div>
           </div>
@@ -2958,7 +2959,7 @@ export default function SchedulerPage() {
                   <div className="mb-4">
                     <div className="flex items-center justify-between">
                       <h2 className="text-lg font-semibold text-gray-900">
-                        Review Extracted Data
+                        {tScheduler("reviewExtractedData")}
                       </h2>
                       <ShiftCodesPopover
                         shiftCodes={SHIFT_CODES}
@@ -2969,12 +2970,11 @@ export default function SchedulerPage() {
                           label: ts.label,
                           mapsTo: ts.mapsTo,
                         }))}
-                        label="Shift Codes"
+                        label={tScheduler("shiftCodes")}
                       />
                     </div>
                     <p className="text-gray-500 text-sm mt-1">
-                      Review and edit the extracted schedule data. Click any
-                      cell to modify.
+                      {tScheduler("reviewExtractedDataHelp")}
                     </p>
                   </div>
 
@@ -3121,9 +3121,7 @@ export default function SchedulerPage() {
                         );
 
                         if (missingNurses.length === 0) {
-                          alert(
-                            "All nurses from the database are already in the schedule.",
-                          );
+                          alert(tScheduler("allNursesAlreadyInSchedule"));
                           return;
                         }
 
@@ -3145,7 +3143,9 @@ export default function SchedulerPage() {
 
                         setOcrGrid([...ocrGrid, ...newRows]);
                         alert(
-                          `Added ${missingNurses.length} nurse${missingNurses.length !== 1 ? "s" : ""} from database to the schedule.`,
+                          tScheduler("addedNursesFromDatabase", {
+                            count: missingNurses.length,
+                          }),
                         );
                       }}
                       disabled={organizationNurses.length === 0}
@@ -3164,11 +3164,13 @@ export default function SchedulerPage() {
                           d="M12 4v16m8-8H4"
                         />
                       </svg>
-                      Import Missing Nurses from Database
+                      {tScheduler("importMissingNursesFromDatabase")}
                     </button>
                     <span className="text-xs text-gray-500">
-                      {organizationNurses.length} total in database ·{" "}
-                      {ocrGrid.length} in schedule
+                      {tScheduler("totalInDatabaseInSchedule", {
+                        db: organizationNurses.length,
+                        schedule: ocrGrid.length,
+                      })}
                     </span>
                   </div>
 
@@ -3186,7 +3188,7 @@ export default function SchedulerPage() {
 
                 <div className="bg-white rounded-xl border border-gray-200 p-6">
                   <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                    Staff Requirements (Optional)
+                    {tScheduler("staffRequirementsOptional")}
                   </h2>
                   <StaffRequirementsEditor
                     ocrDates={ocrDates}
@@ -3208,14 +3210,14 @@ export default function SchedulerPage() {
                     onClick={() => setCurrentStep("setup")}
                     className="px-6 py-2 text-gray-600 font-medium hover:text-gray-900"
                   >
-                    ← Back
+                    {tScheduler("goBack")}
                   </button>
                   <button
                     onClick={() => setCurrentStep("optimize")}
                     disabled={ocrGrid.length === 0}
                     className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50"
                   >
-                    Continue to Optimize
+                    {tScheduler("continueToOptimize")}
                   </button>
                 </div>
               </>
@@ -3232,7 +3234,7 @@ export default function SchedulerPage() {
           >
             <div className="bg-white rounded-xl border border-gray-200 p-6">
               <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                Ready to Optimize
+                {tScheduler("readyToOptimize")}
               </h2>
 
               <div className="p-4 rounded-xl border border-blue-200 bg-blue-50">
@@ -3254,39 +3256,44 @@ export default function SchedulerPage() {
                   </div>
                   <div>
                     <h3 className="font-semibold text-gray-900">
-                      Smart Scheduler
+                      {tScheduler("smartScheduler")}
                     </h3>
                     <span className="text-xs text-blue-600 font-medium">
-                      Constraint-based optimization
+                      {tScheduler("constraintBasedOptimization")}
                     </span>
                   </div>
                 </div>
                 <p className="text-sm text-gray-600">
-                  The scheduler will: honor Time Off Request from comments,
-                  preserve existing shift codes from OCR, fill gaps to meet
-                  staffing requirements, balance hours fairly across nurses, and
-                  enforce consecutive work day limits.
+                  {tScheduler("schedulerWillDescription")}
                 </p>
               </div>
             </div>
 
             <div className="bg-white rounded-xl border border-gray-200 p-6">
-              <h3 className="font-semibold text-gray-900 mb-3">Summary</h3>
+              <h3 className="font-semibold text-gray-900 mb-3">
+                {tScheduler("summary")}
+              </h3>
               <div className="grid grid-cols-3 gap-4 text-sm mb-4">
                 <div>
-                  <span className="text-gray-500">Period:</span>
+                  <span className="text-gray-500">
+                    {tScheduler("periodLabel")}
+                  </span>
                   <p className="font-medium">
                     {startDate} to {endDate}
                   </p>
                 </div>
                 <div>
-                  <span className="text-gray-500">Total Nurses:</span>
+                  <span className="text-gray-500">
+                    {tScheduler("totalNursesLabel")}
+                  </span>
                   <p className="font-medium text-blue-600">
                     {uniqueNurses.length}
                   </p>
                 </div>
                 <div>
-                  <span className="text-gray-500">Days:</span>
+                  <span className="text-gray-500">
+                    {tScheduler("daysLabel")}
+                  </span>
                   <p className="font-medium">{scheduleDays}</p>
                 </div>
               </div>
@@ -3294,7 +3301,9 @@ export default function SchedulerPage() {
               {/* Visual nurse list for debugging */}
               <div className="mt-4 p-4 bg-gray-50 rounded-lg">
                 <h4 className="text-sm font-semibold text-gray-700 mb-2">
-                  Nurses to be Scheduled: {uniqueNurses.length}
+                  {tScheduler("nursesToBeScheduled", {
+                    count: uniqueNurses.length,
+                  })}
                 </h4>
                 <div className="flex flex-wrap gap-2">
                   {/* Deduplicated nurse list */}
@@ -3321,7 +3330,7 @@ export default function SchedulerPage() {
                 disabled={optimizing}
                 className="px-6 py-2 text-gray-600 font-medium hover:text-gray-900"
               >
-                ← Back
+                {tScheduler("goBack")}
               </button>
               <button
                 onClick={previewConstraints}
@@ -3331,12 +3340,12 @@ export default function SchedulerPage() {
                 {loadingConstraints ? (
                   <>
                     <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
-                    Analyzing...
+                    {tScheduler("analyzing")}
                   </>
                 ) : optimizing ? (
                   <>
                     <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
-                    Optimizing... Please wait
+                    {tScheduler("optimizingPleaseWait")}
                   </>
                 ) : (
                   <>
@@ -3353,7 +3362,7 @@ export default function SchedulerPage() {
                         d="M13 10V3L4 14h7v7l9-11h-7z"
                       />
                     </svg>
-                    Preview & Optimize
+                    {tScheduler("previewAndOptimize")}
                   </>
                 )}
               </button>
@@ -3363,8 +3372,7 @@ export default function SchedulerPage() {
               <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
                 <div className="flex items-center gap-2">
                   <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-blue-300 border-t-blue-700" />
-                  Optimization is running. Please wait — do not click Preview &
-                  Optimize again.
+                  {tScheduler("optimizationRunningWaitDontClick")}
                 </div>
               </div>
             )}
@@ -3425,7 +3433,7 @@ export default function SchedulerPage() {
                     onClick={() => setCurrentStep("review")}
                     className="px-6 py-2 text-gray-600 font-medium hover:text-gray-900"
                   >
-                    ← Back to Review
+                    {tScheduler("backToReview")}
                   </button>
                   <button
                     onClick={() => {
@@ -3537,7 +3545,7 @@ export default function SchedulerPage() {
                     onClick={() => setCurrentStep("review")}
                     className="px-6 py-2 text-gray-600 font-medium hover:text-gray-900"
                   >
-                    ← Back
+                    {tScheduler("goBack")}
                   </button>
                   <button
                     onClick={() => {
@@ -3783,25 +3791,25 @@ export default function SchedulerPage() {
                     <thead>
                       <tr className="bg-gray-100">
                         <th className="text-left p-2 border-b font-medium">
-                          Nurse
+                          {tScheduler("nurse")}
                         </th>
                         <th className="text-center p-2 border-b font-medium">
-                          Type
+                          {tScheduler("type")}
                         </th>
                         <th className="text-center p-2 border-b font-medium">
-                          Shifts
+                          {tScheduler("shifts")}
                         </th>
                         <th className="text-center p-2 border-b font-medium">
-                          Paid Hours
+                          {tScheduler("paidHours")}
                         </th>
                         <th className="text-center p-2 border-b font-medium">
-                          Hour Target
+                          {tScheduler("hourTarget")}
                         </th>
                         <th className="text-center p-2 border-b font-medium">
-                          Delta
+                          {tScheduler("delta")}
                         </th>
                         <th className="text-center p-2 border-b font-medium">
-                          Action
+                          {tScheduler("action")}
                         </th>
                       </tr>
                     </thead>
@@ -3835,12 +3843,10 @@ export default function SchedulerPage() {
                           </td>
                           <td className="p-2 text-center">
                             <div className="font-medium">
-                              {nurse.workingDays + (nurse.cfShiftCount || 0)}{" "}
-                              shift
-                              {nurse.workingDays + (nurse.cfShiftCount || 0) !==
-                              1
-                                ? "s"
-                                : ""}
+                              {tScheduler("shiftCount", {
+                                count:
+                                  nurse.workingDays + (nurse.cfShiftCount || 0),
+                              })}
                             </div>
                             <div className="text-xs text-gray-500">
                               {nurse.count12h > 0 && (
@@ -3927,7 +3933,7 @@ export default function SchedulerPage() {
                               }}
                               className="text-xs text-red-500 hover:text-red-700 hover:underline"
                             >
-                              Hide
+                              {tScheduler("hide")}
                             </button>
                           </td>
                         </tr>
@@ -4222,7 +4228,7 @@ export default function SchedulerPage() {
                 disabled={isFinalized}
                 className="px-6 py-2 text-gray-600 font-medium hover:text-gray-900 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                ← Back to Optimize
+                {tScheduler("backToOptimize")}
               </button>
               <div className="flex gap-3">
                 {/* Undo Refinement Button - only shows when there's something to undo */}
@@ -4244,7 +4250,7 @@ export default function SchedulerPage() {
                         d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
                       />
                     </svg>
-                    Undo Refinement
+                    {tScheduler("undoRefinement")}
                   </button>
                 )}
                 <button
@@ -4273,7 +4279,7 @@ export default function SchedulerPage() {
                       d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
                     />
                   </svg>
-                  Refine with AI
+                  {tScheduler("refineWithAI")}
                 </button>
                 <button
                   onClick={analyzeScheduleInsights}
@@ -4583,7 +4589,7 @@ export default function SchedulerPage() {
                       d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
                     />
                   </svg>
-                  Export Excel
+                  {tScheduler("exportExcel")}
                 </button>
               </div>
             </div>
@@ -5372,7 +5378,7 @@ export default function SchedulerPage() {
                     <div className="flex items-start justify-between gap-4">
                       <div className="flex-1">
                         <h4 className="font-semibold text-emerald-900 mb-1">
-                          Overall Assessment
+                          {tScheduler("overallAssessment")}
                         </h4>
                         <p className="text-emerald-800 text-sm leading-relaxed">
                           {insightsData.summary}
@@ -5392,7 +5398,7 @@ export default function SchedulerPage() {
                             {insightsData.score}
                           </div>
                           <span className="text-xs text-gray-500 mt-1">
-                            Score
+                            {tScheduler("score")}
                           </span>
                         </div>
                       )}
@@ -5416,7 +5422,9 @@ export default function SchedulerPage() {
                             d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
                           />
                         </svg>
-                        Issues Found ({insightsData.issues.length})
+                        {tScheduler("issuesFound", {
+                          count: insightsData.issues.length,
+                        })}
                       </h4>
                       <div className="space-y-2">
                         {insightsData.issues.map((issue, idx) => (
@@ -5485,7 +5493,9 @@ export default function SchedulerPage() {
                               d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"
                             />
                           </svg>
-                          Suggestions ({insightsData.suggestions.length})
+                          {tScheduler("suggestions", {
+                            count: insightsData.suggestions.length,
+                          })}
                         </h4>
                         <div className="space-y-2">
                           {insightsData.suggestions.map((suggestion, idx) => (
@@ -5494,7 +5504,9 @@ export default function SchedulerPage() {
                               className="bg-gray-50 border border-gray-200 rounded-lg p-3 flex gap-3"
                             >
                               <span className="inline-flex items-center px-2 py-0.5 text-xs font-medium rounded bg-emerald-100 text-emerald-800 flex-shrink-0 h-5 mt-0.5 capitalize">
-                                {suggestion.category}
+                                {tScheduler(
+                                  `category${suggestion.category.charAt(0).toUpperCase() + suggestion.category.slice(1)}` as any,
+                                ) || suggestion.category}
                               </span>
                               <p className="text-sm text-gray-700">
                                 {suggestion.text}
@@ -5523,12 +5535,12 @@ export default function SchedulerPage() {
                               d="M12 6v6m0 0v6m0-6h6m-6 0H6"
                             />
                           </svg>
-                          Gap-Fill Recommendations (
-                          {insightsData.gapFillSuggestions.length})
+                          {tScheduler("gapFillRecommendations", {
+                            count: insightsData.gapFillSuggestions.length,
+                          })}
                         </h4>
                         <p className="text-xs text-gray-500 mb-2">
-                          These dates are understaffed. Suggested nurses have
-                          capacity below their target hours.
+                          {tScheduler("understaffedDatesDescription")}
                         </p>
 
                         {/* Select all / Apply controls */}
@@ -5627,7 +5639,9 @@ export default function SchedulerPage() {
                                             : "bg-amber-200 text-amber-800"
                                         }`}
                                       >
-                                        {gf.priority}
+                                        {tScheduler(
+                                          `priority${gf.priority.charAt(0).toUpperCase() + gf.priority.slice(1)}` as any,
+                                        ) || gf.priority}
                                       </span>
                                       <span className="text-sm font-semibold text-gray-900">
                                         {new Date(
@@ -5639,8 +5653,12 @@ export default function SchedulerPage() {
                                         })}
                                       </span>
                                       <span className="text-xs text-gray-500">
-                                        ({gf.currentHeadcount} staff vs{" "}
-                                        {gf.averageHeadcount} avg)
+                                        (
+                                        {tScheduler("staffVsAvg", {
+                                          count: gf.currentHeadcount,
+                                          avg: gf.averageHeadcount,
+                                        })}
+                                        )
                                       </span>
                                     </div>
                                     <div className="mt-1.5 flex items-center gap-2 text-sm">
@@ -5709,7 +5727,7 @@ export default function SchedulerPage() {
                           d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
                         />
                       </svg>
-                      Re-analyze
+                      {tScheduler("reAnalyze")}
                     </button>
                   </div>
                 </>
@@ -5725,16 +5743,18 @@ export default function SchedulerPage() {
           <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[80vh] overflow-y-auto">
             <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4">
               <h3 className="text-xl font-bold text-gray-900">
-                AI Refinement Results
+                {tScheduler("aiRefinementResults")}
               </h3>
             </div>
 
             <div className="p-6 space-y-4">
               {/* Summary */}
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <h4 className="font-semibold text-blue-900 mb-2">Summary</h4>
+                <h4 className="font-semibold text-blue-900 mb-2">
+                  {tScheduler("summary")}
+                </h4>
                 <p className="text-blue-800">
-                  {aiSuggestions.summary || "No summary provided."}
+                  {aiSuggestions.summary || tScheduler("noSummaryProvided")}
                 </p>
               </div>
 
@@ -5763,9 +5783,9 @@ export default function SchedulerPage() {
                         : "text-yellow-900"
                     }`}
                   >
-                    {changesAppliedCount} change
-                    {changesAppliedCount !== 1 ? "s" : ""} applied to the
-                    schedule
+                    {tScheduler("changesAppliedToSchedule", {
+                      count: changesAppliedCount,
+                    })}
                   </span>
                 </div>
               </div>
@@ -5776,9 +5796,9 @@ export default function SchedulerPage() {
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-2xl text-red-600">⚠</span>
                     <span className="font-semibold text-red-900">
-                      {changesRejectedCount} change
-                      {changesRejectedCount !== 1 ? "s" : ""} rejected (invalid
-                      dates or nurses)
+                      {tScheduler("changesRejected", {
+                        count: changesRejectedCount,
+                      })}
                     </span>
                   </div>
                   {rejectedDetails.length > 0 && (
@@ -5791,7 +5811,8 @@ export default function SchedulerPage() {
                           <span className="font-medium">
                             {detail.change?.nurse}
                           </span>{" "}
-                          on {detail.change?.date}: {detail.reason}
+                          {tScheduler("on")} {detail.change?.date}:{" "}
+                          {detail.reason}
                         </div>
                       ))}
                     </div>
@@ -5803,7 +5824,7 @@ export default function SchedulerPage() {
               {aiSuggestions.changes && aiSuggestions.changes.length > 0 && (
                 <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                   <h4 className="font-semibold text-gray-900 mb-3">
-                    Suggested Changes
+                    {tScheduler("suggestedChanges")}
                   </h4>
                   <div className="space-y-2">
                     {aiSuggestions.changes.map((change: any, idx: number) => (
@@ -5820,7 +5841,7 @@ export default function SchedulerPage() {
                               {change.nurse} - {change.date}
                             </div>
                             <div className="text-sm text-gray-600 mt-1">
-                              Action:{" "}
+                              {tScheduler("action")}:{" "}
                               <span className="font-medium">
                                 {change.action}
                               </span>
@@ -5859,7 +5880,7 @@ export default function SchedulerPage() {
                           d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
                         />
                       </svg>
-                      Debug: Raw AI Output
+                      {tScheduler("debugRawAiOutput")}
                     </span>
                     <svg
                       className={`w-5 h-5 transition-transform ${showDebugInfo ? "rotate-180" : ""}`}
@@ -5908,7 +5929,7 @@ export default function SchedulerPage() {
                       d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"
                     />
                   </svg>
-                  Undo Refinement
+                  {tScheduler("undoRefinement")}
                 </button>
               )}
               {!preRefinementGrid && <div />}
@@ -5921,7 +5942,7 @@ export default function SchedulerPage() {
                 }}
                 className="px-6 py-2 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700"
               >
-                Close
+                {tScheduler("close")}
               </button>
             </div>
           </div>
@@ -5936,7 +5957,7 @@ export default function SchedulerPage() {
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
               <div className="flex items-center gap-3">
                 <h3 className="text-xl font-bold text-gray-900">
-                  Refine Schedule with AI
+                  {tScheduler("refineScheduleWithAI")}
                 </h3>
                 <ShiftCodesPopover
                   shiftCodes={SHIFT_CODES}
@@ -5947,7 +5968,7 @@ export default function SchedulerPage() {
                     label: ts.label,
                     mapsTo: ts.mapsTo,
                   }))}
-                  label="Shift Codes"
+                  label={tScheduler("shiftCodes")}
                 />
               </div>
               <button
@@ -5978,17 +5999,15 @@ export default function SchedulerPage() {
               {/* Section 1: Refinement Request */}
               <div>
                 <label className="block text-sm font-semibold text-gray-700 mb-1">
-                  Refinement Request
+                  {tScheduler("refinementRequest")}
                 </label>
                 <p className="text-xs text-gray-500 mb-2">
-                  Describe what you'd like to improve. e.g. &quot;Ensure more
-                  weekend coverage&quot; or &quot;Give Nurse Jane fewer night
-                  shifts&quot;
+                  {tScheduler("refinementRequestDescription")}
                 </p>
                 <textarea
                   value={refineRequest}
                   onChange={(e) => setRefineRequest(e.target.value)}
-                  placeholder="Enter your refinement request..."
+                  placeholder={tScheduler("enterRefinementRequest")}
                   className="w-full h-28 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
                 />
               </div>
@@ -6011,11 +6030,11 @@ export default function SchedulerPage() {
                       />
                     </svg>
                     <span className="text-sm font-semibold text-gray-700">
-                      Scheduling Rules
+                      {tScheduler("schedulingRules")}
                     </span>
                     {rules.trim() && (
                       <span className="text-[10px] bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-medium">
-                        Active
+                        {tScheduler("active")}
                       </span>
                     )}
                   </div>
@@ -6035,16 +6054,13 @@ export default function SchedulerPage() {
                 </summary>
                 <div className="px-4 pb-4 pt-1 space-y-2">
                   <p className="text-xs text-gray-500">
-                    These rules guide the AI optimizer. One rule per line. They
-                    are saved to your organization for reuse.
+                    {tScheduler("schedulingRulesDescription")}
                   </p>
                   <textarea
                     value={rules}
                     onChange={(e) => setRules(e.target.value)}
                     rows={5}
-                    placeholder={
-                      "1. No more than 5 consecutive working days\n2. Balance workload across all nurses\n3. Senior nurses get shift preference"
-                    }
+                    placeholder={tScheduler("schedulingRulesPlaceholder")}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 font-mono resize-y"
                   />
                   <div className="flex items-center gap-2">
@@ -6063,7 +6079,7 @@ export default function SchedulerPage() {
                       disabled={!rules.trim()}
                       className="text-xs px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-40 font-medium"
                     >
-                      Save Rules
+                      {tScheduler("saveRules")}
                     </button>
                     <button
                       type="button"
@@ -6079,7 +6095,7 @@ export default function SchedulerPage() {
                       }}
                       className="text-xs px-3 py-1 border border-gray-300 text-gray-600 rounded-md hover:bg-gray-50 font-medium"
                     >
-                      Load Last Saved
+                      {tScheduler("loadLastSaved")}
                     </button>
                   </div>
                 </div>
@@ -6109,7 +6125,7 @@ export default function SchedulerPage() {
                       />
                     </svg>
                     <span className="text-sm font-semibold text-gray-700">
-                      Advanced: System Prompt
+                      {tScheduler("advancedSystemPrompt")}
                     </span>
                   </div>
                   <svg
@@ -6141,7 +6157,7 @@ export default function SchedulerPage() {
                 }}
                 className="px-6 py-2 text-gray-600 font-medium hover:text-gray-900"
               >
-                Cancel
+                {tScheduler("cancel")}
               </button>
               <button
                 onClick={refineScheduleWithAI}
@@ -6151,10 +6167,10 @@ export default function SchedulerPage() {
                 {refining ? (
                   <>
                     <span className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" />
-                    Refining...
+                    {tScheduler("refining")}
                   </>
                 ) : (
-                  "Refine Schedule"
+                  tScheduler("refineSchedule")
                 )}
               </button>
             </div>
@@ -6273,14 +6289,13 @@ export default function SchedulerPage() {
               <div className="mt-0.5 h-10 w-10 rounded-full border-4 border-blue-200 border-t-blue-600 animate-spin" />
               <div className="min-w-0">
                 <h3 className="text-lg font-semibold text-gray-900">
-                  Optimizing Schedule
+                  {tScheduler("optimizingSchedule")}
                 </h3>
                 <p className="mt-1 text-sm text-gray-600">
-                  Your optimization is in progress. Please wait — this can take
-                  up to 45 seconds.
+                  {tScheduler("optimizationInProgress")}
                 </p>
                 <p className="mt-2 text-sm font-semibold text-gray-800">
-                  Elapsed:{" "}
+                  {tScheduler("elapsed")}{" "}
                   {Math.floor(optimizationElapsedSeconds / 60)
                     .toString()
                     .padStart(2, "0")}

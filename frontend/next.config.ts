@@ -3,7 +3,23 @@ import createNextIntlPlugin from "next-intl/plugin";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
+function resolveDevPort(): string {
+  const argv = process.argv;
+  const portFlagIndex = argv.findIndex(
+    (arg) => arg === "--port" || arg === "-p",
+  );
+  if (portFlagIndex !== -1 && argv[portFlagIndex + 1]) {
+    return argv[portFlagIndex + 1];
+  }
+
+  return process.env.PORT || "3000";
+}
+
+const isDev = process.env.NODE_ENV !== "production";
+const devPort = resolveDevPort();
+
 const nextConfig: NextConfig = {
+  distDir: isDev ? `.next/dev-${devPort}` : ".next",
   pageExtensions: ["js", "jsx", "ts", "tsx"],
   eslint: {
     ignoreDuringBuilds: true,

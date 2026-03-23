@@ -1059,7 +1059,9 @@ export default function HandoverForm({
     const resolvedIncomingNurse =
       incomingNurse ||
       user?.fullName ||
-      user?.firstName ||
+      (user?.firstName
+        ? `${user.firstName.trim().charAt(0).toUpperCase()}${user.firstName.trim().slice(1)}`
+        : undefined) ||
       formData.outgoing_nurse?.trim() ||
       handover.outgoing_nurse ||
       "Nurse";

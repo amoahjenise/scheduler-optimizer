@@ -1,12 +1,13 @@
 "use client";
 
 import React from "react";
+import { useTranslations } from "next-intl";
 
 // ── Period presets (common scheduling cycles) ──
 const PERIOD_PRESETS = [
-  { label: "2 weeks", days: 14, description: "Standard pay period" },
-  { label: "4 weeks", days: 28, description: "Monthly cycle" },
-  { label: "6 weeks", days: 42, description: "Extended rotation" },
+  { key: "preset2Weeks", days: 14, descriptionKey: "presetStandardPayPeriod" },
+  { key: "preset4Weeks", days: 28, descriptionKey: "presetMonthlyCycle" },
+  { key: "preset6Weeks", days: 42, descriptionKey: "presetExtendedRotation" },
 ] as const;
 
 interface SchedulePeriodInputProps {
@@ -22,6 +23,7 @@ export default function SchedulePeriodInput({
   onStartDateChange,
   onEndDateChange,
 }: SchedulePeriodInputProps) {
+  const t = useTranslations("scheduler");
   // Calculate number of days in the period
   const getDayCount = () => {
     if (!startDate || !endDate) return 0;
@@ -58,37 +60,36 @@ export default function SchedulePeriodInput({
 
   if (startDate && endDate) {
     if (new Date(startDate) > new Date(endDate)) {
-      errors.push("Start date must be before end date.");
+      errors.push(t("startDateBeforeEndDateError"));
     } else if (dayCount < 7) {
-      errors.push(
-        `Period is only ${dayCount} day${dayCount !== 1 ? "s" : ""}. Minimum recommended is 7 days.`,
-      );
+      errors.push(t("periodTooShortError", { count: dayCount }));
     } else if (dayCount > 42) {
       errors.push(
-        `Period is ${dayCount} days (${Math.round(dayCount / 7)} weeks). Maximum recommended is 42 days (6 weeks).`,
+        t("periodTooLongError", {
+          count: dayCount,
+          weeks: Math.round(dayCount / 7),
+        }),
       );
     }
 
     if (dayCount > 0 && dayCount % 7 !== 0) {
-      warnings.push(
-        `Period is ${dayCount} days — not a full number of weeks. The optimizer works best with 7, 14, 21, or 28-day periods.`,
-      );
+      warnings.push(t("periodNotFullWeeksWarning", { count: dayCount }));
     }
   } else {
-    if (!startDate) errors.push("Start date is required.");
-    if (!endDate) errors.push("End date is required.");
+    if (!startDate) errors.push(t("startDateRequired"));
+    if (!endDate) errors.push(t("endDateRequired"));
   }
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-6">
       <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-        <span className="text-xl">📅</span> 1. Schedule Period
+        <span className="text-xl">📅</span> 1. {t("schedulePeriod")}
       </h2>
 
       {/* ── Quick-select preset buttons ── */}
       <div className="mb-4">
         <label className="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-2">
-          Quick Select
+          {t("quickSelect")}
         </label>
         <div className="flex gap-2">
           {PERIOD_PRESETS.map((preset) => (
@@ -104,9 +105,9 @@ export default function SchedulePeriodInput({
                     : "bg-gray-100 text-gray-700 hover:bg-gray-200 border border-gray-200"
                 }
               `}
-              title={preset.description}
+              title={t(preset.descriptionKey)}
             >
-              {preset.label}
+              {t(preset.key)}
               <span className="ml-1.5 text-xs opacity-70">
                 ({preset.days}d)
               </span>
@@ -119,7 +120,7 @@ export default function SchedulePeriodInput({
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
-            Start Date
+            {t("startDate")}
           </label>
           <input
             type="date"
@@ -130,7 +131,7 @@ export default function SchedulePeriodInput({
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">
-            End Date
+            {t("endDate")}
           </label>
           <input
             type="date"
@@ -142,10 +143,11 @@ export default function SchedulePeriodInput({
       </div>
       {dayCount > 0 && (
         <p className="text-sm text-gray-500 mt-2">
-          Schedule period: <strong>{dayCount} days</strong>
+          {t("schedulePeriodLabel")}:{" "}
+          <strong>{t("daysCount", { count: dayCount })}</strong>
           {activePreset && (
             <span className="ml-2 text-blue-600">
-              ({activePreset.description})
+              ({t(activePreset.descriptionKey)})
             </span>
           )}
         </p>
