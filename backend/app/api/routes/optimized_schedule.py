@@ -6738,6 +6738,9 @@ class ScheduleOptimizer:
         # Sort by most under-target first
         under_target_nurses.sort(key=lambda x: x[3])  # Sort by delta (most negative first)
         
+        # Calculate period-scaled shift caps
+        ft_max_shifts = int(MCH_FT_SHIFT_COUNT * period_scale + 0.5)
+        
         # Build daily coverage map to track staffing levels
         def count_day_coverage(date_idx: int) -> int:
             """Count active nurses on a given day (exclude Z23 tails)"""
@@ -6769,8 +6772,8 @@ class ScheduleOptimizer:
                 if delta >= -3.0:
                     break
                 
-                # Don't exceed 7 shifts for FT nurses
-                if current_shifts >= MCH_FT_SHIFT_COUNT:
+                # Don't exceed period-scaled shift cap for FT nurses
+                if current_shifts >= ft_max_shifts:
                     break
                 
                 # Determine if we should add 8h or 12h shift
@@ -6862,6 +6865,10 @@ class ScheduleOptimizer:
         """
         logging.info("PATCHING COVERAGE GAPS...")
 
+        # Calculate period scale for shift caps
+        period_scale = len(date_list) / 14.0
+        ft_max_shifts = int(MCH_FT_SHIFT_COUNT * period_scale + 0.5)
+
         # Build set of nurses on leave — they should never be picked for patching
         on_leave_names = {
             n["name"] for n in nurses
@@ -6905,11 +6912,12 @@ class ScheduleOptimizer:
                             emp = str(nurse.get("employmentType", "")).lower()
                             paid_count = sum(1 for e in result[name] if float(e.get("hours", 0) or 0) > 0 and e.get("shiftType") not in ("off", None))
                             if emp in ("full-time", "ft", ""):
-                                if paid_count >= MCH_FT_SHIFT_COUNT:
+                                if paid_count >= ft_max_shifts:
                                     continue
                             else:
                                 tbw = float(nurse.get("targetBiWeeklyHours", 37.5) or 37.5)
-                                pt_max = max(1, int(tbw / MCH_Z_SHIFT_CLINICAL_VALUE + 0.5))
+                                base_pt_max = max(1, int(tbw / MCH_Z_SHIFT_CLINICAL_VALUE + 0.5))
+                                pt_max = int(base_pt_max * period_scale + 0.5)
                                 if paid_count >= pt_max:
                                     continue
                             off_nurses.append(name)
@@ -6918,11 +6926,12 @@ class ScheduleOptimizer:
                         emp = str(nurse.get("employmentType", "")).lower()
                         paid_count = sum(1 for e in result[name] if float(e.get("hours", 0) or 0) > 0 and e.get("shiftType") not in ("off", None))
                         if emp in ("full-time", "ft", ""):
-                            if paid_count >= MCH_FT_SHIFT_COUNT:
+                            if paid_count >= ft_max_shifts:
                                 continue
                         else:
                             tbw = float(nurse.get("targetBiWeeklyHours", 37.5) or 37.5)
-                            pt_max = max(1, int(tbw / MCH_Z_SHIFT_CLINICAL_VALUE + 0.5))
+                            base_pt_max = max(1, int(tbw / MCH_Z_SHIFT_CLINICAL_VALUE + 0.5))
+                            pt_max = int(base_pt_max * period_scale + 0.5)
                             if paid_count >= pt_max:
                                 continue
                         off_nurses.append(name)
