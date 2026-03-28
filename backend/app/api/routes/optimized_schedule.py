@@ -6,6 +6,8 @@ import ast
 import logging
 import difflib
 import unicodedata
+import time as _time
+import traceback
 from datetime import datetime, timedelta
 from typing import Dict, List, Union, Set, Tuple, Any, Optional
 import math
@@ -48,18 +50,73 @@ logger.addHandler(handler)
 router = APIRouter(redirect_slashes=False)
 client = OpenAI(api_key=settings.OPENAI_API_KEY, timeout=360.0)
 
+# ============================================================================
+# MCH CONTRACT CONSTANTS
+# ============================================================================
+# FT nurses at MCH have a 75h bi-weekly contract fulfilled by 7 shifts.
+# The "contract value" of each 12h (Z-code) shift is 75/7 = 10.7143h.
+# The "clinical value" (actual paid hours) is 11.25h per 12h shift.
+# The optimizer uses contract_hours for target tracking so that
+# 7 × 10.714h = 75h exactly (delta = 0), while schedule display
+# still shows the clinical 11.25h paid.
+MCH_FT_BIWEEKLY_TARGET = 75.0
+MCH_FT_SHIFT_COUNT = 7              # Exactly 7 shifts per 14-day block
+MCH_FT_MIN_Z_SHIFTS = 5             # At least 5 of the 7 must be 12h (Z-code)
+MCH_FT_MAX_SHIFTS_PER_PERIOD = 8    # Hard OT threshold: 8th shift = overtime
+MCH_Z_SHIFT_CONTRACT_VALUE = 10.7143  # 75 / 7 = contract hours per Z-shift
+MCH_Z_SHIFT_CLINICAL_VALUE = 11.25    # Actual paid hours per Z-shift
+MCH_8H_SHIFT_VALUE = 7.5              # Paid hours per 8h shift
+# Delta tolerance: FT nurse with 7×12h = 78.75 clinical, but contract = 75.
+# Anything between 75 and 78.75 is "at target" (delta clamped to 0).
+MCH_FT_DELTA_UPPER_TOLERANCE = 78.75
+MCH_FT_DELTA_LOWER_TOLERANCE = 75.0
+
 # Complete shift codes lookup with all properties (actual codes used on schedules)
+# MCH NIGHT ROTATION MODEL (bridge/tail):
+#   Z19(12h night start) → Z23 B(bridge) → ... → Z23(tail)
+#
+# Z19   = Start of night rotation (19:00→07:25 next day). 11.25h paid.
+# Z23 B = BRIDGE ("Bascule"): finish morning (00:00→07:25) AND return
+#         evening (19:00→07:25 next day). 11.25h paid. The nurse works
+#         TWO blocks in one calendar day.
+# Z23   = TAIL: finish morning only (00:00→07:25). 0h — hours already
+#         counted in the previous Z19 or Z23 B.
+#
+# Examples:
+#   1 night:  Z19(N) → Z23(N+1, 0h tail)
+#   2 nights: Z19(N) → Z23 B(N+1, 11.25h) → Z23(N+2, 0h tail)
+#   3 nights: Z19(N) → Z23 B(N+1) → Z23 B(N+2) → Z23(N+3, 0h tail)
+#
+# DEDUPLICATION RULE:
+# - Z23 (no B) → Z23 on next day = ghost (deduplicate second one)
+# - Z23 B → Z23 on next day = REAL back-to-back shifts (do NOT deduplicate)
+#
+# PAID HOURS: All hours below are actual paid time (clock time minus breaks).
+# - 12h shifts: 11.25h paid (12h minus 0.75h unpaid meal break)
+# - 8h shifts: 7.5h paid (8h minus 0.5h unpaid break)
+#
+# contract_hours: Used by FT target calculation only.
+#   For FT: Z-shifts count as 10.714h toward 75h target (7 shifts = 75h).
+#   For PT: Same as clinical hours (11.25h / 7.5h).
 SHIFT_CODES = {
-    "07": {"label": "Day 8hr", "type": "day", "hours": 7.5, "start": "07:00", "end": "15:15"},
-    "Z07": {"label": "Day 12hr", "type": "day", "hours": 11.25, "start": "07:00", "end": "19:25"},
-    "11": {"label": "Mid 8hr", "type": "day", "hours": 7.5, "start": "11:00", "end": "19:15"},
-    "Z11": {"label": "Mid 12hr", "type": "day", "hours": 11.25, "start": "11:00", "end": "23:25"},
-    "E15": {"label": "Evening 8hr", "type": "day", "hours": 7.5, "start": "15:00", "end": "23:15"},
-    "23": {"label": "Night 8hr", "type": "night", "hours": 7.5, "start": "23:00", "end": "07:15"},
-    "Z19": {"label": "Night 12hr", "type": "night", "hours": 11.25, "start": "19:00", "end": "07:25"},
-    "Z23": {"label": "Night Finish", "type": "night", "hours": 7.5, "start": "23:00", "end": "07:25"},
-    "Z23 B": {"label": "Night Finish + Back at 19:00", "type": "combined", "hours": 7.5, "start": "23:00", "end": "07:25"},
-    "OFF": {"label": "Off", "type": "off", "hours": 0, "start": "", "end": ""},
+    # 8h Shifts (7.5h paid, 7.5h contract)
+    "07": {"label": "Day 8hr", "type": "day", "hours": 7.5, "contract_hours": 7.5, "start": "07:00", "end": "15:15"},
+    "11": {"label": "Mid 8hr", "type": "day", "hours": 7.5, "contract_hours": 7.5, "start": "11:00", "end": "19:15"},
+    "E15": {"label": "Evening 8hr", "type": "day", "hours": 7.5, "contract_hours": 7.5, "start": "15:00", "end": "23:15"},
+    "23": {"label": "Night 8hr", "type": "night", "hours": 7.5, "contract_hours": 7.5, "start": "23:00", "end": "07:15"},
+    # 12h Day Shifts (11.25h paid: 12h minus 0.75h meal break)
+    "Z07": {"label": "Day 12hr", "type": "day", "hours": 11.25, "contract_hours": MCH_Z_SHIFT_CONTRACT_VALUE, "start": "07:00", "end": "19:25"},
+    "Z11": {"label": "Mid 12hr", "type": "day", "hours": 11.25, "contract_hours": MCH_Z_SHIFT_CONTRACT_VALUE, "start": "11:00", "end": "23:25"},
+    # Night shift components (MCH bridge/tail system)
+    # Z19   = Night rotation start (19:00→07:25 next day)  — 11.25h paid
+    # Z23 B = BRIDGE: morning finish + evening return       — 11.25h paid
+    # Z23   = TAIL: morning finish only (end of rotation)   — 0h (in prev shift)
+    # Standalone values below are for lookup only; context-dependent hours are
+    # applied in OCR Step 1 and Step 1.5 (Z19=11.25h, Z23 B=11.25h, Z23=0h).
+    "Z19": {"label": "Night Start", "type": "night", "hours": 4.0, "contract_hours": 4.0, "start": "19:00", "end": "23:59"},
+    "Z23": {"label": "Night Tail", "type": "night", "hours": 7.25, "contract_hours": 7.25, "start": "00:00", "end": "07:25"},
+    "Z23 B": {"label": "Night Bridge", "type": "night", "hours": 7.25, "contract_hours": 7.25, "start": "00:00", "end": "07:25"},
+    "OFF": {"label": "Off", "type": "off", "hours": 0, "contract_hours": 0, "start": "", "end": ""},
 }
 
 
@@ -193,6 +250,45 @@ def _resolve_schedule_date_range(result_data: Any, schedule_data: Dict[str, Any]
     return start_date, end_date
 
 
+def _extract_schedule_actor(result_data: Any, schedule_data: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+    """Extract creator identity from schedule payloads (top-level first, then nested)."""
+    result_obj = result_data if isinstance(result_data, dict) else {}
+    schedule_obj = schedule_data if isinstance(schedule_data, dict) else {}
+
+    created_by = (
+        result_obj.get("created_by")
+        or result_obj.get("createdBy")
+        or schedule_obj.get("created_by")
+        or schedule_obj.get("createdBy")
+    )
+    created_by_name = (
+        result_obj.get("created_by_name")
+        or result_obj.get("createdByName")
+        or schedule_obj.get("created_by_name")
+        or schedule_obj.get("createdByName")
+    )
+
+    return (
+        str(created_by) if created_by else None,
+        str(created_by_name) if created_by_name else None,
+    )
+
+
+def _with_actor_metadata(payload: Any, auth: AuthContext) -> Dict[str, Any]:
+    """Return a schedule payload enriched with actor metadata."""
+    payload_obj = payload if isinstance(payload, dict) else {}
+    enriched = {**payload_obj}
+
+    if auth.is_authenticated and auth.user_id:
+        enriched["created_by"] = auth.user_id
+
+    actor_name = (auth.user_name or auth.user_email or "").strip()
+    if actor_name:
+        enriched["created_by_name"] = actor_name
+
+    return enriched
+
+
 def _scoped_schedule_query(
     db: Session,
     auth: AuthContext,
@@ -254,6 +350,57 @@ class RobustScheduler:
     Uses greedy assignment with constraint validation.
     """
     
+    @staticmethod
+    def _fuzzy_name_match(name1: str, name2: str, threshold: float = 0.85) -> bool:
+        """Check if two names are similar enough to be the same person.
+        
+        Uses simple character-level similarity. Returns True if names match
+        with >= threshold similarity (default 85%).
+        
+        Examples:
+            - "Tiffany Glodoviza" vs "Tiffany Glodovizay" -> 96% similar, matches
+            - "Alexandra Zatylny" vs "Florent Vidal" -> very low, no match
+        """
+        n1 = name1.strip().lower()
+        n2 = name2.strip().lower()
+        
+        if n1 == n2:
+            return True
+        
+        # Simple character-based similarity (Jaccard on character bigrams)
+        def bigrams(s):
+            return set(s[i:i+2] for i in range(len(s) - 1)) if len(s) > 1 else {s}
+        
+        b1, b2 = bigrams(n1), bigrams(n2)
+        if not b1 or not b2:
+            return n1 == n2
+        
+        intersection = len(b1 & b2)
+        union = len(b1 | b2)
+        similarity = intersection / union if union > 0 else 0
+        
+        return similarity >= threshold
+    
+    @staticmethod
+    def _find_matching_nurse(name: str, nurse_names: set) -> Optional[str]:
+        """Find a matching nurse name using fuzzy matching.
+        
+        Returns the matching name from nurse_names if found, None otherwise.
+        """
+        name_lower = name.strip().lower()
+        
+        # Exact match first
+        if name_lower in nurse_names:
+            return name_lower
+        
+        # Fuzzy match
+        for existing_name in nurse_names:
+            if RobustScheduler._fuzzy_name_match(name_lower, existing_name):
+                logger.info(f"  FUZZY MATCH: '{name}' -> '{existing_name}' (merging)")
+                return existing_name
+        
+        return None
+    
     def __init__(self, nurses: List[Dict], date_list: List[str], 
                  day_shift_codes: List[str], night_shift_codes: List[str],
                  shifts_info: Dict, day_req: int, night_req: int,
@@ -262,7 +409,10 @@ class RobustScheduler:
         # Initialize shift code rotation indices
         self._day_code_index = 0
         self._night_code_index = 0
-        # Track consecutive nights per nurse for B suffix (Z23, Z23 B, Z23 B pattern)
+        # Track consecutive nights per nurse for realistic MCH pattern:
+        # Night 1: Z19 Z23 B (19:00-07:25, coming back)
+        # Night 2: Z19 Z23 B (19:00-07:25, coming back)  
+        # Night 3: Z19 Z23   (19:00-07:25, final night)
         self._nurse_consecutive_nights: Dict[str, int] = {}
         
         # ── PRE-CLEAN OCR PREFERENCES ──────────────────────────────────
@@ -276,20 +426,95 @@ class RobustScheduler:
             preferences = RobustScheduler._preprocess_ocr_preferences(preferences, shifts_info)
             logger.info("=" * 80)
 
+        # ── DEDUPLICATE NURSES ARRAY ───────────────────────────────────
+        # The frontend may send duplicate nurses with slightly different names
+        # (e.g., "Tiffany Glodovizay" vs "Tiffany Glodoviza" due to OCR typos).
+        # Merge these duplicates using fuzzy matching.
+        logger.info(f"DEDUP CHECK: Input nurses array has {len(nurses)} nurses")
+        for i, n in enumerate(nurses):
+            logger.info(f"  DEDUP INPUT [{i}]: '{n.get('name', 'NO_NAME')}'")
+        
+        deduped_nurses = []
+        seen_names: Dict[str, str] = {}  # lowercase normalized -> original name
+        
+        for nurse in nurses:
+            nurse_name = nurse.get("name", "").strip()
+            if not nurse_name:
+                continue
+            name_lower = nurse_name.lower()
+            
+            # Check if this name fuzzy-matches an already-seen name
+            found_match = None
+            for existing_lower, existing_original in seen_names.items():
+                # Use static method call (class method, not instance method)
+                similarity_result = RobustScheduler._fuzzy_name_match(name_lower, existing_lower)
+                logger.debug(f"  FUZZY CHECK: '{name_lower}' vs '{existing_lower}' -> {similarity_result}")
+                if similarity_result:
+                    found_match = existing_original
+                    break
+            
+            if found_match:
+                # Duplicate detected - skip this nurse (use the first one seen)
+                logger.warning(f"  DEDUP: Skipping '{nurse_name}' (fuzzy match with '{found_match}')")
+            else:
+                deduped_nurses.append(nurse)
+                seen_names[name_lower] = nurse_name
+        
+        if len(deduped_nurses) != len(nurses):
+            logger.info(f"  DEDUP: Removed {len(nurses) - len(deduped_nurses)} duplicate nurses")
+        else:
+            logger.info(f"  DEDUP: No duplicates found")
+        nurses = deduped_nurses
+        
         # CRITICAL FIX: Ensure all nurses from preferences are included in the nurses array.
         # This fixes the bug where nurses with empty OCR cells were excluded from scheduling
         # because they weren't being sent in the nurses array from the frontend.
+        # 
+        # ALSO: Use fuzzy name matching to prevent OCR typos from creating duplicate nurses.
+        # E.g., "Tiffany Glodovizay" (OCR typo) should match "Tiffany Glodoviza" (DB name).
         self.nurse_defaults = nurse_defaults or {}
         nurse_names_in_array = {n.get("name", "").strip().lower() for n in nurses if n.get("name")}
+        
+        logger.info(f"PREFERENCES MERGE: Nurses array has {len(nurses)} nurses AFTER dedup")
+        logger.info(f"  Names in array: {sorted(nurse_names_in_array)}")
+        
+        # Build a mapping from pref_name -> actual nurse name (for fuzzy matches)
+        self._pref_name_to_actual: Dict[str, str] = {}
+        
         if preferences:
+            logger.info(f"  Preferences has {len(preferences)} keys: {sorted(preferences.keys())}")
             for pref_nurse_name in preferences.keys():
-                if pref_nurse_name.strip().lower() not in nurse_names_in_array:
+                pref_lower = pref_nurse_name.strip().lower()
+                
+                # Check for exact match first, then fuzzy match
+                logger.info(f"  Checking preference name: '{pref_nurse_name}' (lower: '{pref_lower}')")
+                
+                # Direct check first
+                if pref_lower in nurse_names_in_array:
+                    logger.info(f"    EXACT MATCH: '{pref_lower}' found in nurses array")
+                    self._pref_name_to_actual[pref_lower] = pref_lower
+                    continue
+                
+                # Fuzzy match against each existing name
+                found_fuzzy = None
+                for existing_name in nurse_names_in_array:
+                    is_match = RobustScheduler._fuzzy_name_match(pref_lower, existing_name)
+                    if is_match:
+                        logger.info(f"    FUZZY MATCH: '{pref_lower}' matches '{existing_name}'")
+                        found_fuzzy = existing_name
+                        break
+                
+                if found_fuzzy:
+                    # Found a match (fuzzy) - map to existing nurse, DON'T add duplicate
+                    self._pref_name_to_actual[pref_lower] = found_fuzzy
+                    logger.info(f"    -> Mapping preference '{pref_nurse_name}' to existing nurse '{found_fuzzy}'")
+                else:
+                    # No match found - add as new nurse
                     # Look up nurse defaults from database config
-                    db_defaults = self.nurse_defaults.get(pref_nurse_name.strip().lower(), {})
-                    logger.warning(f"Adding missing nurse from preferences: {pref_nurse_name} (db config found: {bool(db_defaults)})")
+                    db_defaults = self.nurse_defaults.get(pref_lower, {})
+                    logger.warning(f"    NO MATCH: Adding missing nurse from preferences: {pref_nurse_name}")
                     
                     # Build nurse dict - only include fields we have from DB
-                    # Let get_max_hours() and get_target_biweekly_hours() use their built-in defaults
                     nurse_entry = {
                         "name": pref_nurse_name,
                         "employmentType": db_defaults.get("employmentType", "full-time"),
@@ -299,12 +524,15 @@ class RobustScheduler:
                         "isRenalCertified": db_defaults.get("isRenalCertified", False),
                         "isChargeCertified": db_defaults.get("isChargeCertified", False),
                     }
-                    # Only include bi-weekly target if we have it from DB (this is the key scheduling parameter)
+                    # Only include bi-weekly target if we have it from DB
                     if "targetBiWeeklyHours" in db_defaults:
                         nurse_entry["targetBiWeeklyHours"] = db_defaults["targetBiWeeklyHours"]
                     
                     nurses.append(nurse_entry)
-                    nurse_names_in_array.add(pref_nurse_name.strip().lower())
+                    nurse_names_in_array.add(pref_lower)
+                    self._pref_name_to_actual[pref_lower] = pref_lower
+        
+        logger.info(f"  After preferences merge: {len(nurses)} nurses total")
 
         # ── LEAVE STATUS FILTER ─────────────────────────────────────
         # Track nurses who are on maternity leave, sick leave, or
@@ -333,7 +561,9 @@ class RobustScheduler:
         if preferences:
             for nurse_name, shifts in preferences.items():
                 for day_idx, shift_code in enumerate(shifts):
-                    if shift_code and shift_code.strip() and shift_code.upper() not in ["C", "OFF"] and not shift_code.upper().startswith("CF"):
+                    if shift_code and shift_code.strip() and shift_code.upper() not in ["C", "OFF"] and not (
+                        shift_code.upper().startswith("CF") and not RobustScheduler._is_composite_cf_shift(shift_code)
+                    ):
                         if day_idx < len(date_list):
                             date = date_list[day_idx]
                             self.ocr_assignments.add((nurse_name, date))
@@ -350,14 +580,33 @@ class RobustScheduler:
         self.date_list = date_list
         self.date_to_index = {d: i for i, d in enumerate(date_list)}
         # Use provided codes or defaults with variety
+        # MCH 12h nights: Use separate Z19, Z23 B, Z23 codes (not merged)
         self.day_shift_codes = day_shift_codes if day_shift_codes else ["Z07", "07"]
-        self.night_shift_codes = night_shift_codes if night_shift_codes else ["Z23", "Z23 B", "23"]
+        self.night_shift_codes = night_shift_codes if night_shift_codes else ["Z19", "Z23", "Z23 B", "23"]
         self.shifts_info = shifts_info
         self.reference_shift_hours = self._resolve_reference_shift_hours()
         self.day_req = max(day_req, 1)  # At least 1
         self.night_req = max(night_req, 1)  # At least 1
         self.max_consecutive = max_consecutive
         self.preferences = preferences or {}
+        
+        # Normalize preferences dict keys using fuzzy mapping
+        # This ensures OCR typos like "Tiffany Glodovizay" are merged into "Tiffany Glodoviza"
+        if hasattr(self, '_pref_name_to_actual') and self._pref_name_to_actual:
+            normalized_preferences = {}
+            for pref_name, shifts in self.preferences.items():
+                pref_lower = pref_name.strip().lower()
+                actual_name = self._pref_name_to_actual.get(pref_lower, pref_lower)
+                # Find the actual capitalized name from nurse_by_name
+                actual_capitalized = pref_name  # default to original
+                for nurse_data in nurses:
+                    if nurse_data.get("name", "").strip().lower() == actual_name:
+                        actual_capitalized = nurse_data["name"]
+                        break
+                if actual_capitalized != pref_name:
+                    logger.info(f"  MERGING PREFERENCES: '{pref_name}' -> '{actual_capitalized}'")
+                normalized_preferences[actual_capitalized] = shifts
+            self.preferences = normalized_preferences
         
         # Build nurse name index
         self.nurse_by_name = {n["name"]: n for n in nurses}
@@ -408,10 +657,53 @@ class RobustScheduler:
         self.nurse_consecutive: Dict[str, int] = {n["name"]: 0 for n in nurses}
         # Track hours per nurse per week: {nurse_name: {week_key: hours}}
         self.nurse_weekly_hours: Dict[str, Dict[str, float]] = {n["name"]: {} for n in nurses}
-        # Track hours per nurse per 14-day pay period: {nurse_name: {period_key: hours}}
+        # Track ACTUAL PAID hours per nurse per 14-day pay period (used for capacity checks)
         self.nurse_period_hours: Dict[str, Dict[str, float]] = {n["name"]: {} for n in nurses}
+        # Track TARGET-WEIGHTED hours per nurse per 14-day period (used for delta calculation)
+        # FT 12h shifts count as 10.71h (not 11.25h) so 7 shifts = 75h = 0 delta
+        self.nurse_period_target_hours: Dict[str, Dict[str, float]] = {n["name"]: {} for n in nurses}
+        # Track shift COUNT per nurse per 14-day pay period: {nurse_name: {period_key: int}}
+        # Used to enforce FT max 7 shifts per 14 days (prevents shift bloat scenario)
+        self.nurse_period_shifts: Dict[str, Dict[str, int]] = {n["name"]: {} for n in nurses}
+        # Track Z-shift (12h) COUNT per nurse per 14-day period
+        # FT nurses need min 5 Z-shifts out of 7 to hit 75h contract
+        self.nurse_period_z_shifts: Dict[str, Dict[str, int]] = {n["name"]: {} for n in nurses}
         self.nurse_total_shifts: Dict[str, int] = {n["name"]: 0 for n in nurses}
         
+        # MCH FT Contract constraints (from module-level constants)
+        self.FT_MAX_SHIFTS_PER_PERIOD = MCH_FT_SHIFT_COUNT  # 7 shifts = target
+        self.FT_OT_THRESHOLD = MCH_FT_MAX_SHIFTS_PER_PERIOD  # 8th shift = overtime
+        self.FT_MIN_Z_SHIFTS = MCH_FT_MIN_Z_SHIFTS  # At least 5 of 7 must be 12h
+        self.FT_12H_TARGET_WEIGHT = MCH_Z_SHIFT_CONTRACT_VALUE  # 10.7143h per Z-shift
+        
+    # ── Composite CF helpers ────────────────────────────────────────────
+    # Composite CF codes look like "CF-4 07", "CF-11 Z07", "CF-3 23" etc.
+    # They mean: statutory holiday (CF-X) + actual working shift (07/23/Z07/Z19).
+    # The nurse works a regular shift on the holiday and should be treated
+    # as a WORKING shift with the corresponding hours, not as an off day.
+    _COMPOSITE_CF_RE = re.compile(
+        r"^CF[-\s]?\d+\s+(Z?(?:07|11|19|23|E15)(?:\s*B)?)\s*$", re.IGNORECASE
+    )
+
+    @staticmethod
+    def _is_composite_cf_shift(code: str) -> bool:
+        """True when *code* is a composite CF+shift like 'CF-4 07'."""
+        if not code:
+            return False
+        return bool(RobustScheduler._COMPOSITE_CF_RE.match(code.strip()))
+
+    @staticmethod
+    def _extract_shift_from_cf(code: str) -> str:
+        """Extract the shift component from a composite CF code.
+
+        'CF-4 07' → '07',  'CF-11 Z19' → 'Z19',  'CF-3 23' → '23'
+        Returns '' for non-composite codes.
+        """
+        if not code:
+            return ""
+        m = RobustScheduler._COMPOSITE_CF_RE.match(code.strip())
+        return m.group(1).upper() if m else ""
+
     def get_off_requests(self, nurse_name: str) -> Set[str]:
         """Get off request dates for a nurse"""
         nurse = self.nurse_by_name.get(nurse_name, {})
@@ -630,9 +922,14 @@ class RobustScheduler:
         return base_target * availability_ratio
 
     def get_period_target_delta(self, nurse_name: str, date: str) -> float:
-        """Current 14-day period delta = scheduled - target (negative means under-target)."""
+        """Current 14-day period delta = scheduled - target (negative means under-target).
+        
+        Uses TARGET-WEIGHTED hours where FT 12h shifts count as 10.71h (not 11.25h)
+        so that 7 × 12h shifts = 75h = exactly at target (delta = 0).
+        """
         period_key = self.date_to_period.get(date, "unknown")
-        scheduled = self.nurse_period_hours.get(nurse_name, {}).get(period_key, 0)
+        # Use target-weighted hours for delta calculation
+        scheduled = self.nurse_period_target_hours.get(nurse_name, {}).get(period_key, 0)
         target = self.get_period_target_hours(nurse_name, period_key)
         return scheduled - target
 
@@ -668,25 +965,85 @@ class RobustScheduler:
         dt = datetime.strptime(date, "%Y-%m-%d")
         return dt.weekday() >= 5
 
-    # Night shift codes whose end time extends into the next calendar day,
-    # making it unsafe to schedule a day/mid shift the following morning.
+    # Night shift codes that lock the NEXT calendar day.
+    # MCH Rule: Z19 works until 07:25 next morning.  Z23 B (back shift)
+    # requires 11+ hours rest → nurse locked out of entire next day.
     _NIGHT_CODES = {"Z19", "Z23", "Z23 B", "23", "N8-", "ZN-", "ZN8-", "ZN+ZE2-", "N8+ZE2-"}
 
     def _worked_night_previous_day(self, nurse_name: str, day_idx: int) -> bool:
         """Return True if the nurse worked a night shift on the previous day.
         
-        Used as a minimum-rest guard: a nurse finishing a night shift at
-        07:00-07:25 must NOT be assigned a day/mid shift (07, Z07, 11, Z11,
-        E15, D8-) on the same calendar day.
+        MCH Rule: nurses finishing Z19 or Z23 B cannot work ANY shift the
+        next calendar day (11+ hour rest requirement).
+        Z23 ↩ (0h continuation) does NOT trigger this — the nurse already
+        finished at 07:25 on that day and has 16+ hours rest by next day.
         """
         if day_idx <= 0:
             return False
         prev_shift = self.schedule[nurse_name][day_idx - 1]
-        if not prev_shift or prev_shift.get("hours", 0) <= 0:
+        if not prev_shift:
             return False
-        prev_code = str(prev_shift.get("shift", "")).strip().upper()
+        prev_code = str(prev_shift.get("shift", "")).strip()
+        # 0h slots are continuation markers — nurse already finished, next day FREE.
+        if prev_shift.get("hours", 0) <= 0:
+            return False
+        prev_upper = prev_code.upper()
         prev_type = str(prev_shift.get("shiftType", "")).strip().lower()
-        return prev_code in self._NIGHT_CODES or prev_type == "night"
+        return prev_upper in self._NIGHT_CODES or prev_type == "night"
+
+    def _is_locked_for_night_continuation(self, nurse_name: str, day_idx: int) -> bool:
+        """Return True if this day slot is locked after a PAID night shift.
+        
+        MCH Night Lockout Rules (bridge/tail model):
+        - Z19 on Day N-1 (11.25h) → Day N locked (nurse works until 07:25)
+        - Z23 B on Day N-1 (11.25h bridge) → Day N locked (nurse returns PM)
+        - Z23 (0h tail) on Day N-1 → Day N FREE (nurse finished at 07:25)
+        """
+        if day_idx <= 0:
+            return False
+        prev_shift = self.schedule[nurse_name][day_idx - 1]
+        if not prev_shift:
+            return False
+        # 0h slots are continuation markers — nurse already done, next day FREE.
+        if prev_shift.get("hours", 0) <= 0:
+            return False
+        prev_upper = str(prev_shift.get("shift", "")).strip().upper()
+        # Z19 and Z23 B standalone (paid hours) both lock the next day.
+        return prev_upper in ("Z19", "Z23 B", "Z23B")
+
+    def _can_accept_night_shift(self, nurse_name: str, day_idx: int) -> bool:
+        """Check if assigning a 12h night (Z19) on day_idx is valid.
+        
+        Z19 requires TWO subsequent days:
+          N+1 for Z23 B (bridge, 11.25h)
+          N+2 for Z23 (tail, 0h)
+        Returns False if either day is unavailable.
+        """
+        def _slot_available(idx: int) -> bool:
+            if idx >= len(self.date_list):
+                # Past end of schedule — continuation falls into next period.
+                return True
+            slot_date = self.date_list[idx]
+            # Off-request blocks the slot
+            if slot_date in self.get_off_requests(nurse_name):
+                return False
+            row = self.schedule.get(nurse_name, [])
+            if idx < len(row):
+                slot = row[idx]
+                if slot is not None:
+                    sc = str(slot.get("shift", "")).replace("↩", "").strip().upper()
+                    sh = float(slot.get("hours", 0) or 0)
+                    # Already has Z23 B or Z23 continuation — OK
+                    if "Z23" in sc and sh <= 11.26:
+                        return True
+                    if slot.get("shiftType") == "off":
+                        return True
+                    if sh > 0:
+                        return False  # Real non-night shift blocks
+            return True  # Slot is free (None)
+
+        # Need N+1 (for Z23 B) and N+2 (for Z23 tail)
+        return _slot_available(day_idx + 1) and _slot_available(day_idx + 2)
 
     def _is_full_time(self, nurse_name: str) -> bool:
         nurse = self.nurse_by_name.get(nurse_name, {})
@@ -788,45 +1145,168 @@ class RobustScheduler:
 
         return False
 
+    def _predict_future_coverage_shortfall(self, date: str, lookhead_days: int = 4) -> Dict[str, Dict[str, int]]:
+        """Predict if future days (next N days) will be understaffed based on:
+        - Currently assigned shifts
+        - Nurses already locked into Z19 rotations
+        - Nurses with off-requests or on leave
+        - Consecutive day limits
+        
+        Returns: {future_date: {'day_gap': X, 'night_gap': Y}} where gap is
+                 how many nurses short of minimum requirements.
+        """
+        day_idx = self.date_to_index.get(date, -1)
+        if day_idx < 0:
+            return {}
+        
+        predictions = {}
+        for offset in range(1, lookhead_days + 1):
+            future_idx = day_idx + offset
+            if future_idx >= len(self.date_list):
+                break
+            
+            future_date = self.date_list[future_idx]
+            
+            # Count already-assigned staff
+            day_count = 0
+            night_count = 0
+            for nurse_name in self.nurse_names:
+                if future_idx >= len(self.schedule.get(nurse_name, [])):
+                    continue
+                shift = self.schedule[nurse_name][future_idx]
+                if not shift:
+                    continue
+                if shift.get("shiftType") == "day" and shift.get("hours", 0) > 0:
+                    day_count += 1
+                elif shift.get("shiftType") == "night":
+                    # Exclude Z23 tails (0h) from count
+                    if shift.get("hours", 0) > 0:
+                        night_count += 1
+            
+            # Count available nurses (not assigned, not on leave, not blocked, not hours-blocked)
+            available_for_day = 0
+            available_for_night = 0
+            for nurse_name in self.nurse_names:
+                if nurse_name in self.nurses_on_leave:
+                    continue
+                if future_idx >= len(self.schedule.get(nurse_name, [])):
+                    continue
+                if self.schedule[nurse_name][future_idx] is not None:
+                    continue  # Already assigned
+                if future_date in self.get_off_requests(nurse_name):
+                    continue  # Off-request
+                # Check if locked for night continuation
+                if self._is_locked_for_night_continuation(nurse_name, future_idx):
+                    continue
+                    
+                # CRITICAL: Check hours capacity - nurse must have room for another shift
+                # This was the bug: we weren't checking if nurses would exceed their target
+                remaining = self.get_target_remaining_hours(nurse_name, future_date)
+                is_ft = self._is_full_time(nurse_name)
+                
+                # Check shift limit
+                if self.has_reached_shift_limit(nurse_name, future_date):
+                    continue  # Already at max shifts
+                    
+                # Check hours capacity for the shift type
+                # Day shifts: 12h for FT, 8h otherwise
+                # Night shifts: 12h (Z19 creates 3-day rotation issue)
+                day_shift_hours = 12 if is_ft else 8
+                night_shift_hours = 12 if is_ft else 8
+                
+                if remaining < 7.5:
+                    # Not enough room for even minimum shift
+                    continue
+                
+                if remaining >= day_shift_hours:
+                    available_for_day += 1
+                elif remaining >= 7.5:
+                    # Room for an 8h shift but not 12h
+                    available_for_day += 1
+                    
+                if remaining >= night_shift_hours:
+                    available_for_night += 1
+                elif remaining >= 7.5 and not is_ft:
+                    # PT can do 8h night shifts
+                    available_for_night += 1
+            
+            # Calculate gaps: need = (requirement - assigned), gap = need - available
+            day_need = max(0, self.day_req - day_count)
+            night_need = max(0, self.night_req - night_count)
+            day_gap = max(0, day_need - available_for_day)
+            night_gap = max(0, night_need - available_for_night)
+            
+            if day_gap > 0 or night_gap > 0:
+                predictions[future_date] = {
+                    'day_gap': day_gap,
+                    'night_gap': night_gap,
+                    'day_need': day_need,
+                    'night_need': night_need,
+                    'day_available': available_for_day,
+                    'night_available': available_for_night
+                }
+        
+        return predictions
+
     def _select_candidate_for_assignment(self, candidates: List[str], date: str, hours: float = 12) -> Optional[str]:
         """Select best candidate preferring nurses under their period target and
         who have remaining target capacity for the requested hours.
+        HARD RULE: Never select a nurse who would exceed their target hours.
         Returns None if no suitable candidate found.
         """
         if not candidates:
             return None
 
+        # HARD FILTER: exclude any nurse who would exceed their biweekly target
+        eligible = [n for n in candidates if not self.has_reached_target_hours(n, date, hours)]
+        if not eligible:
+            # All candidates would exceed target — return None to signal
+            # that this slot cannot be filled without overtime.
+            logger.debug(f"  No eligible candidate for {date}: all {len(candidates)} would exceed target")
+            return None
+
         # Prefer nurses who are under their target (negative delta) AND have
         # room under their pay-period target remaining for this shift.
         under_with_capacity = [
-            n for n in candidates if self.get_target_delta(n, date) < 0 and self.get_target_remaining_hours(n, date) >= hours
+            n for n in eligible if self.get_target_delta(n, date) < 0 and self.get_target_remaining_hours(n, date) >= hours
         ]
         if under_with_capacity:
-            # Prefer FT before PT, then choose most under-target.
+            # Prefer PT before FT — PT nurses have lower targets and are the
+            # cheapest resource to fill gaps without pushing FT into overtime.
+            # Within PT/FT groups, choose the most under-target nurse.
             return min(
                 under_with_capacity,
-                key=lambda n: (not self._is_full_time(n), self.get_target_delta(n, date)),
+                key=lambda n: (self._is_full_time(n), self.get_target_delta(n, date)),
             )
 
         # Next prefer any under-target nurse (even if remaining < hours)
-        under = [n for n in candidates if self.get_target_delta(n, date) < 0]
+        under = [n for n in eligible if self.get_target_delta(n, date) < 0]
         if under:
             return min(
                 under,
-                key=lambda n: (not self._is_full_time(n), self.get_target_delta(n, date)),
+                key=lambda n: (self._is_full_time(n), self.get_target_delta(n, date)),
             )
 
-        # Otherwise fall back to any candidate who has weekly capacity remaining
-        with_capacity = [n for n in candidates if self.get_remaining_hours(n, date) >= hours]
+        # Otherwise fall back to any eligible candidate who has weekly capacity remaining
+        with_capacity = [n for n in eligible if self.get_remaining_hours(n, date) >= hours]
         if with_capacity:
             # Prefer those closest to target (smaller positive delta)
             return min(with_capacity, key=lambda n: (self.get_target_delta(n, date), sum(self.nurse_period_hours.get(n, {}).values())))
 
-        # Last resort: return the candidate with the smallest positive delta
-        return min(candidates, key=lambda n: (max(0.0, self.get_target_delta(n, date)), sum(self.nurse_period_hours.get(n, {}).values())))
+        # Last resort among eligible: return the one with the smallest positive delta
+        return min(eligible, key=lambda n: (max(0.0, self.get_target_delta(n, date)), sum(self.nurse_period_hours.get(n, {}).values())))
 
-    def _track_hours(self, nurse_name: str, date: str, hours_delta: float) -> None:
-        """Track both weekly and 14-day period hours with a signed delta."""
+    def _track_hours(self, nurse_name: str, date: str, hours_delta: float, shift_delta: int = 0, is_12h_shift: bool = None) -> None:
+        """Track both weekly and 14-day period hours with a signed delta.
+        
+        Args:
+            nurse_name: Name of the nurse
+            date: The date being tracked
+            hours_delta: Hours to add (positive) or remove (negative) - ACTUAL paid hours
+            shift_delta: Shift count change (+1 for adding, -1 for removing, 0 for hour-only adjustments)
+            is_12h_shift: Whether this is a 12h shift (uses 10.71h target weight for FT).
+                          If None, inferred from hours_delta: >= 10h = 12h shift, < 10h = 8h shift.
+        """
         week_key = self.date_to_week.get(date, "unknown")
         period_key = self.date_to_period.get(date, "unknown")
 
@@ -846,66 +1326,138 @@ class RobustScheduler:
             0.0, self.nurse_period_hours[nurse_name][period_key] + float(hours_delta)
         )
 
+        # Track TARGET-WEIGHTED hours for delta calculation
+        # FT nurses: 12h shifts count as 10.71h (so 7 × 10.71h = 75h = 0 delta)
+        # This separates capacity tracking (actual 11.25h) from target tracking (10.71h)
+        target_weighted_delta = hours_delta
+        
+        # Infer is_12h_shift from hours_delta if not explicitly specified
+        if is_12h_shift is None and shift_delta != 0:
+            # If adding/removing a shift, infer type from hours: >= 10h = 12h, < 10h = 8h
+            is_12h_shift = abs(hours_delta) >= 10.0
+        
+        if is_12h_shift and self._is_full_time(nurse_name):
+            # For FT 12h shifts: use 10.71h target weight instead of actual 11.25h
+            sign = 1 if hours_delta >= 0 else -1
+            target_weighted_delta = sign * self.FT_12H_TARGET_WEIGHT
+        
+        if nurse_name not in self.nurse_period_target_hours:
+            self.nurse_period_target_hours[nurse_name] = {}
+        if period_key not in self.nurse_period_target_hours[nurse_name]:
+            self.nurse_period_target_hours[nurse_name][period_key] = 0.0
+        self.nurse_period_target_hours[nurse_name][period_key] = max(
+            0.0, self.nurse_period_target_hours[nurse_name][period_key] + float(target_weighted_delta)
+        )
+
+        # Track shift count per period (for FT max 7 shifts enforcement)
+        if shift_delta != 0:
+            if nurse_name not in self.nurse_period_shifts:
+                self.nurse_period_shifts[nurse_name] = {}
+            if period_key not in self.nurse_period_shifts[nurse_name]:
+                self.nurse_period_shifts[nurse_name][period_key] = 0
+            self.nurse_period_shifts[nurse_name][period_key] = max(
+                0, self.nurse_period_shifts[nurse_name][period_key] + shift_delta
+            )
+
+            # Track Z-shift (12h) count separately for FT min-5 constraint
+            if is_12h_shift:
+                if nurse_name not in self.nurse_period_z_shifts:
+                    self.nurse_period_z_shifts[nurse_name] = {}
+                if period_key not in self.nurse_period_z_shifts[nurse_name]:
+                    self.nurse_period_z_shifts[nurse_name][period_key] = 0
+                self.nurse_period_z_shifts[nurse_name][period_key] = max(
+                    0, self.nurse_period_z_shifts[nurse_name][period_key] + shift_delta
+                )
+
+    def get_period_shift_count(self, nurse_name: str, date: str) -> int:
+        """Get the number of shifts assigned to a nurse in the period containing date."""
+        period_key = self.date_to_period.get(date, "unknown")
+        return self.nurse_period_shifts.get(nurse_name, {}).get(period_key, 0)
+
+    def get_period_z_shift_count(self, nurse_name: str, date: str) -> int:
+        """Get the number of 12h (Z-code) shifts assigned to a nurse in the period."""
+        period_key = self.date_to_period.get(date, "unknown")
+        return self.nurse_period_z_shifts.get(nurse_name, {}).get(period_key, 0)
+
+    def ft_needs_z_shift(self, nurse_name: str, date: str) -> bool:
+        """Check if FT nurse still needs more Z-shifts to meet the min-5 constraint.
+        
+        MCH rule: FT nurses must have at least 5 Z-shifts (12h) out of 7 total.
+        If a nurse has used most of their shift budget on 8h shifts, they MUST
+        get 12h shifts for the remaining slots.
+        """
+        if not self._is_full_time(nurse_name):
+            return False
+        total_shifts = self.get_period_shift_count(nurse_name, date)
+        z_shifts = self.get_period_z_shift_count(nurse_name, date)
+        remaining_shifts = self.FT_MAX_SHIFTS_PER_PERIOD - total_shifts
+        # If the remaining shifts must ALL be Z-shifts to meet minimum
+        return z_shifts < self.FT_MIN_Z_SHIFTS and (z_shifts + remaining_shifts) >= self.FT_MIN_Z_SHIFTS
+
+    def has_reached_shift_limit(self, nurse_name: str, date: str) -> bool:
+        """Check if a nurse has reached their max shift count for the period.
+        
+        FT nurses: max 7 shifts per 14-day period (7 × 10.714h = 75h target).
+        PT nurses: max shifts derived from their biweekly target hours.
+        """
+        current_count = self.get_period_shift_count(nurse_name, date)
+        if self._is_full_time(nurse_name):
+            return current_count >= self.FT_MAX_SHIFTS_PER_PERIOD
+        # PT nurses: derive shift limit from target hours / reference shift hours
+        target_biweekly = self.get_target_biweekly_hours(nurse_name)
+        # Use reference shift hours (typically 7.5-11.25) to compute max shifts
+        pt_max_shifts = max(1, int(target_biweekly / self.reference_shift_hours + 0.5))
+        return current_count >= pt_max_shifts
+
+    def has_reached_target_hours(self, nurse_name: str, date: str, hours: float = 0) -> bool:
+        """HARD CONSTRAINT: Check if assigning additional hours would exceed the
+        nurse's biweekly target for the period containing this date.
+        
+        MCH/MUHC Policy: FT target is 75h bi-weekly, but 7×11.25h = 78.75h is the
+        standard rotation. The extra 3.75h is "banked time" per union agreement.
+        Therefore, allow +3.75h tolerance (5% of 75h) dynamically scaled to target.
+        
+        For non-standard targets, use 5% tolerance: e.g., 60h target → +3.0h tolerance.
+        """
+        period_key = self.date_to_period.get(date, "unknown")
+        # Use target-weighted hours (FT 12h shifts = 10.71h) for fair comparison
+        current_target_hours = self.nurse_period_target_hours.get(nurse_name, {}).get(period_key, 0)
+        target = self.get_period_target_hours(nurse_name, period_key)
+        
+        # Dynamic tolerance: 5% of target (min 3.0h, max 5.0h)
+        # This allows flexibility while preventing unlimited overtime bloat.
+        tolerance = max(3.0, min(5.0, target * 0.05))
+        
+        # Would adding this shift exceed target?
+        if hours > 0:
+            # For FT 12h shifts, the target-weighted addition is 10.71h not 11.25h
+            weighted_hours = hours
+            if self._is_full_time(nurse_name) and hours >= 10.0:
+                weighted_hours = self.FT_12H_TARGET_WEIGHT
+            elif self._is_full_time(nurse_name) and hours >= 7.0:
+                weighted_hours = hours  # 8h shifts count at face value
+            return (current_target_hours + weighted_hours) > (target + tolerance)
+        return current_target_hours >= (target - 0.5)
+
     def _get_scaled_period_target_hours(self, period_key: str) -> float:
         """Get total target for a period with boundary scaling and off-request reductions."""
         return self.get_period_total_target_hours(period_key)
 
     def _get_dynamic_daily_staff_cap(self, date: str) -> int:
         """
-        Compute adaptive cap using reconciliation gap for the current 14-day period.
-        - If period is already at/above target, keep coverage close to minimum.
-        - If period is below target, allow only the extra staff needed to catch up.
-                - Prevent end-of-period catch-up spikes by capping extras with a
-                    period-average envelope.
+        Daily working-nurse cap — STRICT to prevent front-loading.
+        
+        Problem solved: with a high cap (12), the greedy algorithm
+        overstaffs early days and exhausts nurse hours before the last
+        days of the period, leaving them nearly empty (Sep 4 = 1 nurse).
+        
+        Fix: cap at base + 1 (= 10 for MCH 5D+4N).  This forces nurses
+        to be spread across ALL 14 days.  The extra +1 slot provides
+        just enough flexibility for FT nurses to reach their 7th shift
+        without creating 12-nurse surges.
         """
-        min_required = self.day_req + self.night_req
-        period_key = self.date_to_period.get(date, "unknown")
-        period_dates = self.period_to_dates.get(period_key, [])
-        if not period_dates:
-            return min_required
-
-        period_target = self._get_scaled_period_target_hours(period_key)
-        period_scheduled = self.get_period_total_scheduled_hours(date)
-
-        current_idx = self.date_to_index.get(date, 0)
-        remaining_days = sum(1 for d in period_dates if self.date_to_index.get(d, -1) >= current_idx)
-        remaining_days = max(1, remaining_days)
-
-        remaining_gap = max(0.0, period_target - period_scheduled)
-
-        # Baseline minimum coverage already contributes substantial hours.
-        # Only add extra headcount for gap ABOVE that minimum baseline.
-        baseline_shift_hours = self.reference_shift_hours
-        baseline_remaining_hours = remaining_days * (self.day_req + self.night_req) * baseline_shift_hours
-        extra_hours_gap = max(0.0, remaining_gap - baseline_remaining_hours)
-        extra_needed_per_day = math.ceil((extra_hours_gap / remaining_days) / max(7.5, baseline_shift_hours))
-
-        # Keep a minimal feasibility buffer while biasing toward the average.
-        buffer = 0
-        cap = min_required + extra_needed_per_day + buffer
-
-        # Smooth daily staffing by limiting extra headcount relative to the
-        # period-average target requirement. This avoids highly front/back
-        # loaded weeks (e.g., 8 staff on some days and 16-18 on others)
-        # unless constraints make it unavoidable.
-        days_in_period = max(1, len(period_dates))
-        avg_daily_staff_target = period_target / (baseline_shift_hours * days_in_period)
-        avg_extra_needed = max(0, math.ceil(avg_daily_staff_target - min_required))
-
-        # Allow flexibility above average to absorb vacations/off requests
-        # AND to let FT nurses pick up their 7th shift.  The old +1 buffer
-        # was too tight and caused the "6-shift trap" where every FT nurse
-        # was capped at 6 shifts (67.5h) instead of 7 (78.75h).
-        max_extra_envelope = max(2, avg_extra_needed + 2)
-        envelope_cap = min_required + max_extra_envelope
-
-        # Guardrail: do not exceed rounded average by more than 3 headcount.
-        # The old +2 was still too tight for units with many FT nurses all
-        # needing their 7th shift spread across the same 14 days.
-        average_anchor_cap = max(min_required, int(round(avg_daily_staff_target)) + 3)
-
-        cap = min(cap, envelope_cap, average_anchor_cap)
-        return max(min_required, min(len(self.nurse_names), cap))
+        base_cap = self.day_req + self.night_req  # 5+4=9
+        return base_cap + 1  # 10 — strict cap
 
     def get_week_total_scheduled_hours(self, date: str) -> float:
         week_key = self.date_to_week.get(date, "unknown")
@@ -945,17 +1497,53 @@ class RobustScheduler:
 
     def can_work(self, nurse_name: str, date: str, is_night: bool = False, hours: int = 12) -> bool:
         """Check if a nurse can work on a given date"""
-        # Minimum-rest guard: after a night shift, only night shifts allowed
         day_idx = self.date_list.index(date) if date in self.date_list else -1
+        
+        # MCH Night Linkage: if this slot is locked for Z23 continuation, no new shifts
+        if day_idx >= 0 and self._is_locked_for_night_continuation(nurse_name, day_idx):
+            logger.debug(f"  {nurse_name} blocked on {date}: locked for Z23 night continuation")
+            return False
+
+        # Minimum-rest guard: after a night shift, only night shifts allowed
         if not is_night and day_idx >= 0 and self._worked_night_previous_day(nurse_name, day_idx):
             logger.debug(f"  {nurse_name} blocked for day shift on {date}: worked night yesterday (min rest)")
             return False
+        
+        # MCH Night Linkage: Z19 requires next day available for Z23 continuation
+        if is_night and hours >= 10 and day_idx >= 0:
+            if not self._can_accept_night_shift(nurse_name, day_idx):
+                logger.debug(f"  {nurse_name} blocked for 12h night on {date}: next day unavailable for Z23 continuation")
+                return False
 
         # Check hours limit FIRST - most important constraint
         remaining_hours = self.get_remaining_hours(nurse_name, date)
         if remaining_hours < hours:
             week_key = self.date_to_week.get(date, "unknown")
             logger.debug(f"  {nurse_name} has only {remaining_hours}h remaining in week {week_key} (need {hours}h)")
+            return False
+        
+        # SHIFT COUNT LIMIT: max shifts per 14-day period (FT=7, PT=derived)
+        # Z19 auto-places Z23 B(11.25h) on N+1, costing 2 shift slots total.
+        # Check accordingly: if this is a night shift, the nurse needs 2 free slots.
+        if self.has_reached_shift_limit(nurse_name, date):
+            period_key = self.date_to_period.get(date, "unknown")
+            current_count = self.get_period_shift_count(nurse_name, date)
+            logger.debug(f"  {nurse_name} has {current_count} shifts in {period_key} — shift limit reached")
+            return False
+        if is_night and hours >= 11:
+            # Z19 needs 2 slots (itself + Z23 B bridge)
+            current_count = self.get_period_shift_count(nurse_name, date)
+            if self._is_full_time(nurse_name):
+                if current_count + 2 > self.FT_MAX_SHIFTS_PER_PERIOD:
+                    logger.debug(f"  {nurse_name} has {current_count} shifts — Z19 needs 2 slots (Z19+Z23 B), would exceed {self.FT_MAX_SHIFTS_PER_PERIOD}")
+                    return False
+        
+        # HARD CONSTRAINT: Never exceed biweekly target hours
+        if self.has_reached_target_hours(nurse_name, date, hours):
+            period_key = self.date_to_period.get(date, "unknown")
+            current_h = self.nurse_period_target_hours.get(nurse_name, {}).get(period_key, 0)
+            target_h = self.get_period_target_hours(nurse_name, period_key)
+            logger.debug(f"  {nurse_name} at {current_h:.1f}h / {target_h:.1f}h target in {period_key} — would exceed target with +{hours}h")
             return False
         
         # Check off requests
@@ -992,10 +1580,10 @@ class RobustScheduler:
     def assign_shift(self, nurse_name: str, date: str, shift_type: str, hours: int = 12) -> Dict:
         """Create a shift assignment - uses proper shift codes from the MUHC shift library.
         
-        Standard shift codes:
+        Standard shift codes (hours are PAID, not clock time):
         - Day 12h:   Z07 (07:00-19:25, 11.25h paid)
         - Day 8h:    07  (07:00-15:15, 7.5h paid)
-        - Night 12h: Z23 / Z23 B (23:00-11:25, 11.25h paid) — B suffix for 2nd+ consecutive night
+        - Night 12h: Z19+Z23 merged (19:00-07:25, 11.25h paid)
         - Night 8h:  23  (23:00-07:15, 7.5h paid)
         """
         if shift_type == "day":
@@ -1014,13 +1602,34 @@ class RobustScheduler:
                 # Track consecutive nights for this nurse
                 consecutive_nights = self._nurse_consecutive_nights.get(nurse_name, 0)
                 
-                # For Z23 pattern: Z23, Z23 B, Z23 B, then reset
-                if consecutive_nights == 0:
-                    shift_code = "Z23"  # First night
-                elif consecutive_nights >= 1:
-                    shift_code = "Z23 B"  # Second and subsequent nights get B suffix
+                # MCH 12h night rotation pattern:
+                #   1 night:  Z19(N) → Z23(N+1, 0h tail)
+                #   2 nights: Z19(N) → Z23 B(N+1, 11.25h) → Z23(N+2, 0h)
+                #   3 nights: Z19(N) → Z23 B(N+1) → Z23 B(N+2) → Z23(N+3, 0h)
+                #
+                # Z19   = Start of rotation (19:00→07:25) = 11.25h
+                # Z23 B = BRIDGE: finish morning + return evening = 11.25h
+                # Z23   = TAIL: finish morning only = 0h
+                #
+                # Check if the previous day already has Z19 or Z23 B for
+                # this nurse — if so, this is a CONSECUTIVE night and
+                # should use Z23 B (bridge) instead of Z19 (new rotation).
+                day_idx_check = self.date_to_index.get(date, -1)
+                prev_has_active_night = False
+                if day_idx_check > 0 and nurse_name in self.schedule:
+                    _row = self.schedule[nurse_name]
+                    if day_idx_check - 1 < len(_row):
+                        _prev = _row[day_idx_check - 1]
+                        if _prev:
+                            _pc = str(_prev.get("shift", "")).strip().upper()
+                            _ph = float(_prev.get("hours", 0) or 0)
+                            if _pc in ("Z19", "Z23 B", "Z23B") and _ph > 0:
+                                prev_has_active_night = True
+                
+                if prev_has_active_night:
+                    shift_code = "Z23 B"  # Bridge: consecutive night
                 else:
-                    shift_code = "Z23"
+                    shift_code = "Z19"  # Start of new rotation
                 
                 # Increment consecutive nights counter
                 self._nurse_consecutive_nights[nurse_name] = consecutive_nights + 1
@@ -1038,20 +1647,26 @@ class RobustScheduler:
             self._nurse_consecutive_nights[nurse_name] = 0
         else:
             shift_code = ""
-        
-        # CRITICAL: Final safety check - NEVER allow CF codes
-        if shift_code.upper().startswith("CF") or "CF-" in shift_code.upper():
-            logger.error(f"BLOCKED CF CODE in assign_shift: {shift_code} - using default")
-            shift_code = "Z07" if shift_type == "day" else "Z23"
             
         meta = self.shifts_info.get(shift_code, {})
         
-        # Get hours from metadata if available
-        if meta and "hours" in meta:
+        # ── FIX: 12h Night Shifts ──
+        # Z19 and Z23 B both represent full 12h night blocks = 11.25h paid.
+        # Z19 = rotation start (19:00→07:25). Z23 B = bridge (finish + return).
+        # Don't let standalone SHIFT_CODES metadata override the contextual hours.
+        is_12h_night = (shift_type == "night" and hours >= 11 and shift_code in ("Z19", "Z23 B"))
+        
+        # Get hours from metadata if available - BUT NOT for 12h night shifts
+        if meta and "hours" in meta and not is_12h_night:
             hours = meta["hours"]
+        elif is_12h_night:
+            hours = 11.25  # Full 12h night paid hours
         
         # Calculate start/end times based on shift code metadata or defaults
-        if meta:
+        if is_12h_night:
+            start_time = "19:00"
+            end_time = "07:25"
+        elif meta:
             start_time = meta.get("startTime", "07:00" if shift_type == "day" else "19:00")
             end_time = meta.get("endTime", "19:00" if shift_type == "day" else "07:00")
         elif hours == 8:
@@ -1067,11 +1682,14 @@ class RobustScheduler:
         
         logger.debug(f"  Assigning {nurse_name}: {shift_code} ({shift_type}, {hours}h) on {date}")
         
-        # Track hours for week + 14-day period containing this date
-        self._track_hours(nurse_name, date, float(hours))
+        # Determine if this is a 12h (Z-code) shift for FT contract tracking
+        is_z_shift = (hours >= 10.0 or is_12h_night or shift_code in ("Z07", "Z11", "Z19"))
+        
+        # Track hours for week + 14-day period containing this date, and shift count
+        self._track_hours(nurse_name, date, float(hours), shift_delta=1, is_12h_shift=is_z_shift)
         self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
         
-        return {
+        shift_entry = {
             "id": str(uuid.uuid4()),
             "date": date,
             "shift": shift_code,
@@ -1080,6 +1698,89 @@ class RobustScheduler:
             "startTime": start_time,
             "endTime": end_time
         }
+        
+        # ── MCH Night Linkage: Auto-place continuations ──
+        # MCH MANDATORY pattern: Z19(N) → Z23 B(N+1, 11.25h) → Z23(N+2, 0h)
+        # Z23 B on its own only needs Z23(0h) tail on N+1.
+        if is_12h_night:
+            day_idx = self.date_to_index.get(date, -1)
+            if day_idx >= 0 and nurse_name in self.schedule:
+                row = self.schedule[nurse_name]
+
+                if shift_code == "Z19":
+                    # Z19 → must place Z23 B(11.25h) on N+1 and Z23(0h) on N+2
+                    bridge_idx = day_idx + 1
+                    tail_idx = day_idx + 2
+
+                    # Place Z23 B (bridge, 11.25h) on N+1
+                    if bridge_idx < len(self.date_list):
+                        bridge_date = self.date_list[bridge_idx]
+                        while len(row) <= bridge_idx:
+                            row.append(None)
+                        existing = row[bridge_idx]
+                        if existing is None or existing.get("shiftType") == "off" or existing.get("hours", 0) == 0:
+                            row[bridge_idx] = {
+                                "id": str(uuid.uuid4()),
+                                "date": bridge_date,
+                                "shift": "Z23 B",
+                                "shiftType": "night",
+                                "hours": 11.25,
+                                "startTime": "00:00",
+                                "endTime": "07:25"
+                            }
+                            # Track hours for the auto-placed bridge shift
+                            self._track_hours(nurse_name, bridge_date, 11.25, shift_delta=1, is_12h_shift=True)
+                            self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+                            logger.info(
+                                f"  ⛓️ NIGHT LINKAGE: {nurse_name} {bridge_date}: "
+                                f"auto-placed Z23 B bridge (11.25h, Day N+1 after Z19)"
+                            )
+
+                    # Place Z23 (tail, 0h) on N+2
+                    if tail_idx < len(self.date_list):
+                        tail_date = self.date_list[tail_idx]
+                        while len(row) <= tail_idx:
+                            row.append(None)
+                        existing_tail = row[tail_idx]
+                        if existing_tail is None or existing_tail.get("shiftType") == "off" or existing_tail.get("hours", 0) == 0:
+                            row[tail_idx] = {
+                                "id": str(uuid.uuid4()),
+                                "date": tail_date,
+                                "shift": "Z23",
+                                "shiftType": "night",
+                                "hours": 0,
+                                "startTime": "00:00",
+                                "endTime": "07:25"
+                            }
+                            logger.info(
+                                f"  ⛓️ NIGHT LINKAGE: {nurse_name} {tail_date}: "
+                                f"auto-placed Z23 tail (0h, Day N+2 after Z19→Z23 B)"
+                            )
+
+                else:
+                    # Z23 B → place Z23(0h) tail on N+1
+                    next_idx = day_idx + 1
+                    if next_idx < len(self.date_list):
+                        next_date = self.date_list[next_idx]
+                        while len(row) <= next_idx:
+                            row.append(None)
+                        existing = row[next_idx]
+                        if existing is None or existing.get("shiftType") == "off" or existing.get("hours", 0) == 0:
+                            row[next_idx] = {
+                                "id": str(uuid.uuid4()),
+                                "date": next_date,
+                                "shift": "Z23",
+                                "shiftType": "night",
+                                "hours": 0,
+                                "startTime": "00:00",
+                                "endTime": "07:25"
+                            }
+                            logger.info(
+                                f"  ⛓️ NIGHT LINKAGE: {nurse_name} {next_date}: "
+                                f"auto-placed Z23 tail (0h, Day N+1 after Z23 B)"
+                            )
+        
+        return shift_entry
     
     def assign_off(self, nurse_name: str, date: str, off_code: str = "") -> Dict:
         """Create an off day assignment.
@@ -1097,12 +1798,18 @@ class RobustScheduler:
         # Keep '*' as-is (it's a comment marker, not an off code)
         if normalized_code == "*":
             normalized_code = "*"
+        
+        # CF codes (congé férié/statutory holidays) are PAID off days.
+        # Nurses get 7.5h paid but don't work. Set hours > 0 so they
+        # appear in the frontend shift breakdown.
+        hours = 7.5 if normalized_code.startswith("CF") else 0
+        
         return {
             "id": str(uuid.uuid4()),
             "date": date,
             "shift": normalized_code,
             "shiftType": "off",
-            "hours": 0,
+            "hours": hours,
             "startTime": "",
             "endTime": ""
         }
@@ -1122,6 +1829,9 @@ class RobustScheduler:
                     if not cleaned:
                         return ""  # Bare asterisk(s) → no preference
                     shift_upper = cleaned.upper()
+                    # Composite CF+shift → return the shift component
+                    if self._is_composite_cf_shift(cleaned):
+                        return self._extract_shift_from_cf(cleaned)
                     # BLOCK all invalid codes
                     if (shift_upper.startswith("CF") or 
                         shift_upper.startswith("C-") or
@@ -1132,15 +1842,9 @@ class RobustScheduler:
                     return cleaned
         return ""
     
-    # ── Pre-processing: Clean ghost entries from OCR BEFORE pipeline ─────
-    # Night codes whose next-day "tail" in the OCR grid is just a visual
-    # artefact of the overnight shift, NOT a separate worked shift.
-    _NIGHT_START_CODES = {"Z19", "Z23", "Z23 B", "23"}
-
-    # Only plain Z23 (WITHOUT "B") is ever a ghost tail.
-    # Z23 B is ALWAYS a real separate shift.
-    _GHOST_TAIL_CODES = {"Z23"}
-
+    # ── Pre-processing: Filter out overnight continuation markers ─────
+    # The ↩ symbol indicates an overnight shift continuation that's already
+    # been counted. Z23 is a legitimate 8h night shift code, not a tail.
     # Maximum paid hours a single nurse can accumulate in one calendar day.
     # Any entry that would push a day beyond this is clearly a ghost.
     MAX_HOURS_PER_DAY = 12.5
@@ -1150,12 +1854,10 @@ class RobustScheduler:
         preferences: Dict[str, List[str]],
         shifts_info: Dict[str, Any],
     ) -> Dict[str, List[str]]:
-        """De-Duplication Command — clean OCR preferences BEFORE the pipeline.
+        """Pre-process OCR preferences - remove only ↩ markers.
 
-        For every nurse, scan left→right through the OCR shift array.
-        When a night-start code appears on day N, check day N+1:
-        if it is a plain Z23 (no B), NULL it out — it is just the visual
-        tail of the overnight shift and NOT a separate assignment.
+        Z23 is a legitimate 8h night shift code, not a tail to be removed.
+        Only shifts containing the ↩ marker should be filtered out.
 
         Also enforces MAX_HOURS_PER_DAY per calendar day by removing any
         shift that would exceed the cap.
@@ -1166,8 +1868,6 @@ class RobustScheduler:
             return {}
 
         MAX_H = RobustScheduler.MAX_HOURS_PER_DAY
-        NIGHT_STARTS = RobustScheduler._NIGHT_START_CODES
-        GHOST_TAILS = RobustScheduler._GHOST_TAIL_CODES
 
         def _norm(code: str) -> str:
             return str(code or "").replace("↩", "").strip().upper()
@@ -1185,29 +1885,30 @@ class RobustScheduler:
             return 7.5
 
         cleaned: Dict[str, List[str]] = {}
-        total_ghosts = 0
+        total_markers = 0
 
         for nurse_name, shifts in preferences.items():
             new_shifts = list(shifts)  # shallow copy
             num_days = len(new_shifts)
 
-            # --- Pass 1: NULL out ghost tails ---
-            for i in range(num_days - 1):
-                code_i = _norm(new_shifts[i] or "")
-                if not code_i:
-                    continue
-                if code_i not in NIGHT_STARTS:
-                    continue
-
-                # Day i has a night-start code → check day i+1
-                next_code = _norm(new_shifts[i + 1] or "")
-                if next_code in GHOST_TAILS:
+            # --- Pass 1: Mark Z23 continuations of Z19 (KEEP THEM, DON'T DELETE) ---
+            # Z23 semantics (MCH Pediatric Heme-Onc):
+            #   - Z23 after Z19 (previous day) → continuation of 12h night shift
+            #     DO NOT DELETE! Mark with ↩ so hours merge into Z19 (11.25h total)
+            #   - Z23 standalone (no Z19 before) → full 8h night shift (7.5h paid)
+            for i in range(1, num_days):
+                prev_code = _norm(new_shifts[i-1] or "")
+                curr_code = _norm(new_shifts[i] or "")
+                
+                # If previous day had Z19 and current day has Z23, mark Z23 as continuation
+                # CRITICAL: Keep the shift but mark it so hours = 0 (already counted in Z19)
+                if prev_code == "Z19" and curr_code == "Z23":
                     logger.info(
-                        f"  PRE-CLEAN GHOST: {nurse_name} day {i+1}: "
-                        f"'{new_shifts[i+1]}' after '{new_shifts[i]}' → removed (ghost tail)"
+                        f"  Z23 MERGE: {nurse_name} day {i}: "
+                        f"Z23 follows Z19 on day {i-1} → marking as continuation (0h, counted in Z19)"
                     )
-                    new_shifts[i + 1] = ""  # NULL out the ghost
-                    total_ghosts += 1
+                    new_shifts[i] = new_shifts[i] + " ↩"  # Mark but DON'T delete
+                    total_markers += 1
 
             # --- Pass 2: Enforce MAX_HOURS_PER_DAY per calendar day ---
             for i in range(num_days):
@@ -1224,7 +1925,7 @@ class RobustScheduler:
 
             cleaned[nurse_name] = new_shifts
 
-        logger.info(f"PRE-CLEAN COMPLETE: {total_ghosts} ghost tails removed from OCR data")
+        logger.info(f"PRE-CLEAN COMPLETE: {total_markers} Z23 continuations marked (hours will merge into Z19)")
         return cleaned
 
     def build_schedule(self) -> Dict[str, List[Dict]]:
@@ -1240,6 +1941,7 @@ class RobustScheduler:
         """
         logger.info("=" * 80)
         logger.info("OCR-FIRST SCHEDULER: Preserve OCR assignments as binding baseline")
+        _build_t0 = _time.monotonic()
         logger.info(f"  Nurses: {len(self.nurses)}")
         logger.info(f"  Days: {len(self.date_list)}")
         logger.info(f"  Day requirement: {self.day_req}")
@@ -1259,6 +1961,7 @@ class RobustScheduler:
         nurse_consecutive_count = {n["name"]: 0 for n in self.nurses}
         
         # STEP 1: Process OCR data for each nurse
+        _step_t0 = _time.monotonic()
         for nurse_name in self.nurse_names:
             self.schedule[nurse_name] = []
 
@@ -1271,11 +1974,28 @@ class RobustScheduler:
             
             for day_idx, date in enumerate(self.date_list):
                 # CRITICAL: Check off requests FIRST (vacation days)
+                # BUT composite CF+shift codes (e.g. "CF-4 07") are WORKING
+                # shifts — they should NOT be treated as off days.
                 if date in self.get_off_requests(nurse_name):
-                    self.schedule[nurse_name].append(self.assign_off(nurse_name, date))
-                    nurse_consecutive_count[nurse_name] = 0  # Reset consecutive
-                    logger.info(f"  {nurse_name} {date}: OFF (offRequest - vacation)")
-                    continue
+                    # Peek at OCR to check for composite CF codes
+                    ocr_pref = ""
+                    if nurse_name in self.preferences:
+                        prefs = self.preferences[nurse_name]
+                        if day_idx < len(prefs):
+                            ocr_pref = (prefs[day_idx] or "").strip()
+                    # Composite CF = working shift — fall through to OCR processing
+                    if not self._is_composite_cf_shift(ocr_pref):
+                        # Preserve the original CF/OFF code from OCR if present,
+                        # otherwise default to "OFF".  A blank shift code is
+                        # invisible in the frontend calendar.
+                        off_code = ocr_pref if ocr_pref and (
+                            ocr_pref.upper().startswith("CF") or
+                            ocr_pref.upper() in ("C", "OFF")
+                        ) else "OFF"
+                        self.schedule[nurse_name].append(self.assign_off(nurse_name, date, off_code))
+                        nurse_consecutive_count[nurse_name] = 0  # Reset consecutive
+                        logger.info(f"  {nurse_name} {date}: OFF (offRequest - code: {off_code})")
+                        continue
                 
                 ocr_shift = self._get_raw_ocr_shift(nurse_name, day_idx)
                 
@@ -1284,26 +2004,63 @@ class RobustScheduler:
                     self.schedule[nurse_name].append(None)
                     continue
                 
-                # Strip any wrap-around tail markers from frontend dedup
-                ocr_shift = ocr_shift.replace("↩", "").strip()
-                if not ocr_shift:
+                # Check if this is a continuation marker (Z23 ↩)
+                # KEEP IT but assign 0 hours (hours already counted in Z19 on previous day)
+                is_continuation = "↩" in ocr_shift or "↩" in ocr_shift
+                clean_shift = ocr_shift.replace("↩", "").replace("↩", "").strip()
+                
+                if not clean_shift:
                     self.schedule[nurse_name].append(None)
                     continue
                 
-                shift_upper = ocr_shift.upper().strip()
+                shift_upper = clean_shift.upper().strip()
                 
+                # DEBUG: Log all CF-related codes
+                if "CF" in shift_upper:
+                    logger.info(f"🔍 DEBUG CF: {nurse_name} {date}: raw='{ocr_shift}' clean='{clean_shift}' upper='{shift_upper}'")
+                
+                # ── Composite CF+shift (e.g. "CF-4 07"): WORKING shift ──
+                if self._is_composite_cf_shift(clean_shift):
+                    logger.warning(f"🎯 STEP 1 COMPOSITE CF DETECTED: {nurse_name} {date}: '{clean_shift}'")
+                    extracted = self._extract_shift_from_cf(clean_shift)
+                    shift_info = self._get_shift_metadata(extracted)
+                    shift_hours = shift_info["hours"]
+                    shift_entry = {
+                        "id": str(uuid.uuid4()),
+                        "date": date,
+                        "shift": clean_shift,  # keep original "CF-4 07" visible
+                        "shiftType": shift_info["type"],
+                        "hours": shift_hours,
+                        "startTime": shift_info["start"],
+                        "endTime": shift_info["end"],
+                    }
+                    self.schedule[nurse_name].append(shift_entry)
+                    self._track_hours(nurse_name, date, float(shift_hours), shift_delta=1)
+                    self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+                    nurse_consecutive_count[nurse_name] += 1
+                    self.ocr_assignments.add((nurse_name, date))
+                    logger.warning(
+                        f"✅ {nurse_name} {date}: COMPOSITE CF SHIFT cached: {clean_shift} → "
+                        f"{extracted} (type={shift_info['type']}, hours={shift_hours}h)"
+                    )
+                    continue
+
                 # Check for explicit OFF codes (NOT '*')
                 # Handle CF variations: CF, CF-, CF 01, CF-01, C, OFF
+                # BUT: Composite CF+shift codes (checked above) should have already matched and continued
                 is_off_code = (shift_upper in ["C", "OFF"] or 
                               shift_upper.startswith("CF") or
                               shift_upper.startswith("CF-") or
                               "CF " in shift_upper)
                 
                 if is_off_code:
+                    # DEBUG: This should NOT happen for composite CF
+                    if "CF" in shift_upper and any(c.isdigit() for c in shift_upper):
+                        logger.warning(f"⚠️  UNEXPECTED: {nurse_name} {date}: CF code '{clean_shift}' treated as OFF despite composite CF check!")
                     # PRESERVE the original off-day code (e.g., CF-1, C, CF)
-                    self.schedule[nurse_name].append(self.assign_off(nurse_name, date, ocr_shift))
+                    self.schedule[nurse_name].append(self.assign_off(nurse_name, date, clean_shift))
                     nurse_consecutive_count[nurse_name] = 0
-                    logger.debug(f"  {nurse_name} {date}: OFF (code: {ocr_shift})")
+                    logger.debug(f"  {nurse_name} {date}: OFF (code: {clean_shift})")
                 elif shift_upper == "*":
                     # '*' means OFF in nurse preferred schedules (asterisk = day off)
                     self.schedule[nurse_name].append(self.assign_off(nurse_name, date, "*"))
@@ -1311,101 +2068,362 @@ class RobustScheduler:
                     logger.info(f"  {nurse_name} {date}: OFF (asterisk * = day off)")
                 else:
                     # Valid shift code - PRESERVE EXACTLY (OCR is binding, not flexible)
-                    shift_info = self._get_shift_metadata(ocr_shift)
-                    shift_entry = {
-                        "id": str(uuid.uuid4()),
-                        "date": date,
-                        "shift": ocr_shift,  # PRESERVE ORIGINAL CODE - DO NOT MODIFY
-                        "shiftType": shift_info["type"],
-                        "hours": shift_info["hours"],
-                        "startTime": shift_info["start"],
-                        "endTime": shift_info["end"]
-                    }
-                    self.schedule[nurse_name].append(shift_entry)
-                    # Track hours for week + 14-day period
-                    self._track_hours(nurse_name, date, float(shift_info["hours"]))
-                    self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
-                    nurse_consecutive_count[nurse_name] += 1
-                    logger.info(f"✓ {nurse_name} {date}: OCR PRESERVED {ocr_shift} ({shift_info['type']}, {shift_info['hours']}h)")
+                    # Special handling for Z23 ↩ (continuation marker)
+                    if is_continuation:
+                        # This is a continuation of previous night's Z19
+                        # Keep it in schedule but with 0 hours (already counted in Z19)
+                        shift_info = self._get_shift_metadata(clean_shift)
+                        shift_entry = {
+                            "id": str(uuid.uuid4()),
+                            "date": date,
+                            "shift": clean_shift + " ↩",  # Keep marker visible
+                            "shiftType": "night",
+                            "hours": 0,  # 0 hours - already counted in Z19
+                            "startTime": "00:00",
+                            "endTime": "07:25"
+                        }
+                        self.schedule[nurse_name].append(shift_entry)
+                        logger.info(f"✓ {nurse_name} {date}: Z23 ↩ continuation (0h - merged into previous Z19)")
+                    else:
+                        # Regular shift - get metadata and assign hours
+                        shift_info = self._get_shift_metadata(clean_shift)
+
+                        # MCH Night Rotation Hours:
+                        # Z19 = ALWAYS 11.25h paid (starts night rotation)
+                        # Z23 B after Z19/Z23 B = 11.25h (BRIDGE: finish AM + return PM)
+                        # Z23 after Z19/Z23 B/Z23 = 0h (TAIL: finish AM only, hours in prev shift)
+                        # Z23 B standalone (no Z19/Z23 B prev day) = standalone value
+                        is_z23_tail = False
+                        is_z23_bridge = False
+                        if shift_upper == "Z19":
+                            shift_hours = 11.25  # Full 12h night, always
+                        elif shift_upper in ("Z23 B", "Z23", "Z23B") and day_idx > 0:
+                            prev_entry = (
+                                self.schedule[nurse_name][day_idx - 1]
+                                if day_idx - 1 < len(self.schedule[nurse_name])
+                                else None
+                            )
+                            prev_code = str(prev_entry.get("shift", "")).strip().upper() if prev_entry else ""
+                            # Check the FULL chain: Z19 → Z23 B → ... → Z23
+                            if prev_code in ("Z19", "Z23 B", "Z23B", "Z23"):
+                                if shift_upper in ("Z23 B", "Z23B"):
+                                    # Z23 B = BRIDGE: finish morning (00:00-07:25)
+                                    # AND return evening (19:00-07:25). Full paid 11.25h.
+                                    shift_hours = 11.25
+                                    is_z23_bridge = True
+                                else:
+                                    # Plain Z23 = TAIL: finish morning only. 0h.
+                                    shift_hours = 0
+                                    is_z23_tail = True
+                            else:
+                                shift_hours = shift_info["hours"]
+                        else:
+                            shift_hours = shift_info["hours"]
+
+                        if is_z23_tail:
+                            # Z23 tail: 0h, morning end of rotation
+                            shift_entry = {
+                                "id": str(uuid.uuid4()),
+                                "date": date,
+                                "shift": clean_shift,
+                                "shiftType": "night",
+                                "hours": 0,
+                                "startTime": "00:00",
+                                "endTime": "07:25"
+                            }
+                            self.schedule[nurse_name].append(shift_entry)
+                            # Do NOT track hours or shift count — part of previous shift
+                            logger.info(
+                                f"✓ {nurse_name} {date}: {clean_shift} TAIL — end of rotation "
+                                f"(0h — hours in previous Z19/Z23 B)"
+                            )
+                        elif is_z23_bridge:
+                            # Z23 B bridge: 11.25h, finish morning + return evening
+                            shift_entry = {
+                                "id": str(uuid.uuid4()),
+                                "date": date,
+                                "shift": clean_shift,
+                                "shiftType": "night",
+                                "hours": 11.25,
+                                "startTime": "00:00",
+                                "endTime": "07:25"
+                            }
+                            self.schedule[nurse_name].append(shift_entry)
+                            # Track hours: Z23 B is a FULL paid shift
+                            is_z_shift_bridge = True
+                            self._track_hours(nurse_name, date, 11.25, shift_delta=1, is_12h_shift=is_z_shift_bridge)
+                            self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+                            nurse_consecutive_count[nurse_name] += 1
+                            logger.info(
+                                f"✓ {nurse_name} {date}: {clean_shift} BRIDGE — finish AM + "
+                                f"return PM (11.25h paid)"
+                            )
+                        else:
+                            shift_entry = {
+                                "id": str(uuid.uuid4()),
+                                "date": date,
+                                "shift": clean_shift,  # PRESERVE ORIGINAL CODE
+                                "shiftType": shift_info["type"],
+                                "hours": shift_hours,
+                                "startTime": shift_info["start"],
+                                "endTime": shift_info["end"]
+                            }
+                            self.schedule[nurse_name].append(shift_entry)
+                            # Track hours for week + 14-day period, and shift count
+                            self._track_hours(nurse_name, date, float(shift_hours), shift_delta=1)
+                            self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+                            nurse_consecutive_count[nurse_name] += 1
+                            logger.info(f"✓ {nurse_name} {date}: OCR PRESERVED {clean_shift} ({shift_info['type']}, {shift_hours}h)")
         
         # ============================================================
-        # STEP 1.5: NIGHT SHIFT WRAP-AROUND DEDUPLICATION
-        # Hospital schedules visually split overnight shifts across two
-        # calendar days.  When a night-start code (Z19, Z23, Z23 B) appears
-        # on day N and a plain Z23 (WITHOUT "B") appears on day N+1, the
-        # day N+1 entry is just the visual tail of the same shift — NOT a
-        # separate worked shift.
+        logger.info(f"  ⏱ STEP 1 completed in {_time.monotonic() - _step_t0:.2f}s")
+        _step_t0 = _time.monotonic()
+        # STEP 1.5: MCH NIGHT LINKAGE - Ensure rotation completeness
         #
-        # Key rule:  ONLY plain Z23 (without "B") is ever a ghost tail.
-        #            Z23 B is ALWAYS a real separate shift.
+        # MCH NIGHT ROTATION (bridge/tail model):
+        #   Z19(N, 11.25h) → Z23 B(N+1, 11.25h bridge) → ... → Z23(last, 0h tail)
         #
-        # • Z23 B after Z19   = NEW shift  (16h rest gap)
-        # • Z23 B after Z23 B = NEW shift  (consecutive night assignment)
-        # • Z23   after ANY night code = GHOST (visual tail, zero it out)
+        # Z23 B = BRIDGE: finish morning (00:00-07:25) AND return evening
+        #         (19:00-07:25 next day). Full paid 11.25h shift.
+        # Z23   = TAIL: finish morning only (00:00-07:25). 0h (hours
+        #         already counted in previous Z19 or Z23 B).
         #
-        # Example: Z19, Z23 B, Z23 B, Z23  →  3 real shifts + 1 ghost (last Z23)
+        # Rules enforced:
+        # 1. After Z19 or Z23 B: next day must have Z23 B(11.25h) or Z23(0h)
+        # 2. Z23 B in rotation → hours = 11.25h always
+        # 3. Z23 (plain) in rotation → hours = 0h always
         # ============================================================
-        NIGHT_DEDUP_PAIRS = {
-            "Z19":   {"Z23"},
-            "Z23":   {"Z23"},
-            "Z23 B": {"Z23"},
-        }
-        
-        logger.info("=" * 60)
-        logger.info("STEP 1.5: NIGHT SHIFT WRAP-AROUND DEDUPLICATION")
-        dedup_count = 0
-        
+        logger.info("=" * 80)
+        logger.info("STEP 1.5: MCH NIGHT LINKAGE ENFORCEMENT (bridge/tail model)")
+        linkage_added = 0
+        linkage_conflicts = 0
+
+        def _place_tail(row, slot_idx, date_str):
+            """Place a Z23(0h) tail at row[slot_idx]. Returns True if placed."""
+            while len(row) <= slot_idx:
+                row.append(None)
+            existing = row[slot_idx]
+            if existing is None or existing.get("shiftType") == "off" or existing.get("hours", 0) == 0:
+                row[slot_idx] = {
+                    "id": str(uuid.uuid4()),
+                    "date": date_str,
+                    "shift": "Z23",
+                    "shiftType": "night",
+                    "hours": 0,
+                    "startTime": "00:00",
+                    "endTime": "07:25"
+                }
+                return True
+            return False
+
+        def _place_bridge(nurse_name, row, slot_idx, date_str):
+            """Place a Z23 B(11.25h) bridge at row[slot_idx]. Returns True if placed."""
+            while len(row) <= slot_idx:
+                row.append(None)
+            existing = row[slot_idx]
+            if existing is None or existing.get("shiftType") == "off" or existing.get("hours", 0) == 0:
+                row[slot_idx] = {
+                    "id": str(uuid.uuid4()),
+                    "date": date_str,
+                    "shift": "Z23 B",
+                    "shiftType": "night",
+                    "hours": 11.25,
+                    "startTime": "00:00",
+                    "endTime": "07:25"
+                }
+                self._track_hours(nurse_name, date_str, 11.25, shift_delta=1, is_12h_shift=True)
+                self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+                return True
+            return False
+
+        def _upgrade_to_bridge(nurse_name, nxt, next_date, old_h):
+            """Upgrade an existing Z23(0h) tail to Z23 B(11.25h) bridge."""
+            if old_h > 0:
+                self._track_hours(nurse_name, next_date, -float(old_h), shift_delta=-1, is_12h_shift=(old_h >= 10))
+                self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+            nxt["shift"] = "Z23 B"
+            nxt["hours"] = 11.25
+            nxt["shiftType"] = "night"
+            self._track_hours(nurse_name, next_date, 11.25, shift_delta=1, is_12h_shift=True)
+            self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+
         for nurse_name in self.nurse_names:
-            schedule_row = self.schedule[nurse_name]
-            for day_idx in range(1, len(schedule_row)):
-                prev_shift = schedule_row[day_idx - 1]
-                curr_shift = schedule_row[day_idx]
-                
-                if not prev_shift or not curr_shift:
+            if nurse_name in self.nurses_on_leave:
+                continue
+
+            row = self.schedule.get(nurse_name, [])
+            for day_idx in range(len(row)):
+                curr = row[day_idx]
+                if not curr:
                     continue
-                if prev_shift.get("hours", 0) <= 0:
+
+                curr_hours = float(curr.get("hours", 0) or 0)
+                curr_code = str(curr.get("shift", "")).strip().upper()
+
+                # Only process active night starts (Z19) and bridges (Z23 B)
+                if curr_code not in ("Z19", "Z23 B", "Z23B"):
                     continue
-                if curr_shift.get("hours", 0) <= 0:
-                    continue
-                
-                prev_code = str(prev_shift.get("shift", "")).strip().upper()
-                curr_code = str(curr_shift.get("shift", "")).strip().upper()
-                
-                # Strip any ↩ markers that might have leaked from frontend
-                prev_code = prev_code.replace("↩", "").strip()
-                curr_code = curr_code.replace("↩", "").strip()
-                
-                valid_tails = NIGHT_DEDUP_PAIRS.get(prev_code)
-                if valid_tails and curr_code in valid_tails:
-                    date = self.date_list[day_idx]
-                    old_hours = curr_shift.get("hours", 0)
-                    
-                    logger.info(
-                        f"  ↩ TAIL DEDUP: {nurse_name} on {date}: "
-                        f"'{curr_code}' after '{prev_code}' → zeroed ({old_hours}h removed)"
-                    )
-                    
-                    # Untrack the tail's hours
-                    if old_hours > 0:
-                        self._track_hours(nurse_name, date, -float(old_hours))
-                    self.nurse_total_shifts[nurse_name] = max(
-                        0, self.nurse_total_shifts.get(nurse_name, 0) - 1
-                    )
-                    
-                    # Convert tail to off/rest day (nurse is recovering from overnight)
-                    schedule_row[day_idx] = self.assign_off(nurse_name, date)
-                    
-                    # Also remove from OCR binding set — tail is not a real assignment
-                    self.ocr_assignments.discard((nurse_name, date))
-                    
-                    dedup_count += 1
+                if curr_hours <= 0:
+                    continue  # Skip 0h entries
+
+                is_z19 = (curr_code == "Z19")
+
+                # ── Z19: needs Z23 B on N+1, Z23 on N+2 ──
+                # ── Z23 B: needs Z23 tail on N+1 ──
+                if day_idx + 1 >= len(self.date_list):
+                    continue  # Last day, no room
+
+                next_date = self.date_list[day_idx + 1]
+                while len(row) <= day_idx + 1:
+                    row.append(None)
+                nxt = row[day_idx + 1]
+                nxt_str = str(nxt.get("shift", "")).strip().upper() if nxt else ""
+                nxt_h = float(nxt.get("hours", 0) or 0) if nxt else 0
+
+                if is_z19:
+                    # ── Z19 → must have Z23 B(11.25h) on N+1 ──
+                    if nxt and "Z23" in nxt_str:
+                        if nxt_str in ("Z23 B", "Z23B"):
+                            # Already Z23 B — fix hours if needed
+                            if nxt_h != 11.25:
+                                old_h = nxt_h
+                                if old_h > 0:
+                                    self._track_hours(nurse_name, next_date, -float(old_h), shift_delta=-1, is_12h_shift=(old_h >= 10))
+                                    self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                                nxt["hours"] = 11.25
+                                nxt["shiftType"] = "night"
+                                self._track_hours(nurse_name, next_date, 11.25, shift_delta=1, is_12h_shift=True)
+                                self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+                                linkage_added += 1
+                                logger.info(f"  ⛓️ LINKAGE FIX: {nurse_name} {next_date}: Z23 B bridge hours {old_h}→11.25 (after Z19)")
+                        else:
+                            # Plain Z23 (tail) after Z19 — WRONG! Upgrade to Z23 B bridge
+                            _upgrade_to_bridge(nurse_name, nxt, next_date, nxt_h)
+                            linkage_added += 1
+                            logger.info(f"  ⛓️ LINKAGE FIX: {nurse_name} {next_date}: UPGRADED Z23→Z23 B (Z19 must have bridge on N+1)")
+                    elif nxt and nxt.get("hours", 0) > 0 and nxt.get("shiftType") not in ("off", None):
+                        # CONFLICT: paid non-Z23 shift on bridge day
+                        nxt_conflict = str(nxt.get("shift", "")).strip()
+                        logger.error(
+                            f"  ❌ ILLEGAL OVERLAP: {nurse_name} {curr.get('date')}: "
+                            f"Z19 needs Z23 B on {next_date} but '{nxt_conflict}' occupies it — replacing"
+                        )
+                        removed_hours = nxt.get("hours", 0)
+                        if removed_hours > 0:
+                            self._track_hours(nurse_name, next_date, -float(removed_hours), shift_delta=-1)
+                            self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                        linkage_conflicts += 1
+                        # Place Z23 B bridge
+                        row[day_idx + 1] = None  # Clear for _place_bridge
+                        if _place_bridge(nurse_name, row, day_idx + 1, next_date):
+                            linkage_added += 1
+                            logger.info(f"  ⛓️ LINKAGE: {nurse_name} {next_date}: placed Z23 B bridge after Z19 (conflict resolved)")
+                    else:
+                        # Empty/off/0h slot — place Z23 B bridge
+                        if _place_bridge(nurse_name, row, day_idx + 1, next_date):
+                            linkage_added += 1
+                            logger.info(f"  ⛓️ LINKAGE: {nurse_name} {next_date}: placed Z23 B bridge (Day N+1 after Z19)")
+
+                    # ── Z19 also needs Z23 tail on N+2 ──
+                    if day_idx + 2 < len(self.date_list):
+                        tail_date = self.date_list[day_idx + 2]
+                        while len(row) <= day_idx + 2:
+                            row.append(None)
+                        tail_slot = row[day_idx + 2]
+                        tail_str = str(tail_slot.get("shift", "")).strip().upper() if tail_slot else ""
+                        tail_h = float(tail_slot.get("hours", 0) or 0) if tail_slot else 0
+                        if tail_slot and "Z23" in tail_str:
+                            # Already Z23 variant — if Z23 B, it extends the rotation (OK)
+                            # If Z23 plain, ensure 0h
+                            if tail_str not in ("Z23 B", "Z23B") and tail_h != 0:
+                                old_h = tail_h
+                                tail_slot["hours"] = 0
+                                if old_h > 0:
+                                    self._track_hours(nurse_name, tail_date, -float(old_h), shift_delta=-1)
+                                    self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                                linkage_added += 1
+                                logger.info(f"  ⛓️ LINKAGE FIX: {nurse_name} {tail_date}: Z23 tail hours {old_h}→0 (N+2 after Z19)")
+                        elif tail_slot and tail_h > 0 and tail_slot.get("shiftType") not in ("off", None):
+                            # Conflict on tail day — remove and place tail
+                            removed_hours = tail_h
+                            self._track_hours(nurse_name, tail_date, -float(removed_hours), shift_delta=-1)
+                            self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                            linkage_conflicts += 1
+                            row[day_idx + 2] = None
+                            if _place_tail(row, day_idx + 2, tail_date):
+                                linkage_added += 1
+                                logger.info(f"  ⛓️ LINKAGE: {nurse_name} {tail_date}: placed Z23 tail on N+2 after Z19 (conflict resolved)")
+                        else:
+                            # Empty — place Z23 tail
+                            if _place_tail(row, day_idx + 2, tail_date):
+                                linkage_added += 1
+                                logger.info(f"  ⛓️ LINKAGE: {nurse_name} {tail_date}: placed Z23 tail (Day N+2 after Z19→Z23 B)")
+
+                else:
+                    # ── Z23 B → needs Z23 tail on N+1 ──
+                    if nxt and "Z23" in nxt_str:
+                        if nxt_str in ("Z23 B", "Z23B"):
+                            # Z23 B bridge extended — ensure hours = 11.25h
+                            if nxt_h != 11.25:
+                                old_h = nxt_h
+                                if old_h > 0:
+                                    self._track_hours(nurse_name, next_date, -float(old_h), shift_delta=-1, is_12h_shift=(old_h >= 10))
+                                    self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                                nxt["hours"] = 11.25
+                                nxt["shiftType"] = "night"
+                                self._track_hours(nurse_name, next_date, 11.25, shift_delta=1, is_12h_shift=True)
+                                self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+                                linkage_added += 1
+                                logger.info(f"  ⛓️ LINKAGE FIX: {nurse_name} {next_date}: Z23 B hours {old_h}→11.25 (after Z23 B)")
+                        else:
+                            # Plain Z23 tail — ensure hours = 0h
+                            if nxt_h != 0:
+                                old_h = nxt_h
+                                nxt["hours"] = 0
+                                if old_h > 0:
+                                    self._track_hours(nurse_name, next_date, -float(old_h), shift_delta=-1)
+                                    self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                                linkage_added += 1
+                                logger.info(f"  ⛓️ LINKAGE FIX: {nurse_name} {next_date}: Z23 tail hours {old_h}→0 (after Z23 B)")
+                    elif nxt and nxt.get("hours", 0) > 0 and nxt.get("shiftType") not in ("off", None):
+                        nxt_conflict = str(nxt.get("shift", "")).strip()
+                        logger.error(
+                            f"  ❌ ILLEGAL OVERLAP: {nurse_name} {curr.get('date')}: "
+                            f"Z23 B needs Z23 tail on {next_date} but '{nxt_conflict}' occupies it — replacing"
+                        )
+                        removed_hours = nxt.get("hours", 0)
+                        if removed_hours > 0:
+                            self._track_hours(nurse_name, next_date, -float(removed_hours), shift_delta=-1)
+                            self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                        linkage_conflicts += 1
+                        row[day_idx + 1] = None
+                        if _place_tail(row, day_idx + 1, next_date):
+                            linkage_added += 1
+                            logger.info(f"  ⛓️ LINKAGE: {nurse_name} {next_date}: placed Z23 tail after Z23 B (conflict resolved)")
+                    else:
+                        if _place_tail(row, day_idx + 1, next_date):
+                            linkage_added += 1
+                            logger.info(f"  ⛓️ LINKAGE: {nurse_name} {next_date}: placed Z23 tail (Day N+1 after Z23 B)")
+
+        logger.info(
+            f"NIGHT LINKAGE COMPLETE: {linkage_added} continuations added, "
+            f"{linkage_conflicts} illegal overlaps removed and corrected"
+        )
+        if linkage_conflicts > 0:
+            logger.warning(
+                f"⚠️ CORRECTED {linkage_conflicts} illegal shift overlaps in OCR data. "
+                f"Nurses cannot work non-Z23 shifts on mornings they finish Z19 (07:25 end). "
+                f"Conflicting shifts were removed and replaced with Z23 B continuations."
+            )
+        logger.info("=" * 80)
         
-        logger.info(f"NIGHT DEDUP COMPLETE: {dedup_count} wrap-around tails zeroed")
-        logger.info("=" * 60)
-        
+        # ============================================================
+        logger.info(f"  ⏱ STEP 1.5 completed in {_time.monotonic() - _step_t0:.2f}s")
+        _step_t0 = _time.monotonic()
         # STEP 2: Fill gaps to meet coverage requirements
         # PRE-STEP: De-peak overstaffed OCR-heavy days to avoid large daily spikes
         # while preserving minimum staffing and pay-period reconciliation.
+        logger.info("=" * 60)
         logger.info(
             "DAILY DE-PEAK TARGET: adaptive cap by day using 14-day reconciliation gap "
             f"(minimum required/day: {self.day_req + self.night_req})"
@@ -1489,7 +2507,7 @@ class RobustScheduler:
                 removed_hours = current_shift.get("hours", 0) if current_shift else 0
 
                 if removed_hours > 0:
-                    self._track_hours(candidate, date, -float(removed_hours))
+                    self._track_hours(candidate, date, -float(removed_hours), shift_delta=-1)
 
                 self.schedule[candidate][day_idx] = self.assign_off(candidate, date)
                 self.nurse_total_shifts[candidate] = max(0, self.nurse_total_shifts.get(candidate, 0) - 1)
@@ -1506,7 +2524,215 @@ class RobustScheduler:
                 else:
                     break  # Stop at first non-work day
         
+        logger.info("=" * 80)
+        logger.info("🔍 REACHED PRE-SCAN SECTION - ABOUT TO SCAN FOR SHORTAGES")
+        logger.info("=" * 80)
+        
+        # ============================================================
+        # PRE-SCAN: Identify critically understaffed dates
+        # Problem: processing dates chronologically fills easy days first,
+        # leaving shortage days (e.g., Sep 5) with no available nurses.
+        # Solution: identify shortage dates and prioritize them FIRST.
+        # ============================================================
+        logger.info("PRE-SCAN: Identifying at-risk dates for priority assignment...")
+        logger.info(f"  Scanning {len(self.date_list)} dates: {self.date_list[0]} to {self.date_list[-1]}")
+
+        # Build per-nurse availability bitmap and remaining capacity
+        # nurse_available_days[nurse] = list of day indices where nurse can still be assigned
+        total_needed = self.day_req + self.night_req
+        nurse_remaining_slots: dict[str, int] = {}
+        nurse_available_days: dict[str, list] = {}
+
+        for nurse_name in self.nurse_names:
+            if nurse_name in self.nurses_on_leave:
+                nurse_remaining_slots[nurse_name] = 0
+                nurse_available_days[nurse_name] = []
+                continue
+
+            # Current shift count and max
+            current_shifts = self.get_period_shift_count(nurse_name, self.date_list[0])
+            if self._is_full_time(nurse_name):
+                max_shifts = self.FT_MAX_SHIFTS_PER_PERIOD
+            else:
+                tbw = self.get_target_biweekly_hours(nurse_name)
+                max_shifts = max(1, int(tbw / self.reference_shift_hours + 0.5))
+            remaining = max(0, max_shifts - current_shifts)
+            nurse_remaining_slots[nurse_name] = remaining
+
+            avail_days = []
+            for day_idx, date in enumerate(self.date_list):
+                if remaining <= 0:
+                    break
+                shift = self.schedule[nurse_name][day_idx]
+                # Already assigned — doesn't consume a slot for another date
+                if shift and shift.get("hours", 0) > 0 and shift.get("shiftType") not in ("off", None):
+                    continue
+                # Skip off requests and leave
+                if date in self.get_off_requests(nurse_name):
+                    continue
+                avail_days.append(day_idx)
+
+            nurse_available_days[nurse_name] = avail_days
+
+        # Per-date assigned count (from Step 1 OCR)
+        date_assigned: list[int] = []
+        date_available: list[int] = []
         for day_idx, date in enumerate(self.date_list):
+            assigned = 0
+            avail = 0
+            for nurse_name in self.nurse_names:
+                if nurse_name in self.nurses_on_leave:
+                    continue
+                shift = self.schedule[nurse_name][day_idx]
+                if shift and shift.get("hours", 0) > 0 and shift.get("shiftType") not in ("off", None):
+                    assigned += 1
+                elif day_idx in nurse_available_days.get(nurse_name, []):
+                    avail += 1
+            date_assigned.append(assigned)
+            date_available.append(avail)
+
+        # ── SUPPLY-DEMAND SIMULATION ──────────────────────────────────
+        # Simulate the greedy chronological assignment:
+        # For each date (in order), assign nurses greedily.
+        # A nurse's remaining capacity decreases after each assignment.
+        # Dates that would be under-staffed AFTER earlier dates consume nurses
+        # are the "at-risk" dates.
+        #
+        # We simulate this with a forward pass:
+        # remaining_capacity[nurse] = available slots
+        # For each date: need (total_needed - assigned) more nurses.
+        #   Greedily consume from nurses available on this date.
+        #   Record the "deficit" each date would face at this point.
+        sim_remaining: dict[str, int] = {n: nurse_remaining_slots[n] for n in self.nurse_names}
+
+        # Pre-compute which dates each nurse is available for (unassigned slots)
+        nurse_avail_set: dict[str, set] = {
+            n: set(nurse_available_days[n]) for n in self.nurse_names
+        }
+
+        # KEY FIX: Use a mutable copy of date_assigned that gets Z23-B auto-coverage
+        # credits added as the simulation progresses.
+        #
+        # Why the old simulation was wrong:
+        #   Each Z19 night shift cascades: Z19(D) → Z23 B(D+1, 11.25h) → Z23 tail(D+2, 0h)
+        #   This means one Z19 assignment:
+        #     • Burns 2 of the nurse's 7 shift slots (Z19 + auto Z23 B)
+        #     • Blocks the nurse from days D, D+1, and D+2
+        #     • Also auto-covers night on D+1 (Z23 B counts as night coverage)
+        #   Without this model, sim saw 168 slots vs 126 needed = "no shortage",
+        #   but real capacity with cascade costs is ~24 nurses × 7 slots / 1.44 ≈ 117
+        #   effective unique date-slots.  Late dates run dry.
+        sim_date_assigned: list[int] = list(date_assigned)
+
+        shortage_dates = []
+        for day_idx, date in enumerate(self.date_list):
+            still_needed = max(0, total_needed - sim_date_assigned[day_idx])
+            if still_needed == 0:
+                logger.info(
+                    f"  PRE-SCAN {date}: fully assigned={sim_date_assigned[day_idx]}/{total_needed} ✓"
+                )
+                continue
+
+            # How many of still_needed are night slots?
+            # Count night coverage already placed (from OCR + Z23-B credits from earlier dates)
+            current_night_sim = sum(
+                1 for n in self.nurse_names
+                if day_idx < len(self.schedule.get(n, []))
+                and self.schedule[n][day_idx] is not None
+                and self.schedule[n][day_idx].get("shiftType") == "night"
+                and self.schedule[n][day_idx].get("hours", 0) > 0
+            )
+            nights_still_needed = max(0, self.night_req - current_night_sim)
+            night_to_fill = min(still_needed, nights_still_needed)
+            day_to_fill = still_needed - night_to_fill
+
+            # All nurses available for this date (any remaining capacity)
+            all_available = [
+                n for n in self.nurse_names
+                if day_idx in nurse_avail_set.get(n, set()) and sim_remaining.get(n, 0) >= 1
+            ]
+            # Night-capable nurses need ≥2 remaining shift slots (Z19 + auto Z23 B)
+            night_capable = [n for n in all_available if sim_remaining.get(n, 0) >= 2]
+
+            will_fill_night = min(len(night_capable), night_to_fill)
+            # Day nurses = total available minus those dedicated to night
+            will_fill_day = min(len(all_available) - will_fill_night, day_to_fill)
+            will_fill = will_fill_night + will_fill_day
+            shortfall = still_needed - will_fill
+
+            logger.info(
+                f"  PRE-SCAN {date}: assigned={sim_date_assigned[day_idx]}/{total_needed}, "
+                f"still_needed={still_needed} (day={day_to_fill}, night={night_to_fill}), "
+                f"can_fill={len(all_available)} (night_capable={len(night_capable)}), "
+                f"{'SHORTAGE shortfall=' + str(shortfall) if shortfall > 0 else 'OK'}"
+            )
+
+            # ── Consume night nurses (Z19 cascade model) ────────────────
+            # Each Z19 burns 2 slots and blocks 3 consecutive days.
+            # The auto-placed Z23 B on D+1 provides +1 night credit for
+            # the NEXT date, so the simulation stays accurate.
+            night_consumed: set[str] = set()
+            night_filled = 0
+            for n in night_capable:
+                if night_filled >= will_fill_night:
+                    break
+                sim_remaining[n] = max(0, sim_remaining[n] - 2)    # Z19 + Z23 B = 2 shifts
+                nurse_avail_set[n].discard(day_idx)                   # blocked: D (Z19 night)
+                if day_idx + 1 < len(self.date_list):
+                    nurse_avail_set[n].discard(day_idx + 1)           # blocked: D+1 (Z23 B)
+                    sim_date_assigned[day_idx + 1] += 1               # Z23 B auto-covers D+1 night
+                if day_idx + 2 < len(self.date_list):
+                    nurse_avail_set[n].discard(day_idx + 2)           # blocked: D+2 (Z23 tail)
+                night_consumed.add(n)
+                night_filled += 1
+
+            # ── Consume day nurses (no cascade) ─────────────────────────
+            day_filled = 0
+            for n in all_available:
+                if day_filled >= will_fill_day:
+                    break
+                if n in night_consumed:
+                    continue
+                sim_remaining[n] = max(0, sim_remaining[n] - 1)
+                nurse_avail_set[n].discard(day_idx)
+                day_filled += 1
+
+            if shortfall > 0:
+                shortage_score = shortfall / max(1, still_needed)
+                shortage_dates.append((day_idx, date, shortage_score, sim_date_assigned[day_idx], shortfall, total_needed))
+                logger.warning(
+                    f"  ⚠️  AT-RISK: {date} needs {still_needed} more, "
+                    f"only {will_fill} fillable "
+                    f"(night={will_fill_night}/{night_to_fill}, day={will_fill_day}/{day_to_fill}), "
+                    f"shortfall={shortfall}"
+                )
+
+        # Sort shortage dates by severity (highest shortfall ratio first)
+        shortage_dates.sort(key=lambda x: -x[2])
+
+        if shortage_dates:
+            logger.info(f"PRIORITY ASSIGNMENT: Processing {len(shortage_dates)} at-risk dates first")
+            dates_to_process_first = set(d[1] for d in shortage_dates)
+        else:
+            logger.info("No at-risk dates detected - proceeding with chronological assignment")
+            dates_to_process_first = set()
+        
+        # ============================================================
+        # MAIN LOOP: Process dates (shortage dates first, then chronological)
+        # ============================================================
+        # Build processing order: shortage dates first, then remaining in chronological order
+        processing_order = [d[1] for d in shortage_dates]  # Shortage dates sorted by severity
+        processing_order += [d for d in self.date_list if d not in dates_to_process_first]  # Remaining dates
+        
+        logger.info("=" * 80)
+        logger.info(f"📅 GAP-FILLING LOOP: Processing {len(processing_order)} dates")
+        logger.info(f"  Processing order (first 5): {processing_order[:5]}")
+        logger.info(f"  Chronological order (first 5): {self.date_list[:5]}")
+        logger.info(f"  {'✓ Priority-based' if processing_order[:5] != self.date_list[:5] else '❌ Still chronological!'}")
+        logger.info("=" * 80)
+        
+        for date in processing_order:
+            day_idx = self.date_to_index[date]
             daily_staff_cap = self._get_dynamic_daily_staff_cap(date)
             day_count = 0
             night_count = 0
@@ -1532,6 +2758,11 @@ class RobustScheduler:
                     # Skip nurses on leave — they should never be assigned
                     if nurse_name in self.nurses_on_leave:
                         self.schedule[nurse_name][day_idx] = self.assign_off(nurse_name, date)
+                        continue
+
+                    # MCH Night Linkage: if previous day had Z19 or Z23 B,
+                    # this day is locked for Z23 ↩ continuation — skip gap-fill.
+                    if self._is_locked_for_night_continuation(nurse_name, day_idx):
                         continue
 
                     # For OCR baseline nurses: skip blank days UNLESS the nurse
@@ -1570,21 +2801,47 @@ class RobustScheduler:
                         # by later passes.
                         self.schedule[nurse_name][day_idx] = self.assign_off(nurse_name, date)
                         nurse_consecutive_count[nurse_name] = 0
-                    elif remaining >= 8:
+                    elif self.has_reached_shift_limit(nurse_name, date):
+                        # Nurse already at shift limit for this period
+                        blocked_by_hours.add(nurse_name)
+                    elif self.has_reached_target_hours(nurse_name, date, 12 if self._is_full_time(nurse_name) else 8):
+                        # HARD: would exceed biweekly target hours
+                        blocked_by_hours.add(nurse_name)
+                    elif remaining < 7.5:
+                        # Not enough room for even an 8h shift (7.5h paid)
+                        blocked_by_hours.add(nurse_name)
+                    elif self._is_full_time(nurse_name) and remaining >= 12:
+                        # FT nurses with room for 12h shift
+                        available_nurses.append(nurse_name)
+                    elif self._is_full_time(nurse_name) and remaining >= 7.5:
+                        # FT nurses with room for 8h shift (e.g., 67.5h → needs 7.5h more)
+                        available_nurses.append(nurse_name)
+                    elif not self._is_full_time(nurse_name) and remaining >= 8:
+                        # PT nurses can work with 8h+ remaining
                         available_nurses.append(nurse_name)
                     else:
                         blocked_by_hours.add(nurse_name)
                 elif shift["shiftType"] == "day":
                     day_count += 1
                 elif shift["shiftType"] == "night":
-                    night_count += 1
+                    # Z23 tails (0h) are finishing nurses — NOT fresh night coverage.
+                    # Z23 B (bridge, 11.25h) IS active night coverage — nurse returns at 19:00.
+                    # Z19 IS active night coverage — nurse starts at 19:00.
+                    shift_code = str(shift.get("shift", "")).strip()
+                    shift_hours = float(shift.get("hours", 0) or 0)
+                    if shift_hours == 0 or (shift_code == "Z23" and shift_hours == 0):
+                        pass  # Z23 tail (0h) — not active night coverage
+                    else:
+                        night_count += 1  # Z19, Z23 B, 23 — all active night workers
                 # Don't increment consecutive here - we recalculate at start of each day
             
-            # Sort by least hours worked first (fair distribution), then by certification
-            # breadth and seniority so complex slots are less likely to be junior-only.
+            # Sort: PT first (cheaper for gap-fill), then by hours deficit.
+            # This prevents FT nurses from being front-loaded on early days
+            # while PT nurses (Jasmine, Khady, Katryn) sit idle.
             available_nurses.sort(
                 key=lambda n: (
                     0 if (self._is_weekend_date(date) and self._weekend_commitment_missing(n, date)) else 1,
+                    self._is_full_time(n),  # PT (False=0) before FT (True=1)
                     self.get_target_delta(n, date) >= 0,
                     self.get_target_delta(n, date),
                     sum(self.nurse_period_hours.get(n, {}).values()),
@@ -1607,8 +2864,13 @@ class RobustScheduler:
                 else:
                     any_shift_nurses.append(n)
 
+            # Compute adaptive caps for this day (allows target-balancing beyond min)
+            daily_staff_cap_gap = self._get_dynamic_daily_staff_cap(date)
+            day_cap_gap = max(self.day_req, int(daily_staff_cap_gap * self.day_req / (self.day_req + self.night_req) + 0.5))
+            night_cap_gap = max(self.night_req, daily_staff_cap_gap - day_cap_gap)
+
             # Fill day shifts first (only from any_shift pool)
-            while day_count < self.day_req and any_shift_nurses:
+            while day_count < day_cap_gap and any_shift_nurses:
                 candidate = self._select_candidate_for_assignment(any_shift_nurses, date, self.reference_shift_hours)
                 if not candidate:
                     break
@@ -1622,7 +2884,7 @@ class RobustScheduler:
             
             # Fill night shifts (prefer night-only nurses first, then any remaining)
             night_candidates = night_only_nurses + any_shift_nurses
-            while night_count < self.night_req and night_candidates:
+            while night_count < night_cap_gap and night_candidates:
                 candidate = self._select_candidate_for_assignment(night_candidates, date, self.reference_shift_hours)
                 if not candidate:
                     break
@@ -1639,6 +2901,7 @@ class RobustScheduler:
 
             # COVERAGE OVERRIDE: if strict hour checks leave gaps, relax only the
             # weekly-hours cap to guarantee minimum daily staffing.
+            # NOTE: FT 7-shift limit is NEVER relaxed - it's a hard contract constraint.
             if day_count < self.day_req or night_count < self.night_req:
                 already_assigned = set(nurses_for_day + nurses_for_night)
                 relaxed_pool = []
@@ -1653,6 +2916,12 @@ class RobustScheduler:
                     if date in self.get_off_requests(nurse_name):
                         continue
                     if nurse_consecutive_count[nurse_name] >= self.max_consecutive:
+                        continue
+                    # HARD CONSTRAINT: shift limit per 14-day period
+                    if self.has_reached_shift_limit(nurse_name, date):
+                        continue
+                    # HARD CONSTRAINT: never exceed biweekly target hours
+                    if self.has_reached_target_hours(nurse_name, date, self.reference_shift_hours):
                         continue
                     relaxed_pool.append(nurse_name)
 
@@ -1673,12 +2942,10 @@ class RobustScheduler:
                         break
                     # Minimum-rest guard: skip post-night nurses for day slots
                     if self._worked_night_previous_day(candidate, day_idx):
-                        # Re-add to end for potential night assignment
                         try:
                             relaxed_pool.remove(candidate)
                         except ValueError:
                             pass
-                        relaxed_pool.append(candidate)
                         continue
                     try:
                         relaxed_pool.remove(candidate)
@@ -1718,6 +2985,12 @@ class RobustScheduler:
                         continue
                     if date in self.get_off_requests(nurse_name):
                         continue
+                    # HARD CONSTRAINT: shift limit per 14-day period
+                    if self.has_reached_shift_limit(nurse_name, date):
+                        continue
+                    # HARD CONSTRAINT: never exceed biweekly target hours
+                    if self.has_reached_target_hours(nurse_name, date, self.reference_shift_hours):
+                        continue
                     emergency_pool.append(nurse_name)
 
                 emergency_pool.sort(
@@ -1741,7 +3014,6 @@ class RobustScheduler:
                             emergency_pool.remove(candidate)
                         except ValueError:
                             pass
-                        emergency_pool.append(candidate)
                         continue
                     try:
                         emergency_pool.remove(candidate)
@@ -1765,98 +3037,247 @@ class RobustScheduler:
                     already_assigned.add(candidate)
                     night_count += 1
 
-            # OPTIONAL EXTRA COVERAGE: assign additional shifts to nurses who are
-            # still under target hours, while preserving minimum requirements.
-            # This prevents schedules from stopping at the absolute minimum only.
-            extra_assignments: Dict[str, Tuple[str, int]] = {}
-            period_total_scheduled = self.get_period_total_scheduled_hours(date)
-            period_key = self.date_to_period.get(date, "unknown")
-            period_total_target = self.get_period_total_target_hours(period_key)
+            # 8H SHIFT FALLBACK: If still understaffed, allow hours-blocked nurses
+            # to take 8h shifts (7.5h paid) when they can't take 12h shifts.
+            # This addresses the "hours-blocked candidates" warning.
+            if day_count < self.day_req or night_count < self.night_req:
+                already_assigned = set(nurses_for_day + nurses_for_night)
+                fallback_8h_pool = []
 
-            # Re-sort available nurses by target delta so the most under-target
-            # nurses get priority for the limited extra slots.  Without this,
-            # the same nurses that happen to be early in the list grab all the
-            # extra slots on every day, leaving others (Allycia, Brenda, Kassia)
-            # permanently one shift short.
-            available_nurses.sort(
-                key=lambda n: (
-                    self.get_target_delta(n, date),  # most negative (under-target) first
-                    not self._is_full_time(n),      # FT before PT when deltas are similar
-                    sum(self.nurse_period_hours.get(n, {}).values()),
+                for nurse_name in self.nurse_names:
+                    if nurse_name in already_assigned:
+                        continue
+                    if self._nurse_has_ocr_baseline(nurse_name):
+                        continue
+                    if self.schedule[nurse_name][day_idx] is not None:
+                        continue
+                    if date in self.get_off_requests(nurse_name):
+                        continue
+                    # HARD CONSTRAINT: shift limit per 14-day period
+                    if self.has_reached_shift_limit(nurse_name, date):
+                        continue
+                    # Consecutive days guard - respect max consecutive
+                    if nurse_consecutive_count[nurse_name] >= self.max_consecutive:
+                        continue
+                    # Check if nurse is blocked for 12h but NOT blocked for 8h
+                    remaining = self.get_remaining_hours(nurse_name, date)
+                    if remaining >= 7.5 and remaining < 12:
+                        # Can take 8h shift but not 12h
+                        fallback_8h_pool.append(nurse_name)
+                    elif self.has_reached_target_hours(nurse_name, date, 12):
+                        # Would exceed target with 12h, but check for 8h
+                        if not self.has_reached_target_hours(nurse_name, date, 8):
+                            fallback_8h_pool.append(nurse_name)
+
+                if fallback_8h_pool:
+                    fallback_8h_pool.sort(
+                        key=lambda n: (
+                            0 if (self._is_weekend_date(date) and self._weekend_commitment_missing(n, date)) else 1,
+                            self.get_target_delta(n, date) >= 0,
+                            self.get_target_delta(n, date),
+                            sum(self.nurse_period_hours.get(n, {}).values()),
+                            -self.get_certification_score(n),
+                            -self.nurse_seniority.get(n, 0),
+                        )
+                    )
+
+                    # Partition: nurses who can work day vs night-only (worked previous night)
+                    fallback_day_pool = []
+                    fallback_night_only_pool = []
+                    for n in fallback_8h_pool:
+                        if self._worked_night_previous_day(n, day_idx):
+                            fallback_night_only_pool.append(n)
+                        else:
+                            fallback_day_pool.append(n)
+
+                    # Fill DAY shortages with 8h shifts (only from day-eligible pool)
+                    while day_count < self.day_req and fallback_day_pool:
+                        candidate = fallback_day_pool.pop(0)
+                        nurses_for_day.append(candidate)
+                        already_assigned.add(candidate)
+                        day_count += 1
+                        logger.info(
+                            f"    8H FALLBACK: {candidate} assigned 8h DAY on {date} (hours-blocked for 12h)"
+                        )
+
+                    # Fill NIGHT shortages with 8h shifts (night-only first, then remaining day-eligible)
+                    combined_night_pool = fallback_night_only_pool + fallback_day_pool
+                    while night_count < self.night_req and combined_night_pool:
+                        candidate = combined_night_pool.pop(0)
+                        if candidate in already_assigned:
+                            continue
+                        nurses_for_night.append(candidate)
+                        already_assigned.add(candidate)
+                        night_count += 1
+                        logger.info(
+                            f"    8H FALLBACK: {candidate} assigned 8h NIGHT on {date} (hours-blocked for 12h)"
+                        )
+
+            # LAST-RESORT MINIMUM COVERAGE: if STILL below minimum after all pools,
+            # allow nurses who exceeded their biweekly target to take an 8h shift.
+            # This guarantees every day meets minimum staffing (patient safety).
+            if day_count < self.day_req or night_count < self.night_req:
+                already_assigned = set(nurses_for_day + nurses_for_night)
+                last_resort_pool = []
+
+                for nurse_name in self.nurse_names:
+                    if nurse_name in already_assigned:
+                        continue
+                    if self._nurse_has_ocr_baseline(nurse_name):
+                        continue
+                    if self.schedule[nurse_name][day_idx] is not None:
+                        continue
+                    if date in self.get_off_requests(nurse_name):
+                        continue
+                    # HARD CONSTRAINT: shift limit per 14-day period
+                    if self.has_reached_shift_limit(nurse_name, date):
+                        continue
+                    # NOTE: deliberately NO hours check — that is the whole point
+                    last_resort_pool.append(nurse_name)
+
+                last_resort_pool.sort(
+                    key=lambda n: (
+                        # 1) PT first (0) — lower target = cheaper to pull, avoids FT OT
+                        0 if not self._is_full_time(n) else 1,
+                        # 2) Within PT/FT, prefer LEAST over target (minimize overshoot)
+                        sum(self.nurse_period_hours.get(n, {}).values()),
+                        -self.get_certification_score(n),
+                        -self.nurse_seniority.get(n, 0),
+                    )
                 )
-            )
 
-            for nurse in list(available_nurses):
-                # FT-first policy: while any FT nurse is still meaningfully
-                # under target, do not consume optional extra slots on PT nurses.
-                ft_under_target_exists = any(
-                    self._is_full_time(n)
-                    and self.get_target_remaining_hours(n, date) >= 7.0
-                    for n in self.nurse_names
-                )
-                if ft_under_target_exists and not self._is_full_time(nurse):
-                    continue
-
-                # Soft-stop once aggregate period target is exceeded by 10%.
-                # We no longer hard-stop at 100% because individual nurses may
-                # still be significantly under target even when the aggregate
-                # looks met (fixes coverage compliance 0% issue).
-                if period_total_scheduled >= period_total_target * 1.10:
-                    break
-
-                target_remaining = self.get_target_remaining_hours(nurse, date)
-
-                # Avoid daily front-loading spikes; keep day totals near cap.
-                # BUT: exempt nurses who are significantly under target (≥ one
-                # full shift behind).  Without this exemption, the cap blocks
-                # the last few nurses every single day, and they permanently
-                # end up one shift short (-7.5h).
-                if (day_count + night_count) >= daily_staff_cap:
-                    if target_remaining < self.reference_shift_hours:
-                        break  # Only break if no one left who really needs hours
-
-                if target_remaining < 7.0:
-                    continue
-
-                remaining_hours = self.get_remaining_hours(nurse, date)
-                if remaining_hours < 7.5:
-                    continue
-
-                # Prefer 12h where possible, otherwise use 8h to progress toward target.
-                candidate_hours = 12 if (remaining_hours >= 12 and target_remaining >= 12) else 8
-
-                # Keep day/night distribution reasonably balanced relative to minimums.
-                day_ratio = day_count / max(self.day_req, 1)
-                night_ratio = night_count / max(self.night_req, 1)
-                prefer_night = night_ratio < day_ratio
-
-                # Minimum-rest guard: post-night nurses can only take night shifts.
-                came_off_night = self._worked_night_previous_day(nurse, day_idx)
-
-                chosen_shift = None
-                if (prefer_night or came_off_night) and self.can_work(nurse, date, is_night=True, hours=candidate_hours):
-                    chosen_shift = "night"
-                    night_count += 1
-                elif not came_off_night and self.can_work(nurse, date, is_night=False, hours=candidate_hours):
-                    chosen_shift = "day"
+                while day_count < self.day_req and last_resort_pool:
+                    candidate = last_resort_pool[0]
+                    last_resort_pool.pop(0)
+                    if self._worked_night_previous_day(candidate, day_idx):
+                        continue
+                    nurses_for_day.append(candidate)
+                    already_assigned.add(candidate)
                     day_count += 1
-                elif self.can_work(nurse, date, is_night=True, hours=candidate_hours):
-                    chosen_shift = "night"
-                    night_count += 1
+                    logger.warning(
+                        f"    LAST-RESORT: {candidate} assigned 8h DAY on {date} "
+                        f"(over biweekly target — minimum coverage)"
+                    )
 
-                if chosen_shift:
-                    extra_assignments[nurse] = (chosen_shift, candidate_hours)
-                    period_total_scheduled += candidate_hours
+                while night_count < self.night_req and last_resort_pool:
+                    candidate = last_resort_pool[0]
+                    last_resort_pool.pop(0)
+                    if candidate in already_assigned:
+                        continue
+                    nurses_for_night.append(candidate)
+                    already_assigned.add(candidate)
+                    night_count += 1
+                    logger.warning(
+                        f"    LAST-RESORT: {candidate} assigned 8h NIGHT on {date} "
+                        f"(over biweekly target — minimum coverage)"
+                    )
+
+            # OPTIONAL EXTRA COVERAGE: DISABLED — hard cap at 5 day / 4 night.
+            # All additional staffing is handled by spreading nurses across days,
+            # not by overstaffing any single day.
+            extra_assignments: Dict[str, Tuple[str, int]] = {}
+            
+            # Track which nurses were assigned via 8h fallback or last-resort (for shift assignment)
+            nurses_via_8h_fallback = set()
+            # Track last-resort nurses explicitly (they are OVER target, must use 8h)
+            nurses_via_last_resort = set()
+            for n in nurses_for_day + nurses_for_night:
+                if self.has_reached_target_hours(n, date, 8):
+                    # Over target even for 8h — this is a last-resort nurse
+                    nurses_via_last_resort.add(n)
+                    nurses_via_8h_fallback.add(n)
+                else:
+                    remaining = self.get_remaining_hours(n, date)
+                    if remaining >= 7.5 and remaining < 12:
+                        nurses_via_8h_fallback.add(n)
+                    elif self.has_reached_target_hours(n, date, 12) and not self.has_reached_target_hours(n, date, 8):
+                        nurses_via_8h_fallback.add(n)
             
             # Apply assignments
             for nurse_name in self.nurse_names:
                 if self.schedule[nurse_name][day_idx] is None:
                     if nurse_name in nurses_for_day:
-                        shift = self.assign_shift(nurse_name, date, "day")
+                        # Intelligently choose 8h vs 12h based on hours needed
+                        remaining = self.get_target_remaining_hours(nurse_name, date)
+                        is_ft = self._is_full_time(nurse_name)
+                        # Force 8h if nurse was added via 8h fallback
+                        if nurse_name in nurses_via_8h_fallback:
+                            hours = 8
+                        # If nurse needs < 10h to reach target, use 8h shift (avoids overshoot)
+                        # Otherwise use 12h shift (standard for FT nurses)
+                        elif remaining < 10.0 and remaining >= 7.5:
+                            hours = 8
+                        else:
+                            hours = 12
+                        hours = 8 if (remaining < 10.0 and remaining >= 7.5) else 12
+                        shift = self.assign_shift(nurse_name, date, "day", hours=hours)
                         self.schedule[nurse_name][day_idx] = shift
                         nurse_consecutive_count[nurse_name] += 1
                     elif nurse_name in nurses_for_night:
-                        shift = self.assign_shift(nurse_name, date, "night")
+                        # Intelligently choose 8h vs 12h for night shifts
+                        remaining = self.get_target_remaining_hours(nurse_name, date)
+                        is_ft = self._is_full_time(nurse_name)
+                        
+                        # CRITICAL LOOKAHEAD: check if future days need coverage!
+                        # Z19 (12h) locks nurse for 3 days (Z19→Z23 B→Z23 tail),
+                        # so if future days are predicted to be understaffed, prefer:
+                        # 1) Standard 23 (8h) — no rotation, nurse free next day
+                        # 2) Or avoid assigning this nurse to night at all if they're
+                        #    critically needed for future day coverage.
+                        future_shortfalls = self._predict_future_coverage_shortfall(date, lookhead_days=4)
+                        
+                        if future_shortfalls:
+                            gaps_summary = []
+                            for d, f in future_shortfalls.items():
+                                gaps_summary.append(
+                                    f"{d}: day_gap={f['day_gap']}/{f['day_need']}, night_gap={f['night_gap']}/{f['night_need']}"
+                                )
+                            logger.info(
+                                f"    LOOKAHEAD on {date}: Future coverage predictions: {'; '.join(gaps_summary)}"
+                            )
+                        
+                        critical_future_shortage = any(
+                            (gap['day_gap'] >= 2 or gap['night_gap'] >= 2)
+                            for gap in future_shortfalls.values()
+                        )
+                        
+                        # Force 8h shift if future days are critically understaffed
+                        # UNLESS nurse has very few shifts remaining and needs 12h
+                        force_8h = False
+                        if critical_future_shortage and is_ft:
+                            # FT nurse: check if they can afford an 8h shift
+                            # (won't leave them unable to hit 7-shift target)
+                            current_shifts = self.get_period_shift_count(nurse_name, date)
+                            z_shifts = self.get_period_z_shift_count(nurse_name, date)
+                            remaining_slots = self.FT_MAX_SHIFTS_PER_PERIOD - current_shifts
+                            needs_z_shifts = (self.FT_MIN_Z_SHIFTS - z_shifts)
+                            # If nurse has room for multiple shifts and doesn't critically need Z-shifts
+                            if remaining_slots >= 2 and needs_z_shifts <= remaining_slots - 1:
+                                force_8h = True
+                                logger.info(
+                                    f"    LOOKAHEAD: {nurse_name} {date} using 8h night (not Z19) "
+                                    f"to preserve availability for future coverage gaps: "
+                                    f"{list(future_shortfalls.keys())}"
+                                )
+                        elif critical_future_shortage and not is_ft:
+                            # PT nurse: prefer 8h to keep them available
+                            force_8h = True
+                            logger.info(
+                                f"    LOOKAHEAD: {nurse_name} {date} using 8h night (not Z19) "
+                                f"to preserve availability for future coverage gaps"
+                            )
+                        
+                        # Determine shift hours
+                        if force_8h:
+                            hours = 8
+                        elif remaining < 10.0 and remaining >= 7.5 and not is_ft:
+                            # PT with < 10h remaining: use 8h
+                            hours = 8
+                        else:
+                            # Default: 12h for FT, or FT with room
+                            hours = 12
+                        
+                        shift = self.assign_shift(nurse_name, date, "night", hours=hours)
                         self.schedule[nurse_name][day_idx] = shift
                         nurse_consecutive_count[nurse_name] += 1
                     elif nurse_name in extra_assignments:
@@ -1873,8 +3294,14 @@ class RobustScheduler:
                         self.schedule[nurse_name][day_idx] = self.assign_off(nurse_name, date)
                         nurse_consecutive_count[nurse_name] = 0
 
-            # POST-ASSIGNMENT DE-PEAK: enforce daily cap on the final day plan,
-            # keeping minimum day/night staffing intact.
+            # POST-ASSIGNMENT DE-PEAK: enforce adaptive daily cap.
+            # Allow up to dynamic cap (day_req + buffer) per shift type to ensure
+            # nurses can reach their 7th shift while preventing runaway overstaffing.
+            daily_staff_cap = self._get_dynamic_daily_staff_cap(date)
+            # Distribute the cap between day/night proportionally
+            day_cap = max(self.day_req, int(daily_staff_cap * self.day_req / (self.day_req + self.night_req) + 0.5))
+            night_cap = max(self.night_req, daily_staff_cap - day_cap)
+            
             final_day_workers: List[str] = []
             final_night_workers: List[str] = []
             for nurse_name in self.nurse_names:
@@ -1885,63 +3312,42 @@ class RobustScheduler:
                     elif shift.get("shiftType") == "night":
                         final_night_workers.append(nurse_name)
 
-            final_total = len(final_day_workers) + len(final_night_workers)
-            if final_total > daily_staff_cap:
-                to_remove = final_total - daily_staff_cap
-                for _ in range(to_remove):
-                    day_slack = len(final_day_workers) - self.day_req
-                    night_slack = len(final_night_workers) - self.night_req
-
-                    if day_slack <= 0 and night_slack <= 0:
-                        break
-
-                    remove_from_day = day_slack >= night_slack and day_slack > 0
-                    if not remove_from_day and night_slack <= 0 and day_slack > 0:
-                        remove_from_day = True
-
-                    pool = final_day_workers if remove_from_day else final_night_workers
-                    if not pool:
-                        break
-
-                    # CRITICAL: Filter out OCR-assigned nurses - they are BINDING
-                    non_ocr_pool = [n for n in pool if (n, date) not in self.ocr_assignments]
-                    ocr_protected_post = [n for n in pool if (n, date) in self.ocr_assignments]
-                    if ocr_protected_post:
-                        logger.info(f"    POST-DEPEAKING OCR-PROTECTED on {date}: {ocr_protected_post} (cannot remove)")
-                    if not non_ocr_pool:
-                        logger.info(f"    POST-DEPEAKING: all remaining in pool are OCR on {date}. Skipping.")
-                        break
-
-                    # PROTECT UNDER-TARGET NURSES: Never de-peak a nurse
-                    # whose worked hours are still below their FTE target.
-                    # Only consider over-target nurses for removal.
-                    over_target_pool = [
-                        n for n in non_ocr_pool
-                        if self.get_target_delta(n, date) > 0
-                    ]
-                    selection_pool = over_target_pool if over_target_pool else non_ocr_pool
-
-                    candidate = max(
-                        selection_pool,
-                        key=lambda n: (
-                            # Primary: prefer removing nurses who are OVER target
-                            1 if self.get_target_delta(n, date) > 0 else 0,
-                            1 if not self._is_weekend_commitment_protected(n, date) else 0,
-                            self.get_target_delta(n, date),
-                            self.nurse_period_hours.get(n, {}).get(self.date_to_period.get(date, "unknown"), 0),
-                            -self.get_certification_score(n),
-                            -self.nurse_seniority.get(n, 0),
-                        ),
-                    )
-
+            # Remove excess DAY nurses above day_cap
+            day_excess = len(final_day_workers) - day_cap
+            if day_excess > 0:
+                # Sort: remove over-target, non-OCR nurses first
+                removable = [n for n in final_day_workers if (n, date) not in self.ocr_assignments]
+                removable.sort(key=lambda n: (
+                    -self.get_target_delta(n, date),
+                    -self.nurse_period_hours.get(n, {}).get(self.date_to_period.get(date, "unknown"), 0),
+                ))
+                for candidate in removable[:day_excess]:
                     current_shift = self.schedule[candidate][day_idx]
                     removed_hours = current_shift.get("hours", 0) if current_shift else 0
                     if removed_hours > 0:
-                        self._track_hours(candidate, date, -float(removed_hours))
-
+                        self._track_hours(candidate, date, -float(removed_hours), shift_delta=-1)
                     self.schedule[candidate][day_idx] = self.assign_off(candidate, date)
                     self.nurse_total_shifts[candidate] = max(0, self.nurse_total_shifts.get(candidate, 0) - 1)
-                    pool.remove(candidate)
+                    final_day_workers.remove(candidate)
+                    logger.info(f"    HARD-CAP: removed {candidate} from DAY on {date} (day_req={self.day_req})")
+
+            # Remove excess NIGHT nurses above night_cap
+            night_excess = len(final_night_workers) - night_cap
+            if night_excess > 0:
+                removable = [n for n in final_night_workers if (n, date) not in self.ocr_assignments]
+                removable.sort(key=lambda n: (
+                    -self.get_target_delta(n, date),
+                    -self.nurse_period_hours.get(n, {}).get(self.date_to_period.get(date, "unknown"), 0),
+                ))
+                for candidate in removable[:night_excess]:
+                    current_shift = self.schedule[candidate][day_idx]
+                    removed_hours = current_shift.get("hours", 0) if current_shift else 0
+                    if removed_hours > 0:
+                        self._track_hours(candidate, date, -float(removed_hours), shift_delta=-1)
+                    self.schedule[candidate][day_idx] = self.assign_off(candidate, date)
+                    self.nurse_total_shifts[candidate] = max(0, self.nurse_total_shifts.get(candidate, 0) - 1)
+                    final_night_workers.remove(candidate)
+                    logger.info(f"    HARD-CAP: removed {candidate} from NIGHT on {date} (night_req={self.night_req})")
 
                 # Refresh counts after de-peak
                 day_count = len(final_day_workers)
@@ -1958,6 +3364,8 @@ class RobustScheduler:
                 )
         
         # ============================================================
+        logger.info(f"  ⏱ STEP 2 completed in {_time.monotonic() - _step_t0:.2f}s")
+        _step_t0 = _time.monotonic()
         # STEP 2.5: FORCE-FILL FOR UNDER-TARGET NURSES
         # After the initial gap-filling pass, many FT nurses may still be
         # short by 1 shift (the "6-shift trap").  This pass specifically
@@ -2053,6 +3461,11 @@ class RobustScheduler:
                 if current_delta >= -3.0:
                     break  # Close enough to target
 
+                # HARD CONSTRAINT: shift limit per 14-day period
+                if self.has_reached_shift_limit(nurse_name, self.date_list[0]):
+                    logger.info(f"    {nurse_name}: already at shift limit, cannot force-fill")
+                    break
+
                 # Find the best day to assign (prefer understaffed days)
                 best_day_idx = None
                 best_score = float('inf')
@@ -2063,6 +3476,10 @@ class RobustScheduler:
                     if shift is None or (shift.get("shiftType") == "off" and shift.get("hours", 0) <= 0):
                         pass
                     else:
+                        continue
+
+                    # MCH Night Linkage: skip days locked for Z23 ↩ continuation
+                    if self._is_locked_for_night_continuation(nurse_name, day_idx):
                         continue
 
                     # Skip off-request days
@@ -2101,13 +3518,12 @@ class RobustScheduler:
                             elif s.get("shiftType") == "night":
                                 night_staff += 1
 
-                    # STRICT ANTI-OVERSTAFF GUARD:
-                    # Force-fill is for closing true coverage gaps, not for
-                    # inflating headcount on already-covered days.
+                    # ANTI-OVERSTAFF GUARD (relaxed for target-balancing):
+                    # Prefer days with coverage deficits. If no deficit, still allow
+                    # placement up to the daily cap so under-target nurses can reach
+                    # their 7th shift (needed for FT 78.75h / 75h target).
                     day_deficit = max(0, self.day_req - day_staff)
                     night_deficit = max(0, self.night_req - night_staff)
-                    if day_deficit <= 0 and night_deficit <= 0:
-                        continue
 
                     # Also respect adaptive daily cap during force-fill.
                     daily_staff_cap = self._get_dynamic_daily_staff_cap(date)
@@ -2120,10 +3536,7 @@ class RobustScheduler:
 
                     if came_off_night:
                         # Can only work night
-                        if night_deficit > 0:
-                            score = -night_deficit  # More deficit = lower (better) score
-                        else:
-                            continue  # Can't help coverage on this day
+                        score = -(night_deficit if night_deficit > 0 else 0) + total_staff
                     else:
                         # Prefer the side with the bigger deficit
                         score = -(day_deficit + night_deficit) if (day_deficit + night_deficit) > 0 else total_staff
@@ -2145,14 +3558,31 @@ class RobustScheduler:
                             continue  # Not a work shift
                         if (nurse_name, dt) in self.ocr_assignments:
                             continue  # Can't move OCR-locked shifts
-                        # Try sliding this shift to a neighbour to break the streak
+                        # NEVER slide Z19 night shifts — they have Z23 ↩ linkage
+                        # that we can't safely reconstruct after a slide.
+                        if str(s.get("shift", "")).strip().upper() == "Z19":
+                            continue
+                        if s.get("shiftType") == "night":
+                            continue  # Don't slide any night shift (complex linkage)
                         for neighbour_offset in (-1, 1):
                             ni = di + neighbour_offset
                             if ni < 0 or ni >= len(self.date_list):
                                 continue
                             ns = self.schedule[nurse_name][ni]
                             if ns and ns.get("hours", 0) > 0:
-                                continue  # Neighbour already has a shift
+                                continue  # Neighbour already has a real shift
+                            # NEVER slide into a Z23 ↩ continuation slot
+                            if ns and ns.get("shiftType") == "night":
+                                ns_sc = str(ns.get("shift", "")).strip()
+                                if "Z23" in ns_sc or "↩" in ns_sc:
+                                    continue
+                            # NEVER slide into a day AFTER Z19 (locked day)
+                            if ni > 0 and ni - 1 < len(self.schedule[nurse_name]):
+                                prev_ns = self.schedule[nurse_name][ni - 1]
+                                if prev_ns:
+                                    prev_sc_ns = str(prev_ns.get("shift", "")).strip()
+                                    if prev_sc_ns in ("Z19", "Z23 B") and float(prev_ns.get("hours", 0) or 0) > 0:
+                                        continue  # This slot is locked after a night shift
                             nd = self.date_list[ni]
                             if nd in self.get_off_requests(nurse_name):
                                 continue
@@ -2209,25 +3639,41 @@ class RobustScheduler:
                     )
                     break
 
+                # Determine shift type: prefer the side with biggest coverage deficit.
+                # If no deficit, default to day (more desirable, better for balance).
                 if came_off_night:
-                    if night_deficit <= 0:
-                        logger.info(
-                            f"    {nurse_name}: cannot place day-after-night and no night deficit on {date}; skipping"
-                        )
-                        break
                     shift_type = "night"
                 elif night_deficit > day_deficit:
                     shift_type = "night"
-                else:
+                elif day_deficit > 0:
                     shift_type = "day"
+                else:
+                    # No coverage deficit — add to the least-staffed side
+                    # Prefer day shifts to balance the schedule (avoids night-heavy skew)
+                    shift_type = "day" if day_staff <= night_staff else "night"
 
-                # 8h TOP-UP: If the nurse only needs ≤ 8h to reach target,
-                # use an 8h shift instead of 12h. Easier to schedule and
-                # avoids overshooting the target.
+                # INTELLIGENT SHIFT-LENGTH SELECTION:
+                # Choose 8h vs 12h based on how many hours the nurse needs
+                # to reach their target without significantly overshooting.
                 fill_hours = 12
-                if abs(current_delta) <= self.reference_shift_hours + 0.5:
-                    fill_hours = 8
-                    logger.info(f"    8h TOP-UP for {nurse_name}: delta={current_delta:+.1f}h, using 8h shift")
+                remaining = self.get_target_remaining_hours(nurse_name, date)
+                
+                if not self._is_full_time(nurse_name):
+                    # PT: Use 8h shift if they need 7.5-10h more (avoids overshoot)
+                    if 7.5 <= remaining < 10.0:
+                        fill_hours = 8
+                        logger.info(f"    8h TOP-UP for PT {nurse_name}: remaining={remaining:.1f}h, using 8h shift")
+                    else:
+                        logger.info(f"    PT {nurse_name}: remaining={remaining:.1f}h, using 12h shift")
+                else:
+                    # FT: Use 8h shift only if they need 7.5-10h more
+                    # (e.g., 67.5h → 75h target, remaining=7.5h)
+                    # Otherwise use 12h (standard for FT to reach 78.75h with 7 shifts)
+                    if 7.5 <= remaining < 10.0:
+                        fill_hours = 8
+                        logger.info(f"    8h TOP-UP for FT {nurse_name}: remaining={remaining:.1f}h, using 8h shift")
+                    else:
+                        logger.info(f"    FT {nurse_name}: remaining={remaining:.1f}h, using 12h shift")
 
                 new_shift = self.assign_shift(nurse_name, date, shift_type, hours=fill_hours)
                 self.schedule[nurse_name][best_day_idx] = new_shift
@@ -2241,6 +3687,8 @@ class RobustScheduler:
         logger.info("=" * 80)
 
         # ============================================================
+        logger.info(f"  ⏱ STEP 2.5 completed in {_time.monotonic() - _step_t0:.2f}s")
+        _step_t0 = _time.monotonic()
         # STEP 3: FINAL OCR ENFORCEMENT
         # Safety net: after all gap-filling and de-peaking, scan every
         # nurse's OCR data and force-correct any shift that was dropped
@@ -2248,6 +3696,13 @@ class RobustScheduler:
         # ============================================================
         logger.info("=" * 80)
         logger.info("STEP 3: FINAL OCR ENFORCEMENT (authoritative overlay)")
+        logger.warning("🎯 OCR ASSIGNMENTS RECEIVED (self.preferences):")
+        for nurse_name, shifts in (self.preferences or {}).items():
+            non_empty = [s for s in shifts if s and str(s).strip() and str(s).strip() not in ("—", "-")]
+            if non_empty:
+                logger.warning(f"  '{nurse_name}': {non_empty}")
+        logger.info("=" * 80)
+        
         ocr_corrections = 0
         ocr_already_correct = 0
         schedule_name_by_norm = {
@@ -2255,9 +3710,13 @@ class RobustScheduler:
         }
 
         for pref_name, pref_shifts in (self.preferences or {}).items():
-            schedule_name = schedule_name_by_norm.get(self._normalize_nurse_name_key(pref_name))
+            # CRITICAL DEBUG: Log the exact nurse name from OCR
+            normalized_pref = self._normalize_nurse_name_key(pref_name)
+            schedule_name = schedule_name_by_norm.get(normalized_pref)
+            logger.warning(f"🔍 STEP 3 NURSE MATCH: OCR name='{pref_name}' normalized='{normalized_pref}' → schedule_name='{schedule_name}'")
             if not schedule_name:
-                logger.warning(f"  OCR OVERLAY SKIP: nurse '{pref_name}' not found in active schedule")
+                logger.warning(f"  ⚠️ OCR OVERLAY SKIP: nurse '{pref_name}' not found in active schedule")
+                logger.warning(f"  Available schedule names: {list(schedule_name_by_norm.values())}")
                 continue
 
             for day_idx, raw_ocr in enumerate(pref_shifts or []):
@@ -2270,11 +3729,24 @@ class RobustScheduler:
                 shift_upper = raw_ocr.upper()
                 date = self.date_list[day_idx]
 
+                # CRITICAL: Check for composite CF codes FIRST (e.g., "CF-4 07")
+                # These are WORKING shifts, NOT off days
+                is_composite_cf = self._is_composite_cf_shift(raw_ocr)
+
                 is_off_code = (
-                    shift_upper in ["C", "OFF"]
-                    or shift_upper.startswith("CF")
-                    or "CF " in shift_upper
+                    not is_composite_cf and (  # Only if NOT composite CF
+                        shift_upper in ["C", "OFF"]
+                        or shift_upper.startswith("CF")
+                        or "CF " in shift_upper
+                    )
                 )
+
+                # DEBUG: Log composite CF processing in STEP 3
+                if "CF" in shift_upper and any(c.isdigit() for c in shift_upper):
+                    logger.warning(
+                        f"🎯 STEP 3 CF DEBUG: {schedule_name} {date}: "
+                        f"raw='{raw_ocr}' | is_composite={is_composite_cf} | is_off={is_off_code}"
+                    )
 
                 current = (
                     self.schedule[schedule_name][day_idx]
@@ -2282,10 +3754,16 @@ class RobustScheduler:
                     else None
                 )
 
-                # Explicit OFF sources: offRequest or OCR off code
-                if date in self.get_off_requests(schedule_name) or is_off_code:
+                # CRITICAL FIX: Composite CF shifts override offRequests
+                # Even if date is in offRequests, composite CF codes (e.g., "CF-4 07")
+                # are WORKING shifts and must be processed as such, not as OFF days.
+                is_off_request = date in self.get_off_requests(schedule_name)
+                
+                # Only treat as OFF if: (offRequest OR off_code) AND NOT composite CF
+                if (is_off_request or is_off_code) and not is_composite_cf:
                     if current and current.get("hours", 0) > 0:
-                        self._track_hours(schedule_name, date, -float(current["hours"]))
+                        # Remove a real shift - decrement shift count
+                        self._track_hours(schedule_name, date, -float(current["hours"]), shift_delta=-1)
                     if day_idx >= len(self.schedule.get(schedule_name, [])):
                         while len(self.schedule[schedule_name]) <= day_idx:
                             self.schedule[schedule_name].append(None)
@@ -2303,15 +3781,16 @@ class RobustScheduler:
                 if shift_upper == "*":
                     continue
 
-                # NIGHT TAIL DEDUP: Skip Z23 (plain, no B) that follows a night-start code.
-                # Z23 B is always a real shift. Only plain Z23 is a wrap-around tail.
-                if shift_upper == "Z23" and day_idx > 0:
-                    prev_raw = (pref_shifts[day_idx - 1] or "") if day_idx - 1 < len(pref_shifts) else ""
-                    prev_upper = str(prev_raw).strip().upper()
-                    if prev_upper in ("Z19", "Z23", "Z23 B"):
-                        # This is a wrap-around tail — keep current assignment (OFF from dedup)
-                        ocr_already_correct += 1
-                        continue
+                # OVERNIGHT TAIL MARKER: Only skip if OCR itself contains a ↩ marker
+                # (meaning OCR explicitly wants a tail, not a work shift)
+                if "↩" in raw_ocr:
+                    # OCR explicitly specifies continuation marker — keep it
+                    ocr_already_correct += 1
+                    continue
+
+                # OCR OVERRIDE: If OCR has a real shift code (like CF-11 07), it should
+                # REPLACE any system-placed Z23 tail, because OCR is authoritative.
+                # No longer protect Z23 tails from OCR overwrite — OCR wins.
 
                 if current and current.get("shift") == raw_ocr and current.get("shiftType") not in ("off", None):
                     ocr_already_correct += 1
@@ -2328,14 +3807,17 @@ class RobustScheduler:
                     "endTime": shift_info["end"],
                 }
                 old_label = current.get("shift", "OFF/None") if current else "None"
+                old_type = current.get("shiftType", "None") if current else "None"
                 logger.warning(
-                    f"  ⚠️ OCR CORRECTION: {schedule_name} on {date}: "
-                    f"'{old_label}' -> '{raw_ocr}' ({shift_info['type']}, {shift_info['hours']}h)"
+                    f"  🎯 STEP 3 OCR CORRECTION: {schedule_name} on {date}: "
+                    f"'{old_label}' (was {old_type}) -> '{raw_ocr}' (NOW shiftType={shift_info['type']}, hours={shift_info['hours']}h)"
                 )
 
                 if current and current.get("hours", 0) > 0:
-                    self._track_hours(schedule_name, date, -float(current["hours"]))
-                self._track_hours(schedule_name, date, float(shift_info["hours"]))
+                    # Replacing a real shift with OCR shift - adjust shift count
+                    self._track_hours(schedule_name, date, -float(current["hours"]), shift_delta=-1)
+                # Add the OCR shift
+                self._track_hours(schedule_name, date, float(shift_info["hours"]), shift_delta=1)
 
                 if day_idx < len(self.schedule.get(schedule_name, [])):
                     self.schedule[schedule_name][day_idx] = corrected_shift
@@ -2353,6 +3835,8 @@ class RobustScheduler:
         )
         logger.info("=" * 80)
 
+        logger.info(f"  ⏱ STEP 3 completed in {_time.monotonic() - _step_t0:.2f}s")
+        _step_t0 = _time.monotonic()
         # ============================================================
         # STEP 4: WORKLOAD EQUALIZATION
         # Swap shifts from over-target nurses (+delta) to under-target
@@ -2361,17 +3845,42 @@ class RobustScheduler:
         # ============================================================
         self._equalize_workload()
 
+        logger.info(f"  ⏱ STEP 4 (equalization) completed in {_time.monotonic() - _step_t0:.2f}s")
+        _step_t0 = _time.monotonic()
+        # ============================================================
+        # STEP 4.5: COVERAGE REBALANCING
+        # After equalization, some days may still be below minimum
+        # staffing because equalization only balances per-nurse hours,
+        # not per-day coverage.  This step moves shifts from overstaffed
+        # days to understaffed days to guarantee minimums are met.
+        # ============================================================
+        self._rebalance_daily_coverage()
+
+        logger.info(f"  ⏱ STEP 4.5 (coverage rebalance) completed in {_time.monotonic() - _step_t0:.2f}s")
+        _step_t0 = _time.monotonic()
+        # ============================================================
+        # STEP 4.75: TARGET COMPLETION
+        # After coverage rebalancing, some nurses may still be 1+ shifts
+        # short because the strict daily cap prevented assignment.
+        # This pass ignores the daily cap and tries to give each
+        # under-target nurse their remaining shifts.
+        # ============================================================
+        self._complete_target_hours()
+
+        logger.info(f"  ⏱ STEP 4.75 (target completion) completed in {_time.monotonic() - _step_t0:.2f}s")
+        _step_t0 = _time.monotonic()
         # ============================================================
         # STEP 5: FINAL SAFETY PASS
         # After all optimization, run a final sweep that:
-        #   (a) Re-applies night ghost dedup (catches any Z23 re-added
-        #       by STEP 3 / overlay / equalization).
+        #   (a) Enforces MCH night linkage (Z19/Z23 B → Z23 ↩ on N+1).
         #   (b) Enforces 12.5h max per nurse per day (hard limit).
         #   (c) Enforces max 3 consecutive work days.
         # This is the absolute last word before the schedule is returned.
         # ============================================================
         self._final_safety_pass()
+        logger.info(f"  ⏱ STEP 5 (safety pass) completed in {_time.monotonic() - _step_t0:.2f}s")
 
+        logger.info(f"  ⏱ TOTAL build_schedule time: {_time.monotonic() - _build_t0:.2f}s")
         self._validate_schedule()
         return self.schedule
     
@@ -2399,9 +3908,15 @@ class RobustScheduler:
         logger.info("STEP 4: WORKLOAD EQUALIZATION")
 
         MAX_SWAPS = 120  # Safety cap to avoid runaway loops
+        MAX_EQUALIZATION_SECONDS = 15  # Time-box equalization to prevent timeouts
+        _eq_start = _time.monotonic()
         swaps_done = 0
 
         for iteration in range(MAX_SWAPS):
+            # Time-based early exit
+            if _time.monotonic() - _eq_start > MAX_EQUALIZATION_SECONDS:
+                logger.info(f"  Equalization time limit ({MAX_EQUALIZATION_SECONDS}s) reached after {swaps_done} swaps.")
+                break
             # Recalculate deltas every iteration (they shift after each swap).
             nurse_deltas = []
             for nurse in self.nurse_names:
@@ -2444,8 +3959,18 @@ class RobustScheduler:
                         if (donor_name, date) in self.ocr_assignments:
                             continue
 
+                        # MCH Night Linkage: never swap Z19 (has Z23 ↩ on N+1)
+                        # or Z23 ↩ continuations (0h, not real shifts)
+                        donor_code = str(donor_shift.get("shift", "")).strip().upper()
+                        if donor_code in ("Z19", "Z23 B") or donor_shift.get("hours", 0) <= 0:
+                            continue
+
                         # Recipient must be OFF on this day
                         if recip_shift and recip_shift.get("hours", 0) > 0:
+                            continue
+
+                        # MCH Night Linkage: recipient's slot must not be locked for Z23 ↩
+                        if self._is_locked_for_night_continuation(recip_name, day_idx):
                             continue
 
                         # Recipient must not have an off-request on this day
@@ -2459,6 +3984,17 @@ class RobustScheduler:
                         # Recipient must pass can_work (includes rest rules + consecutive)
                         if not self.can_work(recip_name, date, is_night=is_night, hours=int(shift_hours)):
                             continue
+
+                        # Shift cap: never give a recipient more than their max shifts
+                        recip_shifts = self.nurse_total_shifts.get(recip_name, 0)
+                        if self._is_full_time(recip_name):
+                            if recip_shifts >= self.FT_MAX_SHIFTS_PER_PERIOD:
+                                continue
+                        else:
+                            recip_tbw = self.get_target_biweekly_hours(recip_name)
+                            recip_pt_max = max(1, int(recip_tbw / self.reference_shift_hours + 0.5))
+                            if recip_shifts >= recip_pt_max:
+                                continue
 
                         # Extra consecutive guard: verify the swap doesn't create
                         # >max_consecutive for the recipient (can_work checks this
@@ -2489,7 +4025,7 @@ class RobustScheduler:
 
                         # ── Execute the swap ──
                         # Remove shift from donor
-                        self._track_hours(donor_name, date, -float(shift_hours))
+                        self._track_hours(donor_name, date, -float(shift_hours), shift_delta=-1)
                         self.nurse_total_shifts[donor_name] = max(0, self.nurse_total_shifts.get(donor_name, 0) - 1)
                         self.schedule[donor_name][day_idx] = self.assign_off(donor_name, date)
 
@@ -2504,7 +4040,7 @@ class RobustScheduler:
                             "endTime": donor_shift.get("endTime", ""),
                         }
                         self.schedule[recip_name][day_idx] = new_shift
-                        self._track_hours(recip_name, date, float(shift_hours))
+                        self._track_hours(recip_name, date, float(shift_hours), shift_delta=1)
                         self.nurse_total_shifts[recip_name] = self.nurse_total_shifts.get(recip_name, 0) + 1
 
                         logger.info(
@@ -2532,50 +4068,463 @@ class RobustScheduler:
                 logger.info(f"  {marker} {name}: {delta:+.1f}h vs target")
         logger.info("=" * 80)
 
+    def _rebalance_daily_coverage(self) -> None:
+        """STEP 4.5 — Move shifts from overstaffed days to understaffed days.
+
+        After gap-filling and equalization, some days may still be below the
+        minimum staffing requirement because nurses ran out of target hours.
+        This step finds overstaffed days (above minimum + 1) and moves shifts
+        to understaffed days (below minimum) by relocating the same nurse's
+        shift from one day to another.
+
+        Only non-OCR, non-linkage shifts are eligible for relocation.
+        """
+        logger.info("=" * 80)
+        logger.info("STEP 4.5: COVERAGE REBALANCING — enforce daily minimums")
+
+        MAX_MOVES = 200
+        moves_done = 0
+        _rebal_start = _time.monotonic()
+        MAX_REBALANCE_SECONDS = 20
+
+        for _pass in range(MAX_MOVES):
+            if _time.monotonic() - _rebal_start > MAX_REBALANCE_SECONDS:
+                logger.info(f"  Coverage rebalancing time limit ({MAX_REBALANCE_SECONDS}s) reached after {moves_done} moves.")
+                break
+
+            # Compute per-day staffing
+            day_staff = {}
+            night_staff = {}
+            for day_idx, date in enumerate(self.date_list):
+                dc, nc = 0, 0
+                for nurse_name in self.nurse_names:
+                    shift = self.schedule[nurse_name][day_idx]
+                    if shift and shift.get("hours", 0) > 0:
+                        if shift.get("shiftType") == "day":
+                            dc += 1
+                        elif shift.get("shiftType") == "night":
+                            nc += 1
+                day_staff[day_idx] = dc
+                night_staff[day_idx] = nc
+
+            # Find most understaffed day (largest deficit)
+            worst_deficit = 0
+            worst_day_idx = -1
+            worst_type = None  # "day" or "night"
+            for day_idx in range(len(self.date_list)):
+                day_gap = self.day_req - day_staff[day_idx]
+                night_gap = self.night_req - night_staff[day_idx]
+                if day_gap > worst_deficit:
+                    worst_deficit = day_gap
+                    worst_day_idx = day_idx
+                    worst_type = "day"
+                if night_gap > worst_deficit:
+                    worst_deficit = night_gap
+                    worst_day_idx = day_idx
+                    worst_type = "night"
+
+            if worst_deficit <= 0:
+                logger.info(f"  All days meet minimum coverage after {moves_done} moves.")
+                break
+
+            target_date = self.date_list[worst_day_idx]
+            logger.info(
+                f"  Pass {_pass+1}: {target_date} needs {worst_deficit} more {worst_type} nurse(s) "
+                f"(has {day_staff[worst_day_idx]}/{self.day_req} day, {night_staff[worst_day_idx]}/{self.night_req} night)"
+            )
+
+            # Find a donor day with surplus for this shift type AND a nurse we can move
+            moved = False
+            # Sort donor days by surplus (most overstaffed first)
+            if worst_type == "day":
+                donor_days = sorted(
+                    [(di, day_staff[di] - self.day_req) for di in range(len(self.date_list)) if di != worst_day_idx and day_staff[di] > self.day_req],
+                    key=lambda x: -x[1]
+                )
+            else:
+                donor_days = sorted(
+                    [(di, night_staff[di] - self.night_req) for di in range(len(self.date_list)) if di != worst_day_idx and night_staff[di] > self.night_req],
+                    key=lambda x: -x[1]
+                )
+
+            for donor_day_idx, surplus in donor_days:
+                if moved:
+                    break
+                donor_date = self.date_list[donor_day_idx]
+
+                # Find a nurse working on donor_date with matching type who is OFF on target_date
+                for nurse_name in self.nurse_names:
+                    if nurse_name in self.nurses_on_leave:
+                        continue
+                    donor_shift = self.schedule[nurse_name][donor_day_idx]
+                    target_shift = self.schedule[nurse_name][worst_day_idx]
+
+                    # Must have a work shift of the right type on donor day
+                    if not donor_shift or donor_shift.get("hours", 0) <= 0:
+                        continue
+                    if donor_shift.get("shiftType") != worst_type:
+                        continue
+
+                    # Must NOT be OCR-assigned
+                    if (nurse_name, donor_date) in self.ocr_assignments:
+                        continue
+
+                    # Must not be a linkage shift (Z19, Z23 B)
+                    donor_code = str(donor_shift.get("shift", "")).strip().upper()
+                    if donor_code in ("Z19", "Z23 B", "Z23B"):
+                        continue
+
+                    # Must be OFF on target day
+                    if target_shift and target_shift.get("hours", 0) > 0:
+                        continue
+
+                    # Must not have an off-request on target day
+                    if target_date in self.get_off_requests(nurse_name):
+                        continue
+
+                    # Must not be locked for night continuation on target day
+                    if self._is_locked_for_night_continuation(nurse_name, worst_day_idx):
+                        continue
+
+                    is_night = worst_type == "night"
+                    shift_hours = donor_shift.get("hours", 12)
+
+                    # Must be able to work on target day (rest, consecutive, etc.)
+                    if not self.can_work(nurse_name, target_date, is_night=is_night, hours=int(shift_hours)):
+                        continue
+
+                    # Check consecutive stretch on target day
+                    recip_stretch = self._get_consecutive_stretch(nurse_name, worst_day_idx)
+                    if recip_stretch > self.max_consecutive:
+                        continue
+
+                    # Minimum rest: can't work day after a night
+                    if is_night and worst_day_idx + 1 < len(self.date_list):
+                        next_shift = self.schedule[nurse_name][worst_day_idx + 1]
+                        if next_shift and next_shift.get("shiftType") == "day" and next_shift.get("hours", 0) > 0:
+                            continue
+
+                    # ── Execute the move ──
+                    # Remove shift from donor day
+                    self._track_hours(nurse_name, donor_date, -float(shift_hours), shift_delta=-1)
+                    self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                    self.schedule[nurse_name][donor_day_idx] = self.assign_off(nurse_name, donor_date)
+
+                    # Place shift on target day
+                    new_shift = {
+                        "id": str(uuid.uuid4()),
+                        "date": target_date,
+                        "shift": donor_shift.get("shift", ""),
+                        "shiftType": worst_type,
+                        "hours": shift_hours,
+                        "startTime": donor_shift.get("startTime", ""),
+                        "endTime": donor_shift.get("endTime", ""),
+                    }
+                    self.schedule[nurse_name][worst_day_idx] = new_shift
+                    self._track_hours(nurse_name, target_date, float(shift_hours), shift_delta=1)
+                    self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+
+                    logger.info(
+                        f"    MOVE #{moves_done + 1}: {nurse_name} {donor_shift.get('shift','')} "
+                        f"{donor_date} -> {target_date} ({worst_type})"
+                    )
+                    moves_done += 1
+                    moved = True
+                    break  # restart scan with updated staffing
+
+            if not moved:
+                logger.warning(
+                    f"  Could not find a movable shift for {target_date} ({worst_type}). "
+                    f"Deficit remains: {worst_deficit}"
+                )
+                # Mark this day/type as unfillable to avoid looping forever
+                # by trying to fill it in the next pass: set the requirement
+                # effectively to current level for this scan
+                break
+
+        logger.info(f"COVERAGE REBALANCING COMPLETE: {moves_done} shifts relocated")
+        logger.info("=" * 80)
+
+    def _complete_target_hours(self) -> None:
+        """STEP 4.75 — Final target completion for under-target nurses.
+
+        After gap-filling + equalization + coverage rebalancing, some nurses
+        may still be short by 1+ shifts because the strict daily staff cap
+        (base_cap + 1) prevented them from being assigned.
+
+        This pass **ignores the daily staff cap** and assigns shifts on any
+        available day where the nurse can legally work, respecting all other
+        constraints:
+          • Off requests
+          • Shift count limit (FT=7, PT=derived)
+          • Biweekly target hours (with tolerance)
+          • Consecutive-day limit
+          • Night-rest guard (12h min between night→day)
+          • OCR-locked slots
+        """
+        logger.info("=" * 80)
+        logger.info("STEP 4.75: TARGET COMPLETION — fill under-target nurses (ignoring daily cap)")
+
+        assignments = 0
+        ref_date = self.date_list[0] if self.date_list else None
+        if not ref_date:
+            return
+
+        # Build list of under-target nurses (delta < -3.75 = half a shift)
+        under_target = []
+        for nurse in self.nurse_names:
+            delta = self.get_target_delta(nurse, ref_date)
+            if delta < -3.75:
+                under_target.append((nurse, delta))
+        under_target.sort(key=lambda x: x[1])  # most under first
+
+        if not under_target:
+            logger.info("  All nurses at or above target — nothing to do.")
+            logger.info("=" * 80)
+            return
+
+        logger.info(f"  {len(under_target)} nurses under target:")
+        for name, delta in under_target:
+            shifts = self.get_period_shift_count(name, ref_date)
+            logger.info(f"    {name}: {delta:+.1f}h ({shifts} shifts)")
+
+        for nurse_name, _ in under_target:
+            # Re-check delta (previous iterations may have changed things)
+            delta = self.get_target_delta(nurse_name, ref_date)
+            if delta >= -3.75:
+                continue
+
+            # Decide preferred shift length: if FT nurse still needs Z-shifts,
+            # try 12h first; otherwise 8h first (smaller, more flexible).
+            prefer_12h = self.ft_needs_z_shift(nurse_name, ref_date)
+
+            # Collect candidate days (OFF slots that aren't off-requests/OCR)
+            day_scores = []
+            for day_idx, date in enumerate(self.date_list):
+                entry = self.schedule[nurse_name][day_idx]
+                # Only consider OFF or empty slots
+                if entry and entry.get("hours", 0) > 0:
+                    continue
+                # Skip OCR-locked days
+                if (nurse_name, date) in self.ocr_assignments:
+                    continue
+                # Count current staffing (for sorting)
+                total_staff = sum(
+                    1 for n in self.nurse_names
+                    if day_idx < len(self.schedule[n])
+                    and self.schedule[n][day_idx]
+                    and self.schedule[n][day_idx].get("hours", 0) > 0
+                )
+                day_scores.append((day_idx, date, total_staff))
+
+            # Prefer understaffed days
+            day_scores.sort(key=lambda x: x[2])
+
+            for day_idx, date, total_staff in day_scores:
+                delta = self.get_target_delta(nurse_name, ref_date)
+                if delta >= -3.75:
+                    break
+
+                assigned = False
+                # Build shift attempt order
+                if prefer_12h:
+                    attempts = [
+                        ("day", 12, 11.25),
+                        ("day", 8, 7.5),
+                        ("night", 8, 7.5),
+                    ]
+                else:
+                    attempts = [
+                        ("day", 8, 7.5),
+                        ("day", 12, 11.25),
+                        ("night", 8, 7.5),
+                    ]
+
+                for shift_type, shift_hours_param, paid_hours in attempts:
+                    is_night = shift_type == "night"
+                    if self.can_work(nurse_name, date, is_night=is_night, hours=shift_hours_param):
+                        shift_entry = self.assign_shift(nurse_name, date, shift_type, hours=shift_hours_param)
+                        self.schedule[nurse_name][day_idx] = shift_entry
+                        self._track_hours(nurse_name, date, paid_hours, shift_delta=1)
+                        self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+                        assignments += 1
+                        code = shift_entry.get("shift", "?")
+                        logger.info(
+                            f"  TARGET-FILL: {nurse_name} ← {code} ({paid_hours}h) on {date} "
+                            f"[day total staff → {total_staff + 1}]"
+                        )
+                        assigned = True
+                        break
+
+                if not assigned:
+                    logger.debug(
+                        f"  TARGET-FILL: no valid slot for {nurse_name} on {date}"
+                    )
+
+        logger.info(f"TARGET COMPLETION: {assignments} shifts assigned")
+        if assignments > 0:
+            for nurse_name, _ in under_target:
+                delta = self.get_target_delta(nurse_name, ref_date)
+                shifts = self.get_period_shift_count(nurse_name, ref_date)
+                marker = "✓" if delta >= -3.75 else "⚠️"
+                logger.info(f"  {marker} {nurse_name}: {delta:+.1f}h ({shifts} shifts)")
+        logger.info("=" * 80)
+
     def _final_safety_pass(self) -> None:
         """STEP 5 — Final safety sweep after all optimization.
 
-        (a) Re-dedup night ghost tails (in case STEP 3/4 re-added them).
+        (a) Enforce MCH night linkage: Z19/Z23 B → Z23 tail on N+1.
         (b) Enforce 12.5h max per nurse per day (hard limit).
         (c) Enforce max consecutive work days.
         """
         logger.info("=" * 80)
         logger.info("STEP 5: FINAL SAFETY PASS")
 
-        NIGHT_DEDUP = {
-            "Z19":   {"Z23"},
-            "Z23":   {"Z23"},
-            "Z23 B": {"Z23"},
-        }
-
-        # (a) Re-dedup night ghost tails
-        ghost_fixes = 0
+        # (a) Night linkage enforcement — Z19→Z23 B→Z23 mandatory pattern.
+        #     Bridge/tail model: Z23 B = 11.25h, Z23 = 0h.
+        #     Z19 on day N → Z23 B(11.25h) on N+1 → Z23(0h) on N+2
+        #     Z23 B on day N → Z23(0h) on N+1
+        linkage_fixes = 0
         for nurse_name in self.nurse_names:
             row = self.schedule.get(nurse_name, [])
-            for day_idx in range(1, len(row)):
-                prev = row[day_idx - 1]
+            for day_idx in range(len(row)):
                 curr = row[day_idx]
-                if not prev or not curr:
+                if not curr:
                     continue
-                if prev.get("hours", 0) <= 0 or curr.get("hours", 0) <= 0:
+                curr_code = str(curr.get("shift", "")).strip().upper()
+                curr_h = float(curr.get("hours", 0) or 0)
+                if curr_h <= 0:
                     continue
-                prev_code = str(prev.get("shift", "")).replace("↩", "").strip().upper()
-                curr_code = str(curr.get("shift", "")).replace("↩", "").strip().upper()
-                tails = NIGHT_DEDUP.get(prev_code)
-                if tails and curr_code in tails:
-                    old_h = curr.get("hours", 0)
-                    if old_h > 0:
-                        self._track_hours(nurse_name, self.date_list[day_idx], -float(old_h))
-                    self.nurse_total_shifts[nurse_name] = max(
-                        0, self.nurse_total_shifts.get(nurse_name, 0) - 1
-                    )
-                    row[day_idx] = self.assign_off(nurse_name, self.date_list[day_idx])
-                    self.ocr_assignments.discard((nurse_name, self.date_list[day_idx]))
-                    ghost_fixes += 1
-                    logger.info(
-                        f"  GHOST FIX: {nurse_name} {self.date_list[day_idx]}: "
-                        f"'{curr_code}' after '{prev_code}' → zeroed ({old_h}h)"
-                    )
+                if curr_code not in ("Z19", "Z23 B", "Z23B"):
+                    continue
+
+                is_z19 = (curr_code == "Z19")
+
+                if day_idx + 1 < len(self.date_list):
+                    while len(row) <= day_idx + 1:
+                        row.append(None)
+                    nxt = row[day_idx + 1]
+                    nxt_code = str(nxt.get("shift", "")).strip().upper() if nxt else ""
+                    nxt_h = float(nxt.get("hours", 0) or 0) if nxt else 0
+                    next_date = self.date_list[day_idx + 1]
+
+                    if is_z19:
+                        # Z19 → must have Z23 B(11.25h) on N+1
+                        if nxt and "Z23" in nxt_code:
+                            if nxt_code in ("Z23 B", "Z23B"):
+                                # Already Z23 B — fix hours if needed
+                                if nxt_h != 11.25:
+                                    old_h = nxt_h
+                                    if old_h > 0:
+                                        self._track_hours(nurse_name, next_date, -float(old_h), shift_delta=-1, is_12h_shift=(old_h >= 10))
+                                        self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                                    nxt["hours"] = 11.25
+                                    nxt["shiftType"] = "night"
+                                    self._track_hours(nurse_name, next_date, 11.25, shift_delta=1, is_12h_shift=True)
+                                    self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+                                    linkage_fixes += 1
+                                    logger.info(f"  ⛓️ SAFETY FIX: {nurse_name} {next_date}: Z23 B hours {old_h}→11.25 (after Z19)")
+                            else:
+                                # Plain Z23 or other — upgrade to Z23 B
+                                old_h = nxt_h
+                                if old_h > 0:
+                                    self._track_hours(nurse_name, next_date, -float(old_h), shift_delta=-1)
+                                    self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                                nxt["shift"] = "Z23 B"
+                                nxt["hours"] = 11.25
+                                nxt["shiftType"] = "night"
+                                self._track_hours(nurse_name, next_date, 11.25, shift_delta=1, is_12h_shift=True)
+                                self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+                                linkage_fixes += 1
+                                logger.info(f"  ⛓️ SAFETY FIX: {nurse_name} {next_date}: UPGRADED to Z23 B (after Z19)")
+                        elif not nxt or nxt.get("shiftType") == "off" or nxt_h == 0:
+                            # Empty — place Z23 B bridge
+                            row[day_idx + 1] = {
+                                "id": str(uuid.uuid4()), "date": next_date, "shift": "Z23 B",
+                                "shiftType": "night", "hours": 11.25, "startTime": "00:00", "endTime": "07:25"
+                            }
+                            self._track_hours(nurse_name, next_date, 11.25, shift_delta=1, is_12h_shift=True)
+                            self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+                            linkage_fixes += 1
+                            logger.info(f"  ⛓️ SAFETY ADD: {nurse_name} {next_date}: added Z23 B bridge after Z19")
+                        else:
+                            logger.warning(f"  ⚠️ LINKAGE CONFLICT: {nurse_name} {next_date}: '{nxt_code}' after Z19 — cannot place Z23 B")
+
+                        # Z19 also needs Z23 tail on N+2
+                        if day_idx + 2 < len(self.date_list):
+                            while len(row) <= day_idx + 2:
+                                row.append(None)
+                            tail = row[day_idx + 2]
+                            tail_code = str(tail.get("shift", "")).strip().upper() if tail else ""
+                            tail_h = float(tail.get("hours", 0) or 0) if tail else 0
+                            tail_date = self.date_list[day_idx + 2]
+                            if tail and "Z23" in tail_code:
+                                if tail_code in ("Z23 B", "Z23B"):
+                                    pass  # Extends the rotation — OK
+                                elif tail_code == "Z23" and tail_h != 0:
+                                    tail["hours"] = 0
+                                    if tail_h > 0:
+                                        self._track_hours(nurse_name, tail_date, -float(tail_h), shift_delta=-1)
+                                        self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                                    linkage_fixes += 1
+                                    logger.info(f"  ⛓️ SAFETY FIX: {nurse_name} {tail_date}: Z23 tail hours {tail_h}→0 (N+2 after Z19)")
+                            elif not tail or tail.get("shiftType") == "off" or tail_h == 0:
+                                row[day_idx + 2] = {
+                                    "id": str(uuid.uuid4()), "date": tail_date, "shift": "Z23",
+                                    "shiftType": "night", "hours": 0, "startTime": "00:00", "endTime": "07:25"
+                                }
+                                linkage_fixes += 1
+                                logger.info(f"  ⛓️ SAFETY ADD: {nurse_name} {tail_date}: added Z23 tail (N+2 after Z19→Z23 B)")
+
+                    else:
+                        # Z23 B → Z23 tail on N+1
+                        if nxt and "Z23" in nxt_code:
+                            if nxt_code in ("Z23 B", "Z23B"):
+                                if nxt_h != 11.25:
+                                    old_h = nxt_h
+                                    if old_h > 0:
+                                        self._track_hours(nurse_name, next_date, -float(old_h), shift_delta=-1, is_12h_shift=(old_h >= 10))
+                                        self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                                    nxt["hours"] = 11.25
+                                    nxt["shiftType"] = "night"
+                                    self._track_hours(nurse_name, next_date, 11.25, shift_delta=1, is_12h_shift=True)
+                                    self.nurse_total_shifts[nurse_name] = self.nurse_total_shifts.get(nurse_name, 0) + 1
+                                    linkage_fixes += 1
+                                    logger.info(f"  ⛓️ SAFETY FIX: {nurse_name} {next_date}: Z23 B hours {old_h}→11.25 (after Z23 B)")
+                            elif nxt_code == "Z23" and nxt_h != 0:
+                                old_h = nxt_h
+                                nxt["hours"] = 0
+                                if old_h > 0:
+                                    self._track_hours(nurse_name, next_date, -float(old_h), shift_delta=-1)
+                                    self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                                linkage_fixes += 1
+                                logger.info(f"  ⛓️ SAFETY FIX: {nurse_name} {next_date}: Z23 tail hours {old_h}→0 (after Z23 B)")
+                            elif "↩" in nxt_code:
+                                nxt["shift"] = "Z23"
+                                nxt["hours"] = 0
+                                linkage_fixes += 1
+                        elif not nxt or nxt.get("shiftType") == "off" or nxt_h == 0:
+                            row[day_idx + 1] = {
+                                "id": str(uuid.uuid4()), "date": next_date, "shift": "Z23",
+                                "shiftType": "night", "hours": 0, "startTime": "00:00", "endTime": "07:25"
+                            }
+                            linkage_fixes += 1
+                            logger.info(f"  ⛓️ SAFETY ADD: {nurse_name} {next_date}: added Z23 tail after Z23 B")
+                        else:
+                            # CRITICAL FIX: Remove the conflicting shift and force Z23 tail
+                            logger.warning(f"  ⚠️ LINKAGE CONFLICT: {nurse_name} {next_date}: '{nxt_code}' after Z23 B — REMOVING conflicting shift and forcing Z23 tail")
+                            old_h = nxt_h
+                            if old_h > 0:
+                                self._track_hours(nurse_name, next_date, -float(old_h), shift_delta=-1, is_12h_shift=(old_h >= 10))
+                                self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                            row[day_idx + 1] = {
+                                "id": str(uuid.uuid4()), "date": next_date, "shift": "Z23",
+                                "shiftType": "night", "hours": 0, "startTime": "00:00", "endTime": "07:25"
+                            }
+                            linkage_fixes += 1
+                            logger.info(f"  ⛓️ SAFETY FIX: {nurse_name} {next_date}: removed '{nxt_code}' ({old_h}h) and placed Z23 tail (after Z23 B)")
+
+        logger.info(f"  Night linkage fixes: {linkage_fixes}")
 
         # (b) 12.5h per-day max (prevent shift stacking — user hard limit)
         MAX_DAILY_H = self.MAX_HOURS_PER_DAY  # 12.5h
@@ -2597,6 +4546,8 @@ class RobustScheduler:
 
         # (c) Max consecutive work days — remove non-OCR tail shifts that
         #     exceed self.max_consecutive (default 3).
+        #     NEVER remove Z23 B (bridge) or Z23 (tail) — they are mandatory
+        #     night rotation continuations that cannot be individually removed.
         consec_fixes = 0
         for nurse_name in self.nurse_names:
             row = self.schedule.get(nurse_name, [])
@@ -2618,26 +4569,42 @@ class RobustScheduler:
                     streak_len = 0
 
                 if streak_len > self.max_consecutive:
-                    # Remove the excess shift (prefer removing non-OCR)
+                    # Remove the excess shift (prefer removing non-OCR, non-night-rotation)
                     # Try removing from the tail of the streak first
                     remove_idx = day_idx
                     date = self.date_list[remove_idx]
-                    if (nurse_name, date) in self.ocr_assignments:
-                        # Can't remove OCR shift — try removing the one just before it
-                        for try_idx in range(day_idx - 1, streak_start - 1, -1):
-                            try_date = self.date_list[try_idx]
-                            if (nurse_name, try_date) not in self.ocr_assignments:
-                                remove_idx = try_idx
-                                date = try_date
-                                break
-                        else:
-                            # All OCR — can't fix, skip
-                            continue
+
+                    # Find a removable shift — skip OCR, Z19, Z23 B, Z23 (night rotation)
+                    def _is_removable(idx):
+                        d = self.date_list[idx]
+                        if (nurse_name, d) in self.ocr_assignments:
+                            return False
+                        s = row[idx]
+                        if not s:
+                            return False
+                        sc = str(s.get("shift", "")).strip().upper()
+                        # Never remove night rotation components
+                        if sc in ("Z19", "Z23 B", "Z23B", "Z23"):
+                            return False
+                        return True
+
+                    # Search for a removable shift in the streak (tail-first)
+                    found = False
+                    for try_idx in range(day_idx, streak_start - 1, -1):
+                        if _is_removable(try_idx):
+                            remove_idx = try_idx
+                            date = self.date_list[remove_idx]
+                            found = True
+                            break
+                    
+                    if not found:
+                        # All shifts in streak are OCR or night rotation — skip
+                        continue
 
                     removed_shift = row[remove_idx]
                     removed_hours = removed_shift.get("hours", 0)
                     if removed_hours > 0:
-                        self._track_hours(nurse_name, date, -float(removed_hours))
+                        self._track_hours(nurse_name, date, -float(removed_hours), shift_delta=-1)
                     self.nurse_total_shifts[nurse_name] = max(
                         0, self.nurse_total_shifts.get(nurse_name, 0) - 1
                     )
@@ -2651,9 +4618,206 @@ class RobustScheduler:
                     streak_start = None
                     streak_len = 0
 
+        # (d) FT max 7 shifts per period / PT max shifts — HARD CONSTRAINT
+        #     Remove excess shifts (prefer non-OCR, non-night-rotation) if nurse exceeds limit
+        shift_limit_fixes = 0
+        for nurse_name in self.nurse_names:
+            is_ft = self._is_full_time(nurse_name)
+            if is_ft:
+                max_shifts = self.FT_MAX_SHIFTS_PER_PERIOD
+            else:
+                # PT: derive from target biweekly hours / reference shift hours
+                target_bw = self.get_target_biweekly_hours(nurse_name)
+                max_shifts = max(1, int(target_bw / self.reference_shift_hours + 0.5))
+            
+            # Count current paid shifts
+            shift_count = 0
+            shift_indices = []  # (day_idx, is_ocr, hours, is_night_rotation)
+            row = self.schedule.get(nurse_name, [])
+            for day_idx, shift in enumerate(row):
+                if shift and shift.get("hours", 0) > 0 and shift.get("shiftType") not in ("off", None):
+                    date = self.date_list[day_idx] if day_idx < len(self.date_list) else ""
+                    is_ocr = (nurse_name, date) in self.ocr_assignments
+                    sc = str(shift.get("shift", "")).strip().upper()
+                    # Night rotation shifts (Z19, Z23 B) must not be individually removed
+                    # as that breaks the mandatory Z19→Z23 B→Z23 chain
+                    is_night_rot = sc in ("Z19", "Z23 B", "Z23B")
+                    shift_indices.append((day_idx, is_ocr, shift.get("hours", 0), is_night_rot))
+                    shift_count += 1
+            
+            # Remove excess shifts (prefer non-OCR non-night-rotation day shifts, from the end)
+            while shift_count > max_shifts:
+                # First try: non-OCR, non-night-rotation shifts
+                removable = [(idx, h) for idx, is_ocr, h, is_nr in shift_indices if not is_ocr and not is_nr]
+                if not removable:
+                    # Second try: non-OCR night rotation — remove entire rotation (Z19 + Z23 B = -2 shifts)
+                    nr_shifts = [(idx, h) for idx, is_ocr, h, is_nr in shift_indices if not is_ocr and is_nr]
+                    if nr_shifts:
+                        # Find a Z19 and remove the whole rotation (Z19 + Z23 B)
+                        z19_found = False
+                        for idx, h in nr_shifts:
+                            sc = str(row[idx].get("shift", "")).strip().upper()
+                            if sc == "Z19":
+                                # Remove Z19
+                                date = self.date_list[idx]
+                                self._track_hours(nurse_name, date, -float(h), shift_delta=-1)
+                                self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                                row[idx] = self.assign_off(nurse_name, date)
+                                shift_indices = [(i, o, hs, nr) for i, o, hs, nr in shift_indices if i != idx]
+                                shift_count -= 1
+                                shift_limit_fixes += 1
+                                logger.info(f"  SHIFT LIMIT: {nurse_name} {date}: removed Z19 (whole rotation)")
+                                # Remove Z23 B on next day
+                                bridge_idx = idx + 1
+                                if bridge_idx < len(row):
+                                    bridge = row[bridge_idx]
+                                    if bridge:
+                                        bsc = str(bridge.get("shift", "")).strip().upper()
+                                        bh = float(bridge.get("hours", 0) or 0)
+                                        if bsc in ("Z23 B", "Z23B") and bh > 0:
+                                            bdate = self.date_list[bridge_idx]
+                                            self._track_hours(nurse_name, bdate, -bh, shift_delta=-1)
+                                            self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                                            row[bridge_idx] = self.assign_off(nurse_name, bdate)
+                                            shift_indices = [(i, o, hs, nr) for i, o, hs, nr in shift_indices if i != bridge_idx]
+                                            shift_count -= 1
+                                            shift_limit_fixes += 1
+                                            logger.info(f"  SHIFT LIMIT: {nurse_name} {bdate}: removed Z23 B (from rotation)")
+                                # Remove Z23 tail on day after bridge
+                                tail_idx = idx + 2
+                                if tail_idx < len(row):
+                                    tail = row[tail_idx]
+                                    if tail:
+                                        tsc = str(tail.get("shift", "")).strip().upper()
+                                        if tsc == "Z23" and float(tail.get("hours", 0) or 0) == 0:
+                                            tdate = self.date_list[tail_idx]
+                                            row[tail_idx] = self.assign_off(nurse_name, tdate)
+                                            logger.info(f"  SHIFT LIMIT: {nurse_name} {tdate}: removed Z23 tail (from rotation)")
+                                z19_found = True
+                                break
+                        if not z19_found:
+                            logger.warning(f"  SHIFT LIMIT: {nurse_name} has {shift_count} shifts (max={max_shifts}) but no removable Z19 rotation")
+                            break
+                    else:
+                        logger.warning(
+                            f"  SHIFT LIMIT: {nurse_name} has {shift_count} shifts "
+                            f"(all OCR) - cannot enforce max {max_shifts}"
+                        )
+                        break
+                else:
+                    remove_idx, removed_hours = removable[-1]  # Last removable shift
+                    date = self.date_list[remove_idx]
+                    if removed_hours > 0:
+                        self._track_hours(nurse_name, date, -float(removed_hours), shift_delta=-1)
+                    self.nurse_total_shifts[nurse_name] = max(
+                        0, self.nurse_total_shifts.get(nurse_name, 0) - 1
+                    )
+                    row[remove_idx] = self.assign_off(nurse_name, date)
+                    shift_indices = [(i, o, hs, nr) for i, o, hs, nr in shift_indices if i != remove_idx]
+                    shift_count -= 1
+                    shift_limit_fixes += 1
+                    logger.info(
+                        f"  SHIFT LIMIT: {nurse_name} {date}: removed shift "
+                        f"to enforce max {max_shifts} shifts ({'FT' if is_ft else 'PT'})"
+                    )
+
+        # (e) FT min 5 Z-shifts per period — upgrade 8h shifts to 12h
+        #     If an FT nurse has too many 8h shifts, upgrade them to 12h
+        #     to ensure minimum Z-shift count and approach 75h target.
+        z_upgrade_fixes = 0
+        for nurse_name in self.nurse_names:
+            if not self._is_full_time(nurse_name):
+                continue
+
+            row = self.schedule.get(nurse_name, [])
+            z_count = 0
+            eight_h_indices = []  # (day_idx, shift_type) — candidates for upgrade
+
+            for day_idx, shift in enumerate(row):
+                if shift and shift.get("hours", 0) > 0 and shift.get("shiftType") not in ("off", None):
+                    hours = shift.get("hours", 0)
+                    if hours >= 10.0:
+                        z_count += 1
+                    elif hours >= 7.0 and hours < 10.0:
+                        # Exclude Z23 B — it's a bridge shift (11.25h), not an 8h shift
+                        sc = str(shift.get("shift", "")).strip().upper()
+                        if sc in ("Z23 B", "Z23B"):
+                            continue
+                        eight_h_indices.append((day_idx, shift.get("shiftType", "day")))
+
+            if z_count < self.FT_MIN_Z_SHIFTS and eight_h_indices:
+                upgrades_needed = self.FT_MIN_Z_SHIFTS - z_count
+                for day_idx, shift_type in eight_h_indices[:upgrades_needed]:
+                    date = self.date_list[day_idx]
+                    old_shift = row[day_idx]
+                    old_hours = old_shift.get("hours", 7.5)
+
+                    # Remove old shift hours and re-assign as 12h
+                    self._track_hours(nurse_name, date, -float(old_hours), shift_delta=-1, is_12h_shift=False)
+                    self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                    row[day_idx] = self.assign_shift(nurse_name, date, shift_type, hours=12)
+                    z_upgrade_fixes += 1
+                    logger.info(
+                        f"  Z-UPGRADE: {nurse_name} {date}: upgraded {old_hours}h → 12h "
+                        f"(Z-shifts now: {z_count + 1}/{self.FT_MIN_Z_SHIFTS} min)"
+                    )
+                    z_count += 1
+
+        # (f) HARD TARGET-HOURS CAP — strip excess shifts for ALL nurses
+        #     who would exceed their biweekly target hours.  Remove non-OCR
+        #     shifts from the tail of the period until hours ≤ target.
+        target_hours_fixes = 0
+        for nurse_name in self.nurse_names:
+            if nurse_name in self.nurses_on_leave:
+                continue
+            row = self.schedule.get(nurse_name, [])
+            # Check each period
+            for period_key in set(self.date_to_period.values()):
+                target_h = self.get_period_target_hours(nurse_name, period_key)
+                current_h = self.nurse_period_target_hours.get(nurse_name, {}).get(period_key, 0)
+                if current_h <= target_h + 0.5:
+                    continue  # Within target
+
+                # Collect removable shifts (non-OCR, with hours>0) in this period
+                period_dates = self.period_to_dates.get(period_key, [])
+                removable = []
+                for day_idx, shift in enumerate(row):
+                    if day_idx >= len(self.date_list):
+                        break
+                    date = self.date_list[day_idx]
+                    if date not in period_dates:
+                        continue
+                    if not shift or shift.get("hours", 0) <= 0:
+                        continue
+                    if shift.get("shiftType") in ("off", None):
+                        continue
+                    is_ocr = (nurse_name, date) in self.ocr_assignments
+                    if is_ocr:
+                        continue
+                    removable.append((day_idx, date, shift))
+
+                # Remove from the end backwards until within target
+                for day_idx, date, shift in reversed(removable):
+                    current_h = self.nurse_period_target_hours.get(nurse_name, {}).get(period_key, 0)
+                    if current_h <= target_h + 0.5:
+                        break
+                    removed_hours = float(shift.get("hours", 0))
+                    is_12h = removed_hours >= 10.0
+                    self._track_hours(nurse_name, date, -removed_hours, shift_delta=-1, is_12h_shift=is_12h)
+                    self.nurse_total_shifts[nurse_name] = max(0, self.nurse_total_shifts.get(nurse_name, 0) - 1)
+                    row[day_idx] = self.assign_off(nurse_name, date)
+                    target_hours_fixes += 1
+                    new_h = self.nurse_period_target_hours.get(nurse_name, {}).get(period_key, 0)
+                    logger.info(
+                        f"  TARGET CAP: {nurse_name} {date}: removed {shift.get('shift','')} "
+                        f"({removed_hours}h) — now {new_h:.1f}h / {target_h:.1f}h target"
+                    )
+
         logger.info(
-            f"SAFETY PASS COMPLETE: {ghost_fixes} ghost fixes, "
-            f"{stack_fixes} stack caps, {consec_fixes} consecutive fixes"
+            f"SAFETY PASS COMPLETE: {linkage_fixes} night linkage fixes, "
+            f"{stack_fixes} stack caps, {consec_fixes} consecutive fixes, "
+            f"{shift_limit_fixes} shift limit fixes, {z_upgrade_fixes} Z-shift upgrades, "
+            f"{target_hours_fixes} target-hours cap removals"
         )
         logger.info("=" * 80)
 
@@ -2701,7 +4865,10 @@ class RobustScheduler:
                 if not shift_code or not str(shift_code).strip():
                     continue
                 shift_upper = str(shift_code).upper().strip()
-                if shift_upper in ["C", "OFF"] or shift_upper.startswith("CF"):
+                if shift_upper in ["C", "OFF"] or (
+                    shift_upper.startswith("CF")
+                    and not RobustScheduler._is_composite_cf_shift(shift_code)
+                ):
                     continue
                 if shift_upper == "*":
                     continue
@@ -2721,7 +4888,34 @@ class RobustScheduler:
         return False
     
     def _get_shift_metadata(self, shift_code: str) -> Dict:
-        """Get metadata for a shift code."""
+        """Get metadata for a shift code.
+        
+        Returns PAID hours (actual work time minus breaks) for target tracking.
+        - 12h shifts (Z-codes): 11.25h paid (12h minus 0.75h break)
+        - 8h shifts: 7.5h paid (8h minus 0.5h break)
+        MCH Rule: Z19 = ALWAYS 11.25h (full night including Z23 continuation).
+        """
+        code_upper = shift_code.strip().upper()
+
+        # CRITICAL: Handle composite CF codes FIRST (e.g., "CF-4 07", "CF-11 Z07")
+        # These are WORKING shifts on statutory holidays, not off days.
+        # Extract the embedded shift code and get its metadata.
+        if self._is_composite_cf_shift(shift_code):
+            # Regex: CF[-\s]?\d+\s+(shift_code)
+            import re
+            match = re.search(r'CF[-\s]?\d+\s+(Z?(?:07|11|19|23|E15)(?:\s*B)?)', code_upper)
+            if match:
+                embedded_code = match.group(1).strip()
+                # Recursively get metadata for the embedded shift code
+                embedded_meta = self._get_shift_metadata(embedded_code)
+                # Return same metadata but preserve original composite code
+                return embedded_meta
+
+        # MCH Rule: Z19 alone = full 12h night (11.25h paid).
+        # This includes the Z23 continuation — MUST override shifts_info.
+        if code_upper == "Z19":
+            return {"type": "night", "hours": 11.25, "start": "19:00", "end": "07:25"}
+
         if shift_code in self.shifts_info:
             info = self.shifts_info[shift_code]
             return {
@@ -2731,21 +4925,34 @@ class RobustScheduler:
                 "end": info.get("endTime", "19:00"),
             }
 
-        code_upper = shift_code.upper()
-        if "N" in code_upper or "19" in code_upper or "23" in code_upper:
-            if "Z19" in code_upper:
-                return {"type": "night", "hours": 11.25, "start": "19:00", "end": "07:25"}
-            if "Z23" in code_upper:
-                # Z23 and Z23 B are both 12-hour night shifts (11.25 paid hours)
-                return {"type": "night", "hours": 11.25, "start": "23:00", "end": "11:25"}
-            # Plain 23 (no Z prefix) is an 8-hour night shift
+        # MCH merged night shift patterns - use PAID hours (11.25h)
+        if "Z19" in code_upper and "Z23" in code_upper:
+            # Z19 Z23 B or Z19 Z23 - merged 12h night: 11.25h paid (19:00-07:25)
+            return {"type": "night", "hours": 11.25, "start": "19:00", "end": "07:25"}
+        
+        if "Z19" in code_upper:
+            # Any Z19 variant: full 12h night = 11.25h paid
+            return {"type": "night", "hours": 11.25, "start": "19:00", "end": "07:25"}
+            
+        if "Z23" in code_upper:
+            # Z23 B = Back shift (00:00-07:25, 7.25h paid)
+            # Z23 standalone = 8h night (23:00-07:25, 7.5h paid)
+            if "B" in code_upper:
+                return {"type": "night", "hours": 7.25, "start": "00:00", "end": "07:25"}
+            return {"type": "night", "hours": 7.5, "start": "23:00", "end": "07:25"}
+            
+        if "N" in code_upper or "23" in code_upper:
+            # Plain 23 (no Z prefix) - 8h night: 7.5h paid
             return {"type": "night", "hours": 7.5, "start": "23:00", "end": "07:15"}
 
         if "D" in code_upper or "07" in code_upper or "11" in code_upper:
             if "8" in code_upper:
+                # 8h day shift: 7.5h paid
                 return {"type": "day", "hours": 7.5, "start": "07:00", "end": "15:15"}
+            # 12h day shift (Z07, Z11): 11.25h paid
             return {"type": "day", "hours": 11.25, "start": "07:00", "end": "19:25"}
 
+        # Default fallback: 8h shift
         return {"type": "day", "hours": 7.5, "start": "07:00", "end": "15:15"}
 
     def _validate_schedule(self):
@@ -2763,7 +4970,9 @@ class RobustScheduler:
                     if shift["shiftType"] == "day":
                         day_count += 1
                     elif shift["shiftType"] == "night":
-                        night_count += 1
+                        # Exclude 0h continuations from coverage count (Z23 B, Z23, Z23 ↩)
+                        if shift.get("hours", 0) > 0:
+                            night_count += 1
 
             day_ok = "✓" if day_count >= self.day_req else "✗"
             night_ok = "✓" if night_count >= self.night_req else "✗"
@@ -2775,10 +4984,81 @@ class RobustScheduler:
                 logger.info(f"  {date}: Day={day_count}/{self.day_req} {day_ok}, Night={night_count}/{self.night_req} {night_ok}")
 
         logger.info("-" * 40)
-        logger.info("WORKLOAD DISTRIBUTION:")
+        logger.info("WORKLOAD DISTRIBUTION (MCH CONTRACT VIEW):")
         shifts_list = sorted(self.nurse_total_shifts.items(), key=lambda x: x[1], reverse=True)
-        for name, count in shifts_list:
-            logger.info(f"  {name}: {count} shifts")
+        for name, _ in shifts_list:
+            is_ft = self._is_full_time(name)
+            # Count shifts directly from schedule for accuracy
+            z_count = 0
+            eight_count = 0
+            cf_count = 0  # Track composite CF shifts separately
+            off_count = 0  # Track off-request days (C, OFF, CF-X)
+            for shift in self.schedule.get(name, []):
+                if shift:
+                    shift_code = str(shift.get("shift", "")).strip().upper()
+                    shift_hours = shift.get("hours", 0)
+                    shift_type = shift.get("shiftType", "")
+                    
+                    # Check for composite CF codes like "CF-4 07" (holiday + work)
+                    is_composite_cf = bool(re.match(r'^CF[-\s]?\d+\s+(Z?(?:07|11|19|23|E15)(?:\s*B)?)', shift_code))
+                    
+                    # Count composite CF codes separately
+                    if is_composite_cf:
+                        cf_count += 1
+                    # Count regular paid shifts
+                    elif shift_hours > 0 and shift_type not in ("off", None):
+                        if shift_hours >= 10.0:
+                            z_count += 1
+                        else:
+                            eight_count += 1
+                    # Count off-request days (but not blank offs)
+                    elif shift_code in ('C', 'OFF') or (shift_code.startswith('CF') and not is_composite_cf):
+                        off_count += 1
+            actual_count = z_count + eight_count + cf_count
+            
+            # Compute contract hours (CF shifts contribute their shift type hours)
+            # CF-4 07 = 7.5h, CF-11 Z07 = 11.25h, etc.
+            cf_hours_contract = 0
+            cf_hours_clinical = 0
+            for shift in self.schedule.get(name, []):
+                if shift:
+                    shift_code = str(shift.get("shift", "")).strip().upper()
+                    is_composite_cf = bool(re.match(r'^CF[-\s]?\d+\s+(Z?(?:07|11|19|23|E15)(?:\s*B)?)', shift_code))
+                    if is_composite_cf:
+                        shift_hours = shift.get("hours", 0)
+                        if shift_hours >= 10.0:
+                            cf_hours_contract += MCH_Z_SHIFT_CONTRACT_VALUE
+                            cf_hours_clinical += MCH_Z_SHIFT_CLINICAL_VALUE
+                        else:
+                            cf_hours_contract += MCH_8H_SHIFT_VALUE
+                            cf_hours_clinical += MCH_8H_SHIFT_VALUE
+            
+            if is_ft:
+                contract_h = z_count * MCH_Z_SHIFT_CONTRACT_VALUE + eight_count * MCH_8H_SHIFT_VALUE + cf_hours_contract
+                clinical_h = z_count * MCH_Z_SHIFT_CLINICAL_VALUE + eight_count * MCH_8H_SHIFT_VALUE + cf_hours_clinical
+                delta = contract_h - MCH_FT_BIWEEKLY_TARGET
+                marker = "✓" if abs(delta) <= 3.76 else ("⚠" if delta > 0 else "✗")
+                off_info = f" • {off_count} off" if off_count > 0 else ""
+                # Build shift breakdown string
+                parts = []
+                if z_count > 0:
+                    parts.append(f"{z_count} Z")
+                if eight_count > 0:
+                    parts.append(f"{eight_count} x8h")
+                if cf_count > 0:
+                    parts.append(f"{cf_count} CF")
+                shift_breakdown = " + ".join(parts) if parts else "0"
+                logger.info(
+                    f"  {marker} {name} (FT): {actual_count} shifts ({shift_breakdown}{off_info}) "
+                    f"| contract={contract_h:.1f}h | clinical={clinical_h:.1f}h | delta={delta:+.1f}h"
+                )
+            else:
+                total_h = sum(
+                    s.get("hours", 0) for s in self.schedule.get(name, [])
+                    if s and s.get("hours", 0) > 0 and s.get("shiftType") not in ("off", None)
+                )
+                off_info = f" • {off_count} off" if off_count > 0 else ""
+                logger.info(f"  {name} (PT): {actual_count} shifts{off_info} | hours={total_h:.1f}h")
 
         if total_issues == 0:
             logger.info("✓ ALL DAYS PROPERLY STAFFED!")
@@ -3257,15 +5537,16 @@ class ScheduleOptimizer:
         # Get shift info with COMPLETE mapping of all possible shift codes
         shifts_info = constraints.get("shiftsInfo", {})
         
-        # CRITICAL: Add missing shift codes with proper metadata
+        # CRITICAL: Add missing shift codes with proper PAID HOURS metadata
+        # PAID HOURS = clock time minus unpaid breaks (12h → 11.25h, 8h → 7.5h)
         DEFAULT_SHIFTS = {
             "D8-": {"hours": 7.5, "startTime": "07:00", "endTime": "15:15", "type": "day"},
             "E8-": {"hours": 7.5, "startTime": "15:00", "endTime": "23:15", "type": "day"},
             "N8-": {"hours": 7.5, "startTime": "23:00", "endTime": "07:15", "type": "night"},
             "N8+ZE2-": {"hours": 11.25, "startTime": "19:00", "endTime": "07:15", "type": "night"},
             "ZD12-": {"hours": 11.25, "startTime": "07:00", "endTime": "19:25", "type": "day"},
-            "ZE2-": {"hours": 3.75, "startTime": "19:00", "endTime": "23:00", "type": "night"},
-            "ZN-": {"hours": 11.25, "startTime": "19:00", "endTime": "07:25", "type": "night"},
+            "ZE2-": {"hours": 4.0, "startTime": "19:00", "endTime": "23:00", "type": "night"},
+            "ZN-": {"hours": 7.25, "startTime": "23:00", "endTime": "07:25", "type": "night"},
             "ZN+ZE2-": {"hours": 11.25, "startTime": "19:00", "endTime": "07:25", "type": "night"},
             "Z11": {"hours": 11.25, "startTime": "11:00", "endTime": "23:25", "type": "day"},
             "11": {"hours": 7.5, "startTime": "11:00", "endTime": "19:15", "type": "day"},
@@ -3273,9 +5554,9 @@ class ScheduleOptimizer:
             "E15": {"hours": 7.5, "startTime": "15:00", "endTime": "23:15", "type": "day"},
             "Z07": {"hours": 11.25, "startTime": "07:00", "endTime": "19:25", "type": "day"},
             "23": {"hours": 7.5, "startTime": "23:00", "endTime": "07:15", "type": "night"},
-            "Z19": {"hours": 11.25, "startTime": "19:00", "endTime": "07:25", "type": "night"},
-            "Z23": {"hours": 11.25, "startTime": "23:00", "endTime": "11:25", "type": "night"},
-            "Z23 B": {"hours": 11.25, "startTime": "23:00", "endTime": "11:25", "type": "night"},
+            "Z19": {"hours": 4.0, "startTime": "19:00", "endTime": "23:00", "type": "night"},
+            "Z23": {"hours": 7.25, "startTime": "23:00", "endTime": "07:25", "type": "night"},
+            "Z23 B": {"hours": 7.25, "startTime": "23:00", "endTime": "07:25", "type": "night"},
         }
         
         # Merge with AI-parsed shiftsInfo (defaults take precedence for missing codes)
@@ -3389,7 +5670,9 @@ class ScheduleOptimizer:
                     if shift["shiftType"] == "day":
                         day_count += 1
                     elif shift["shiftType"] == "night":
-                        night_count += 1
+                        # Exclude 0h continuations (Z23 B, Z23, Z23 ↩) from real coverage count
+                        if float(shift.get("hours", 0) or 0) > 0:
+                            night_count += 1
             logging.info(f"{date}: Day={day_count}, Night={night_count}")
             if night_count == 0:
                 logging.error(f"CRITICAL: {date} has NO NIGHT SHIFTS!")
@@ -3406,7 +5689,11 @@ class ScheduleOptimizer:
 
         # POST-OVERLAY GHOST SWEEP: the overlay may have re-added a plain Z23
         # entry that is actually a ghost tail.  One final pass to catch these.
-        GHOST_PAIRS_FINAL = {"Z19": {"Z23"}, "Z23": {"Z23"}, "Z23 B": {"Z23"}}
+        # POST-OVERLAY GHOST SWEEP: only zero out non-continuation Z23 ghosts.
+        # Z23 ↩ entries (hours=0) are VALID continuation markers — never remove them.
+        # Only target: Z19 followed by bare "Z23" (ghost tail from OCR).
+        # Z23 B is a legitimate standalone shift — never remove.
+        GHOST_PAIRS_FINAL = {"Z19": {"Z23"}}
         post_ghost_fixes = 0
         for nurse_name, row in schedule.items():
             for i in range(1, len(row)):
@@ -3414,12 +5701,16 @@ class ScheduleOptimizer:
                 curr = row[i]
                 if not prev or not curr:
                     continue
+                # NEVER touch 0h night continuation markers (Z23 B, Z23, Z23 ↩)
+                curr_raw = str(curr.get("shift", "")).strip()
+                if curr.get("hours", 0) == 0 and curr.get("shiftType") == "night":
+                    continue
                 prev_h = prev.get("hours", 0)
                 curr_h = curr.get("hours", 0)
                 if prev_h <= 0 or curr_h <= 0:
                     continue
-                prev_code = str(prev.get("shift", "")).replace("↩", "").strip().upper()
-                curr_code = str(curr.get("shift", "")).replace("↩", "").strip().upper()
+                prev_code = str(prev.get("shift", "")).strip().upper()
+                curr_code = curr_raw.upper()
                 tails = GHOST_PAIRS_FINAL.get(prev_code)
                 if tails and curr_code in tails:
                     row[i] = {
@@ -3435,12 +5726,222 @@ class ScheduleOptimizer:
         if post_ghost_fixes:
             logging.info(f"POST-OVERLAY GHOST SWEEP: {post_ghost_fixes} ghost tails zeroed")
 
+        # ────────────────────────────────────────────────────────────
+        # FINAL HARD-CAP ENFORCEMENT
+        # After overlay + ghost sweep, ensure no day exceeds the DYNAMIC
+        # cap (not the bare day_req/night_req).  The minimum staffing is
+        # day_req + night_req = 9, but we allow more workers per day so
+        # that FT nurses can reach their 7-shift / 75h target.
+        # ────────────────────────────────────────────────────────────
+        # Compute dynamic cap (same formula as RobustScheduler._get_dynamic_daily_staff_cap)
+        # STRICT: base + 1 to prevent front-loading and ensure coverage spread
+        _base_cap = day_req + night_req
+        _dynamic_cap = _base_cap + 1
+        _dynamic_day_cap = max(day_req, int(_dynamic_cap * day_req / (day_req + night_req) + 0.5))
+        _dynamic_night_cap = max(night_req, _dynamic_cap - _dynamic_day_cap)
+        logging.info(f"FINAL HARD-CAP using dynamic caps: day={_dynamic_day_cap}, night={_dynamic_night_cap} (total={_dynamic_cap})")
+
+        # Build nurse name normalization map for OCR protection matching
+        def _norm_name(name: str) -> str:
+            return re.sub(r"\s+", " ", str(name or "").strip().lower())
+        _schedule_name_by_norm = {_norm_name(n): n for n in schedule.keys()}
+
+        ocr_binding_set: set = set()
+        if assignments:
+            for a_name, a_shifts in assignments.items():
+                # CRITICAL: Normalize OCR name to match schedule name
+                norm_a_name = _norm_name(a_name)
+                schedule_name = _schedule_name_by_norm.get(norm_a_name, a_name)
+                
+                for a_idx, a_code in enumerate(a_shifts or []):
+                    if a_idx < len(date_list) and a_code and a_code.strip():
+                        cu = a_code.strip().upper()
+                        # Protect all work shifts including composite CF codes
+                        if cu not in ("C", "OFF", "*", "") and not (
+                            cu.startswith("CF") and not RobustScheduler._is_composite_cf_shift(a_code.strip())
+                        ):
+                            ocr_binding_set.add((schedule_name, date_list[a_idx]))
+                            logging.info(f"🔒 HARD-CAP OCR-protecting: {schedule_name} on {date_list[a_idx]} = {a_code}")
+
+        # Pre-compute per-nurse shift counts and target shift counts for smart removal
+        _nurse_shift_counts: dict = {}
+        for nname, nrow in schedule.items():
+            _nurse_shift_counts[nname] = sum(
+                1 for s in nrow
+                if s and float(s.get("hours", 0) or 0) > 0
+            )
+        _nurse_target_shifts: dict = {}
+        for n in nurses:
+            emp = str(n.get("employmentType", "")).lower()
+            if emp in ("full-time", "ft", ""):
+                _nurse_target_shifts[n["name"]] = MCH_FT_SHIFT_COUNT
+            else:
+                tbw = float(n.get("targetBiWeeklyHours", 37.5) or 37.5)
+                _nurse_target_shifts[n["name"]] = max(1, round(tbw / MCH_Z_SHIFT_CLINICAL_VALUE))
+
+        hardcap_removals = 0
+        for d_idx, d_date in enumerate(date_list):
+            day_nurses = []
+            night_nurses = []
+            for nname, nrow in schedule.items():
+                if d_idx < len(nrow):
+                    s = nrow[d_idx]
+                    if s and s.get("hours", 0) > 0:
+                        if s.get("shiftType") == "day":
+                            day_nurses.append(nname)
+                        elif s.get("shiftType") == "night":
+                            night_nurses.append(nname)
+
+            # Remove excess DAY nurses above dynamic cap
+            day_excess = len(day_nurses) - _dynamic_day_cap
+            if day_excess > 0:
+                non_ocr = [n for n in day_nurses if (n, d_date) not in ocr_binding_set]
+                removable = non_ocr if non_ocr else day_nurses[:]
+                # Prefer removing over-target nurses; protect under-target
+                removable.sort(key=lambda n: -_nurse_shift_counts.get(n, 0))
+                actually_removed = 0
+                for candidate in removable:
+                    if actually_removed >= day_excess:
+                        break
+                    # Protect nurses below their target shift count
+                    if _nurse_shift_counts.get(candidate, 0) < _nurse_target_shifts.get(candidate, 7):
+                        continue
+                    schedule[candidate][d_idx] = {
+                        "id": str(uuid.uuid4()), "date": d_date,
+                        "shift": "", "shiftType": "off",
+                        "hours": 0, "startTime": "", "endTime": "",
+                    }
+                    _nurse_shift_counts[candidate] = max(0, _nurse_shift_counts.get(candidate, 0) - 1)
+                    hardcap_removals += 1
+                    actually_removed += 1
+                    logging.info(f"  FINAL HARD-CAP: removed {candidate} DAY on {d_date}")
+
+            # Remove excess NIGHT nurses above dynamic cap
+            night_excess = len(night_nurses) - _dynamic_night_cap
+            if night_excess > 0:
+                non_ocr = [n for n in night_nurses if (n, d_date) not in ocr_binding_set]
+                removable = non_ocr if non_ocr else night_nurses[:]
+                # Prefer removing over-target nurses; protect under-target
+                removable.sort(key=lambda n: -_nurse_shift_counts.get(n, 0))
+                actually_removed = 0
+                for candidate in removable:
+                    if actually_removed >= night_excess:
+                        break
+                    if _nurse_shift_counts.get(candidate, 0) < _nurse_target_shifts.get(candidate, 7):
+                        continue
+                    schedule[candidate][d_idx] = {
+                        "id": str(uuid.uuid4()), "date": d_date,
+                        "shift": "", "shiftType": "off",
+                        "hours": 0, "startTime": "", "endTime": "",
+                    }
+                    _nurse_shift_counts[candidate] = max(0, _nurse_shift_counts.get(candidate, 0) - 1)
+                    hardcap_removals += 1
+                    actually_removed += 1
+                    logging.info(f"  FINAL HARD-CAP: removed {candidate} NIGHT on {d_date}")
+
+        if hardcap_removals:
+            logging.info(f"FINAL HARD-CAP ENFORCEMENT: {hardcap_removals} excess shifts removed")
+
+        # ── PER-NURSE SHIFT LIMIT ENFORCEMENT ──────────────────────────
+        # After OCR overlay may have restored shifts that _final_safety_pass
+        # trimmed, enforce per-nurse max shifts one more time.
+        nurse_map_for_cap = {n["name"]: n for n in nurses}
+        pn_cap_removals = 0
+        for nname, nrow in schedule.items():
+            meta = nurse_map_for_cap.get(nname, {})
+            emp = str(meta.get("employmentType", "")).lower()
+            if emp in ("full-time", "ft", ""):
+                max_shifts = MCH_FT_SHIFT_COUNT  # 7
+            else:
+                tbw = float(meta.get("targetBiWeeklyHours", 37.5) or 37.5)
+                max_shifts = max(1, int(tbw / MCH_Z_SHIFT_CLINICAL_VALUE + 0.5))
+
+            # Count paid shifts and collect removable indices
+            paid = []
+            for idx, s in enumerate(nrow):
+                if s and float(s.get("hours", 0) or 0) > 0 and s.get("shiftType") not in ("off", None):
+                    is_ocr = (nname, date_list[idx]) in ocr_binding_set if idx < len(date_list) else False
+                    sc = str(s.get("shift", "")).strip().upper()
+                    is_nr = sc in ("Z19", "Z23 B", "Z23B")
+                    paid.append((idx, is_ocr, is_nr))
+
+            excess = len(paid) - max_shifts
+            if excess <= 0:
+                continue
+
+            # Remove non-OCR, non-night-rotation first; then non-OCR night rotations
+            non_ocr_non_nr = [p for p in paid if not p[1] and not p[2]]
+            non_ocr_nr = [p for p in paid if not p[1] and p[2]]
+            # Last resort: OCR-bound shifts (non-night-rotation, then night-rotation)
+            ocr_non_nr = [p for p in paid if p[1] and not p[2]]
+            ocr_nr = [p for p in paid if p[1] and p[2]]
+            removable = non_ocr_non_nr + non_ocr_nr + ocr_non_nr + ocr_nr
+            removed = 0
+            for idx, _, is_nr in removable:
+                if removed >= excess:
+                    break
+                if is_nr:
+                    # Remove entire Z19 rotation (Z19 + Z23 B + Z23 tail)
+                    sc = str(nrow[idx].get("shift", "")).strip().upper()
+                    if sc != "Z19":
+                        continue  # Only start removal from Z19
+                    nrow[idx] = {"id": str(uuid.uuid4()), "date": date_list[idx], "shift": "", "shiftType": "off", "hours": 0, "startTime": "", "endTime": ""}
+                    removed += 1
+                    if idx + 1 < len(nrow):
+                        bsc = str(nrow[idx + 1].get("shift", "")).strip().upper()
+                        if bsc in ("Z23 B", "Z23B") and float(nrow[idx + 1].get("hours", 0) or 0) > 0:
+                            nrow[idx + 1] = {"id": str(uuid.uuid4()), "date": date_list[idx + 1], "shift": "", "shiftType": "off", "hours": 0, "startTime": "", "endTime": ""}
+                            removed += 1
+                    if idx + 2 < len(nrow):
+                        tsc = str(nrow[idx + 2].get("shift", "")).strip().upper()
+                        if tsc == "Z23" and float(nrow[idx + 2].get("hours", 0) or 0) == 0:
+                            nrow[idx + 2] = {"id": str(uuid.uuid4()), "date": date_list[idx + 2], "shift": "", "shiftType": "off", "hours": 0, "startTime": "", "endTime": ""}
+                else:
+                    nrow[idx] = {"id": str(uuid.uuid4()), "date": date_list[idx], "shift": "", "shiftType": "off", "hours": 0, "startTime": "", "endTime": ""}
+                    removed += 1
+                pn_cap_removals += 1
+            if removed > 0:
+                logging.info(f"  PER-NURSE CAP: {nname} had {len(paid)} shifts (max={max_shifts}), removed {removed}")
+        if pn_cap_removals:
+            logging.info(f"PER-NURSE SHIFT CAP: {pn_cap_removals} excess shifts removed")
+
+        # COVERAGE SAFETY NET: Patch any remaining gaps before balancing
+        coverage_ok = True
+        for d_idx, date in enumerate(date_list):
+            day_c = 0
+            night_c = 0
+            for nname, nrow in schedule.items():
+                if d_idx < len(nrow):
+                    s = nrow[d_idx]
+                    sc = str(s.get("shift", "")).strip()
+                    h = float(s.get("hours", 0) or 0)
+                    if s.get("shiftType") == "day" and h > 0:
+                        day_c += 1
+                    elif s.get("shiftType") == "night" and h > 0:
+                        night_c += 1
+            if day_c < day_req or night_c < night_req:
+                coverage_ok = False
+                break
+        if not coverage_ok:
+            logging.warning("Coverage gaps detected after ghost sweep - PATCHING NOW")
+            schedule = ScheduleOptimizer.patch_coverage_gaps(
+                schedule, date_list, nurses, shifts_info,
+                day_shift_codes, night_shift_codes, day_req, night_req
+            )
+
         # Attempt to balance nurse period targets to reduce deltas to zero.
         # Pass the original OCR assignments so the balancer can protect them.
         try:
             schedule = ScheduleOptimizer.balance_targets(schedule, date_list, nurses, shifts_info, assignments or {})
         except Exception as e:
             logging.warning(f"Target balancing failed: {e}")
+        
+        # Final pass: Add shifts to nurses still under their target hours
+        # This can ignore the hard cap (base + 1) to help nurses reach their goals
+        try:
+            schedule = ScheduleOptimizer.fill_under_target_nurses(schedule, date_list, nurses, shifts_info, assignments or {})
+        except Exception as e:
+            logging.warning(f"Under-target fill failed: {e}")
 
         return schedule
 
@@ -3459,6 +5960,16 @@ class ScheduleOptimizer:
             return re.sub(r"\s+", " ", str(name or "").strip().lower())
 
         def meta_for(code: str) -> Dict[str, Any]:
+            code_u = code.strip().upper()
+            # Handle composite CF shifts: extract the underlying shift code
+            if RobustScheduler._is_composite_cf_shift(code):
+                extracted = RobustScheduler._extract_shift_from_cf(code)
+                if extracted:
+                    return meta_for(extracted)
+            # Z19 ALWAYS = 11.25h paid (full night) — must come BEFORE shifts_info
+            # lookup because shifts_info may contain the old "Z19":{"hours":4.0}.
+            if code_u == "Z19":
+                return {"shiftType": "night", "hours": 11.25, "startTime": "19:00", "endTime": "07:25"}
             if code in shifts_info:
                 m = shifts_info[code]
                 return {
@@ -3467,13 +5978,15 @@ class ScheduleOptimizer:
                     "startTime": m.get("startTime", "07:00"),
                     "endTime": m.get("endTime", "19:00"),
                 }
-            code_u = code.upper()
             if "N" in code_u or "19" in code_u or "23" in code_u:
                 if "Z19" in code_u:
                     return {"shiftType": "night", "hours": 11.25, "startTime": "19:00", "endTime": "07:25"}
                 if "Z23" in code_u:
-                    # Z23 and Z23 B are both 12-hour night shifts (11.25 paid hours)
-                    return {"shiftType": "night", "hours": 11.25, "startTime": "23:00", "endTime": "11:25"}
+                    # Z23 B = Back shift (00:00-07:25, 7.25h paid)
+                    # Z23 standalone = 8h night (23:00-07:25, 7.25h paid)
+                    if "B" in code_u:
+                        return {"shiftType": "night", "hours": 7.25, "startTime": "00:00", "endTime": "07:25"}
+                    return {"shiftType": "night", "hours": 7.25, "startTime": "23:00", "endTime": "07:25"}
                 # Plain 23 (no Z prefix) is 8-hour night
                 return {"shiftType": "night", "hours": 7.5, "startTime": "23:00", "endTime": "07:15"}
             return {"shiftType": "day", "hours": 11.25, "startTime": "07:00", "endTime": "19:25"}
@@ -3496,7 +6009,10 @@ class ScheduleOptimizer:
 
                 raw = str(raw).strip()
                 raw_u = raw.upper()
-                is_off = raw_u in ["C", "OFF"] or raw_u.startswith("CF") or "CF " in raw_u
+                is_off = raw_u in ["C", "OFF"] or (
+                    (raw_u.startswith("CF") or "CF " in raw_u)
+                    and not RobustScheduler._is_composite_cf_shift(raw)
+                )
 
                 # Ensure row length
                 while len(schedule[nurse_name]) <= day_idx:
@@ -3531,14 +6047,15 @@ class ScheduleOptimizer:
                 if raw_u == "*":
                     continue
 
-                # NIGHT TAIL DEDUP: Skip Z23 (plain, no B) wrap-around tails.
-                # Z23 B is always a real shift. Only plain Z23 after a night-start is a tail.
-                if raw_u == "Z23" and day_idx > 0:
-                    prev_raw_overlay = (pref_shifts[day_idx - 1] or "") if day_idx - 1 < len(pref_shifts) else ""
-                    prev_u_overlay = str(prev_raw_overlay).strip().upper()
-                    if prev_u_overlay in ("Z19", "Z23", "Z23 B"):
-                        # Wrap-around tail — do not force-restore
-                        continue
+                # OVERNIGHT MARKER: Only skip if OCR explicitly contains ↩
+                # Z23 is a legitimate 8h night shift code, not a tail
+                if "↩" in raw:
+                    # OCR explicitly specifies continuation marker — keep it
+                    continue
+
+                # OCR OVERRIDE: If OCR has a real shift code (like CF-11 07), it should
+                # REPLACE any system-placed Z23 tail, because OCR is AUTHORITATIVE.
+                # No longer protect Z23 tails from OCR overwrite — OCR wins.
 
                 meta = meta_for(raw)
                 if current.get("shift") != raw or current.get("shiftType") != meta["shiftType"]:
@@ -3875,8 +6392,17 @@ class ScheduleOptimizer:
                 for day_idx, shift_code in enumerate(shifts):
                     if day_idx < len(date_list) and shift_code and shift_code.strip():
                         code = shift_code.strip().upper()
-                        if code not in ("C", "OFF", "*", "") and not code.startswith("CF"):
-                            ocr_binding.add((nurse_name, date_list[day_idx]))
+                        # Protect all work shifts including composite CF codes like "CF-4 07"
+                        # Pure CF off codes (CF-1, CF-2 without embedded shift) are vacation
+                        if code not in ("C", "OFF", "*", ""):
+                            # If it's a CF code, only protect if it's composite (work shift)
+                            if code.startswith("CF"):
+                                if RobustScheduler._is_composite_cf_shift(code):
+                                    ocr_binding.add((nurse_name, date_list[day_idx]))
+                                    logging.info(f"🔒 OCR-protecting composite CF shift: {nurse_name} on {date_list[day_idx]} = {code}")
+                            else:
+                                # Regular work shift (07, 11, Z07, etc.) - always protect
+                                ocr_binding.add((nurse_name, date_list[day_idx]))
 
         # Compute target hours per nurse, SCALED to the actual period length,
         # then reduced by off days.
@@ -3926,9 +6452,11 @@ class ScheduleOptimizer:
                                 ocr_shifts = oshifts
                                 break
                     if ocr_shifts and day_idx < len(ocr_shifts):
-                        ocr_code = (ocr_shifts[day_idx] or "").strip().upper()
-                        if (ocr_code in ("C", "OFF", "*") or
-                            ocr_code.startswith("CF")):
+                        ocr_code = (ocr_shifts[day_idx] or "").strip()
+                        ocr_code_u = ocr_code.upper()
+                        if (ocr_code_u in ("C", "OFF", "*") or
+                            (ocr_code_u.startswith("CF")
+                             and not RobustScheduler._is_composite_cf_shift(ocr_code))):
                             off_day_count += 1
 
             if off_day_count > 0 and total_days > 0:
@@ -3993,6 +6521,11 @@ class ScheduleOptimizer:
                     # NEVER move an OCR-assigned shift away from its nurse
                     if day_idx < len(date_list) and (over_name, date_list[day_idx]) in ocr_binding:
                         continue
+                    # Skip night shifts — they have complex linkage (Z19 → Z23 ↩)
+                    # that the balancer cannot properly reconstruct.
+                    if cell.get("shiftType") == "night":
+                        continue
+
                     # Candidate under nurses who are OFF that day
                     for under_name, under_delta in under_list:
                         under_row = schedule.get(under_name, [])
@@ -4007,6 +6540,52 @@ class ScheduleOptimizer:
                         off_reqs = set(meta_under.get("offRequests", []) or [])
                         if day_idx < len(date_list) and date_list[day_idx] in off_reqs:
                             continue
+
+                        # Shift limit: don't give shifts to nurses at their max
+                        emp = str(meta_under.get("employmentType", "full-time")).lower()
+                        under_shift_count = sum(
+                            1 for e in under_row
+                            if float(e.get("hours", 0) or 0) > 0
+                            and e.get("shiftType") not in ("off", None)
+                        )
+                        if emp in ("full-time", "ft", ""):
+                            if under_shift_count >= 7:
+                                continue
+                        else:
+                            # PT: derive max shifts from target hours
+                            tbw = float(meta_under.get("targetBiWeeklyHours", 37.5) or 37.5)
+                            pt_max = max(1, int(tbw / MCH_Z_SHIFT_CLINICAL_VALUE + 0.5))
+                            if under_shift_count >= pt_max:
+                                continue
+
+                        # Rest constraint: don't assign if previous day has night shift
+                        if day_idx > 0 and day_idx - 1 < len(under_row):
+                            prev_entry = under_row[day_idx - 1]
+                            if (prev_entry and prev_entry.get("shiftType") == "night"
+                                    and float(prev_entry.get("hours", 0) or 0) > 0):
+                                continue
+
+                        # Don't assign if next day has early shift (rest violation from new night)
+                        if day_idx + 1 < len(under_row):
+                            next_entry = under_row[day_idx + 1]
+                            if (next_entry and next_entry.get("shiftType") == "day"
+                                    and float(next_entry.get("hours", 0) or 0) > 0):
+                                continue
+
+                        # Skip if under-nurse has Z23 ↩ on this day (continuation slot)
+                        if (under_cell.get("shiftType") == "night" and
+                                float(under_cell.get("hours", 0) or 0) == 0):
+                            uc_sc = str(under_cell.get("shift", "")).strip()
+                            if "Z23" in uc_sc or "↩" in uc_sc or (under_cell.get("hours", 0) or 0) == 0:
+                                continue  # Don't overwrite Z23 ↩ continuation
+
+                        # Night lockout: skip this day if previous day is Z19/Z23 B
+                        if day_idx > 0 and day_idx - 1 < len(under_row):
+                            prev_uc = under_row[day_idx - 1]
+                            if prev_uc:
+                                prev_uc_sc = str(prev_uc.get("shift", "")).strip()
+                                if prev_uc_sc in ("Z19", "Z23 B") and float(prev_uc.get("hours", 0) or 0) > 0:
+                                    continue  # Day is locked after night shift
 
                         # Compute deltas after hypothetical move
                         new_deltas = dict(deltas)
@@ -4050,6 +6629,224 @@ class ScheduleOptimizer:
         return schedule
     
     @staticmethod
+    def fill_under_target_nurses(
+        schedule: Dict[str, List[Dict]],
+        date_list: List[str],
+        nurses: List[Dict[str, Any]],
+        shifts_info: Dict[str, Any],
+        ocr_assignments: Dict[str, List[str]] = None
+    ) -> Dict[str, List[Dict]]:
+        """
+        Final pass to add shifts to nurses below their target hours.
+        Ignores the hard cap (base + 1) to help under-target nurses reach their goals.
+        """
+        logging.info("Running under-target fill pass...")
+        
+        # Build nurse metadata
+        nurse_map = {n.get("name"): n for n in nurses}
+        
+        # Build set of OCR-protected shifts
+        ocr_binding: Set[Tuple[str, str]] = set()
+        if ocr_assignments:
+            def _norm_name(name: str) -> str:
+                return re.sub(r"\s+", " ", str(name or "").strip().lower())
+            _schedule_name_by_norm = {_norm_name(n): n for n in schedule.keys()}
+            
+            for a_name, a_shifts in ocr_assignments.items():
+                norm_a_name = _norm_name(a_name)
+                schedule_name = _schedule_name_by_norm.get(norm_a_name, a_name)
+                for a_idx, a_code in enumerate(a_shifts or []):
+                    if a_idx < len(date_list) and a_code and a_code.strip():
+                        cu = a_code.strip().upper()
+                        if cu not in ("C", "OFF", "*", "") and not (
+                            cu.startswith("CF") and not RobustScheduler._is_composite_cf_shift(a_code.strip())
+                        ):
+                            ocr_binding.add((schedule_name, date_list[a_idx]))
+        
+        # Calculate targets and current hours for each nurse
+        total_days = len(date_list)
+        period_scale = total_days / 14.0
+        
+        def scheduled_hours_for(name: str) -> float:
+            hrs = 0.0
+            row = schedule.get(name, [])
+            for entry in row:
+                try:
+                    hrs += float(entry.get("hours", 0) or 0)
+                except Exception:
+                    pass
+            return hrs
+        
+        def shift_count_for(name: str) -> int:
+            row = schedule.get(name, [])
+            return sum(
+                1 for e in row
+                if float(e.get("hours", 0) or 0) > 0
+                and e.get("shiftType") not in ("off", None)
+            )
+        
+        # Identify under-target FT nurses
+        under_target_nurses = []
+        for name in schedule.keys():
+            meta = nurse_map.get(name, {})
+            emp = str(meta.get("employmentType", "")).lower()
+            if emp not in ("full-time", "ft", ""):
+                continue  # Skip PT nurses
+            
+            # Calculate target (same logic as balance_targets)
+            tbw = meta.get("targetBiWeeklyHours")
+            tw = meta.get("targetWeeklyHours")
+            mw = meta.get("maxWeeklyHours")
+            if tbw is not None:
+                raw_target = float(tbw) * period_scale
+            elif tw is not None:
+                raw_target = float(tw) * 2.0 * period_scale
+            elif mw is not None:
+                raw_target = float(mw) * 2.0 * period_scale
+            else:
+                raw_target = MCH_FT_BIWEEKLY_TARGET * period_scale
+            
+            # Adjust for off days
+            off_requests = set(meta.get("offRequests", []) or [])
+            off_day_count = len([d for d in date_list if d in off_requests])
+            if off_day_count > 0 and total_days > 0:
+                available_ratio = max(0, (total_days - off_day_count)) / total_days
+                raw_target = raw_target * available_ratio
+            
+            current_hours = scheduled_hours_for(name)
+            delta = current_hours - raw_target
+            
+            if delta < -3.0:  # More than 3h under target
+                under_target_nurses.append((name, raw_target, current_hours, delta))
+        
+        if not under_target_nurses:
+            logging.info("  All nurses at or above target. No fill needed.")
+            return schedule
+        
+        logging.info(f"  Found {len(under_target_nurses)} nurses under target:")
+        for name, target, current, delta in under_target_nurses:
+            logging.info(f"    {name}: {current:.1f}h / {target:.1f}h (delta={delta:.1f}h)")
+        
+        # Sort by most under-target first
+        under_target_nurses.sort(key=lambda x: x[3])  # Sort by delta (most negative first)
+        
+        # Build daily coverage map to track staffing levels
+        def count_day_coverage(date_idx: int) -> int:
+            """Count active nurses on a given day (exclude Z23 tails)"""
+            count = 0
+            for name, row in schedule.items():
+                if date_idx < len(row):
+                    cell = row[date_idx]
+                    if cell and float(cell.get("hours", 0) or 0) > 0:
+                        count += 1
+            return count
+        
+        fills = 0
+        for nurse_name, target, initial_current, initial_delta in under_target_nurses:
+            meta = nurse_map.get(nurse_name, {})
+            
+            # Keep adding shifts until nurse reaches target or no more suitable days
+            max_iterations = 10  # Safety limit
+            iteration = 0
+            
+            while iteration < max_iterations:
+                iteration += 1
+                
+                # Recalculate current state after each addition
+                current_hours = scheduled_hours_for(nurse_name)
+                current_shifts = shift_count_for(nurse_name)
+                delta = current_hours - target
+                
+                # Stop if nurse is now within 3h of target
+                if delta >= -3.0:
+                    break
+                
+                # Don't exceed 7 shifts for FT nurses
+                if current_shifts >= MCH_FT_SHIFT_COUNT:
+                    break
+                
+                # Determine if we should add 8h or 12h shift
+                hours_needed = abs(delta)
+                prefer_12h = hours_needed >= 10.0
+                target_shift_hours = 11.25 if prefer_12h else 7.5
+                target_shift_code = "Z07" if prefer_12h else "07"
+                target_shift_type = "day"
+                
+                # Find suitable days for this nurse
+                row = schedule.get(nurse_name, [])
+                off_requests = set(meta.get("offRequests", []) or [])
+                
+                # Build list of candidate days with their coverage counts
+                candidates = []
+                for day_idx, date in enumerate(date_list):
+                    # Skip if day is off-request
+                    if date in off_requests:
+                        continue
+                    
+                    # Skip if already has a shift this day
+                    if day_idx < len(row):
+                        current_cell = row[day_idx]
+                        if current_cell and float(current_cell.get("hours", 0) or 0) > 0:
+                            continue
+                    
+                    # Skip if OCR-protected (shouldn't change OCR-assigned days)
+                    if (nurse_name, date) in ocr_binding:
+                        continue
+                    
+                    # Rest constraint: don't add if previous day has night shift
+                    if day_idx > 0 and day_idx - 1 < len(row):
+                        prev_entry = row[day_idx - 1]
+                        if (prev_entry and prev_entry.get("shiftType") == "night"
+                                and float(prev_entry.get("hours", 0) or 0) > 0):
+                            continue
+                    
+                    # Don't add if next day has early shift (rest violation from new night)
+                    if day_idx + 1 < len(row):
+                        next_entry = row[day_idx + 1]
+                        if (next_entry and next_entry.get("shiftType") == "day"
+                                and float(next_entry.get("hours", 0) or 0) > 0):
+                            continue
+                    
+                    # This day is suitable - record it with its current coverage
+                    coverage = count_day_coverage(day_idx)
+                    candidates.append((day_idx, date, coverage))
+                
+                if not candidates:
+                    logging.info(f"  ⚠ No suitable days for {nurse_name} (still {delta:.1f}h under target)")
+                    break
+                
+                # Sort candidates by coverage (lowest first) to balance across days
+                candidates.sort(key=lambda x: x[2])
+                
+                # Pick the day with lowest coverage
+                day_idx, date, coverage = candidates[0]
+                
+                # Add the shift
+                new_shift = {
+                    "id": str(uuid.uuid4()),
+                    "date": date,
+                    "shift": target_shift_code,
+                    "shiftType": target_shift_type,
+                    "hours": target_shift_hours,
+                    "startTime": "07:00" if target_shift_type == "day" else "19:00",
+                    "endTime": "19:25" if prefer_12h else "15:15",
+                }
+                
+                if day_idx < len(row):
+                    schedule[nurse_name][day_idx] = new_shift
+                else:
+                    while len(schedule[nurse_name]) <= day_idx:
+                        schedule[nurse_name].append(None)
+                    schedule[nurse_name][day_idx] = new_shift
+                
+                fills += 1
+                logging.info(f"  ✓ Added {target_shift_code} ({target_shift_hours}h) for {nurse_name} on {date} (coverage was {coverage}, iteration {iteration})")
+                # Continue to next iteration to potentially add another shift
+        
+        logging.info(f"Under-target fill complete: {fills} shifts added")
+        return schedule
+    
+    @staticmethod
     def patch_coverage_gaps(result, date_list, nurses, shifts_info, day_shift_codes, night_shift_codes, day_req, night_req):
         """
         POST-PROCESSING: Patches any days that don't have enough coverage.
@@ -4065,31 +6862,76 @@ class ScheduleOptimizer:
                 bool(n.get("isOnSabbatical")))
         }
         
+        # Build off-request lookup
+        off_req_map = {}
+        for n in nurses:
+            off_req_map[n["name"]] = set(n.get("offRequests", []) or [])
+
         for d_idx, date in enumerate(date_list):
             # Count current coverage
             day_count = 0
             night_count = 0
             off_nurses = []
             
+            # Build off_nurses list with FT shift count check
             for nurse in nurses:
                 name = nurse["name"]
                 if name in on_leave_names:
                     continue  # Skip nurses on leave
+                # Skip nurses with off-request for this day
+                if date in off_req_map.get(name, set()):
+                    continue
                 if d_idx < len(result[name]):
                     shift = result[name][d_idx]
-                    if shift["shiftType"] == "day":
+                    sc = str(shift.get("shift", "")).strip()
+                    h = float(shift.get("hours", 0) or 0)
+                    if shift["shiftType"] == "day" and h > 0:
                         day_count += 1
                     elif shift["shiftType"] == "night":
-                        night_count += 1
+                        if h > 0:
+                            night_count += 1
+                        elif "Z23" in sc or "↩" in sc or h == 0:
+                            pass  # Night continuation — do NOT reassign
+                        else:
+                            # Shift cap: skip nurses already at their max paid shifts
+                            emp = str(nurse.get("employmentType", "")).lower()
+                            paid_count = sum(1 for e in result[name] if float(e.get("hours", 0) or 0) > 0 and e.get("shiftType") not in ("off", None))
+                            if emp in ("full-time", "ft", ""):
+                                if paid_count >= MCH_FT_SHIFT_COUNT:
+                                    continue
+                            else:
+                                tbw = float(nurse.get("targetBiWeeklyHours", 37.5) or 37.5)
+                                pt_max = max(1, int(tbw / MCH_Z_SHIFT_CLINICAL_VALUE + 0.5))
+                                if paid_count >= pt_max:
+                                    continue
+                            off_nurses.append(name)
                     else:
+                        # Shift cap: skip nurses already at their max paid shifts
+                        emp = str(nurse.get("employmentType", "")).lower()
+                        paid_count = sum(1 for e in result[name] if float(e.get("hours", 0) or 0) > 0 and e.get("shiftType") not in ("off", None))
+                        if emp in ("full-time", "ft", ""):
+                            if paid_count >= MCH_FT_SHIFT_COUNT:
+                                continue
+                        else:
+                            tbw = float(nurse.get("targetBiWeeklyHours", 37.5) or 37.5)
+                            pt_max = max(1, int(tbw / MCH_Z_SHIFT_CLINICAL_VALUE + 0.5))
+                            if paid_count >= pt_max:
+                                continue
                         off_nurses.append(name)
             
             # Patch day shifts if needed
             day_shift_code = day_shift_codes[0] if day_shift_codes else "7Y"
             night_shift_code = night_shift_codes[0] if night_shift_codes else "7N"
             
+            # Patch day shifts if needed — skip nurses locked by night continuation
             while day_count < day_req and off_nurses:
                 nurse_name = off_nurses.pop(0)
+                # Lockout check: don't assign if prev day has Z19 / Z23 B
+                if d_idx > 0 and d_idx - 1 < len(result.get(nurse_name, [])):
+                    prev = result[nurse_name][d_idx - 1]
+                    prev_sc = str(prev.get("shift", "")).strip()
+                    if prev_sc in ("Z19", "Z23 B") and "↩" not in prev_sc:
+                        continue
                 meta = shifts_info.get(day_shift_code, {})
                 result[nurse_name][d_idx] = {
                     "id": str(uuid.uuid4()),
@@ -4103,9 +6945,15 @@ class ScheduleOptimizer:
                 day_count += 1
                 logging.info(f"  PATCHED: Assigned {nurse_name} to DAY shift on {date}")
             
-            # Patch night shifts if needed
+            # Patch night shifts if needed — skip nurses locked by night continuation
             while night_count < night_req and off_nurses:
                 nurse_name = off_nurses.pop(0)
+                # Lockout check: don't assign if prev day has Z19 / Z23 B
+                if d_idx > 0 and d_idx - 1 < len(result.get(nurse_name, [])):
+                    prev = result[nurse_name][d_idx - 1]
+                    prev_sc = str(prev.get("shift", "")).strip()
+                    if prev_sc in ("Z19", "Z23 B") and "↩" not in prev_sc:
+                        continue
                 meta = shifts_info.get(night_shift_code, {})
                 result[nurse_name][d_idx] = {
                     "id": str(uuid.uuid4()),
@@ -4342,6 +7190,10 @@ async def preview_constraints(req: OptimizeRequest, db: Session = Depends(get_db
                             if shift_code and day_idx < len(date_list):
                                 shift_upper = shift_code.upper().strip()
                                 # Check for CF variations: CF, CF-, CF 01, CF-01, etc.
+                                # SKIP composite CF+shift codes (e.g. "CF-4 07") —
+                                # those are WORKING shifts, not off days.
+                                if RobustScheduler._is_composite_cf_shift(shift_code):
+                                    continue
                                 if shift_upper.startswith('CF') or shift_upper == 'C':
                                     cf_dates.append(date_list[day_idx])
                         
@@ -4588,24 +7440,27 @@ AVAILABLE ACTIONS:
 - "remove_shift": Remove a shift (set to off day)
 
 AVAILABLE SHIFT CODES (use these exact codes in shift_code field):
-DAY SHIFTS (8-hour = 7.5h actual):
+All hours are PAID hours (clock time minus unpaid breaks).
+
+DAY SHIFTS (8-hour = 7.5h paid):
   - "07" = Day 8hr (07:00-15:15) = 7.5h
   - "11" = Mid 8hr (11:00-19:15) = 7.5h
   - "E15" = Evening 8hr (15:00-23:15) = 7.5h
 
-DAY SHIFTS (12-hour = 11.25h actual):
+DAY SHIFTS (12-hour = 11.25h paid):
   - "Z07" = Day 12hr (07:00-19:25) = 11.25h
   - "Z11" = Mid 12hr (11:00-23:25) = 11.25h
 
-NIGHT SHIFTS (8-hour = 7.5h actual):
+NIGHT SHIFTS (8-hour = 7.5h paid):
   - "23" = Night 8hr (23:00-07:15) = 7.5h
 
-NIGHT SHIFTS (12-hour = 11.25h actual):
-  - "Z19" = Night 12hr (19:00-07:25) = 11.25h
+NIGHT SHIFTS (12-hour merged = 11.25h paid):
+  - "Z19 Z23 B" = Night 12hr (19:00-07:25, coming back) = 11.25h
+  - "Z19 Z23" = Night 12hr (19:00-07:25) = 11.25h
 
 NIGHT TOP-UP/FINISH SHIFTS:
-  - "Z23" = Night Finish (23:00-07:25) = 7.5h
-  - "Z23 B" = Night Finish + Back at 19:00 (23:00-07:25) = 7.5h
+  - "Z23" = Night Finish (23:00-07:25) = 7.25h
+  - "Z23 B" = Night Finish + Back at 19:00 (23:00-07:25) = 7.25h
 
 EXAMPLES:
 
@@ -5239,9 +8094,16 @@ async def optimize_with_constraints(
     This is called after user reviews and edits constraints from /preview.
     """
     try:
-        # Require authentication
-        if not auth.is_authenticated or not auth.organization_id:
-            raise HTTPException(status_code=401, detail="Authentication required")
+        # Require authentication (bypass in dev mode for testing)
+        import os as _os
+        _dev_bypass = _os.environ.get("DEV_BYPASS_AUTH", "").lower() == "true"
+        
+        # DEBUG: Log authentication status
+        logger.info(f"AUTH CHECK: is_authenticated={auth.is_authenticated}, organization_id={auth.organization_id}, user_id={auth.user_id}")
+        
+        if not _dev_bypass and (not auth.is_authenticated or not auth.organization_id):
+            logger.error(f"Authentication failed: is_authenticated={auth.is_authenticated}, organization_id={auth.organization_id}")
+            raise HTTPException(status_code=401, detail=f"Authentication required (authenticated={auth.is_authenticated}, org_id={'present' if auth.organization_id else 'missing'})")
         
         logger.info("=" * 80)
         logger.info("OPTIMIZE WITH CONFIRMED CONSTRAINTS")
@@ -5347,6 +8209,7 @@ async def optimize_with_constraints(
         raise e
     except Exception as e:
         logger.error(f"Error in optimize_with_constraints: {str(e)}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/", response_model=OptimizeResponse)
@@ -5372,7 +8235,11 @@ async def optimize_schedule(
             logger.info(f"  {i}. {nurse_dict.get('name', 'UNNAMED')}")
         logger.info(f"Assignments (OCR data): {len(req.assignments) if req.assignments else 0} nurses")
         if req.assignments:
-            logger.info(f"  Nurses with OCR data: {list(req.assignments.keys())}")
+            logger.warning(f"🎯 RAW OCR ASSIGNMENTS FROM FRONTEND:")
+            for nurse_name, shift_list in req.assignments.items():
+                non_empty = [s for s in shift_list if s and str(s).strip() and str(s).strip() not in ("—", "-")]
+                if non_empty:
+                    logger.warning(f"  '{nurse_name}': {non_empty}")
         logger.info(f"Notes: {req.notes}")
         logger.info(f"Staff requirements override: {req.staffRequirements}")
         logger.info("=" * 80)
@@ -5603,10 +8470,12 @@ async def optimize_schedule(
         # Use authenticated organization_id
         org_id = auth.organization_id
 
+        schedule_payload = _with_actor_metadata(schedule, auth)
+
         new_schedule = OptimizedSchedule(
             schedule_id=req.schedule_id if req.schedule_id else None,
             organization_id=org_id,
-            result=schedule,  # Use schedule directly
+            result=schedule_payload,
             finalized=False,
         )
         db.add(new_schedule)
@@ -5650,6 +8519,7 @@ async def list_optimized_schedules(
         result_data = s.result or {}
         schedule_data = _normalize_schedule_payload(result_data)
         start_date, end_date = _resolve_schedule_date_range(result_data, schedule_data)
+        created_by, created_by_name = _extract_schedule_actor(result_data, schedule_data)
         
         result.append({
             "id": str(s.id),
@@ -5659,6 +8529,8 @@ async def list_optimized_schedules(
             "start_date": start_date,
             "end_date": end_date,
             "schedule_data": schedule_data,
+            "created_by": created_by,
+            "created_by_name": created_by_name,
             "created_at": s.created_at.isoformat() if s.created_at else None,
         })
     return result
@@ -5677,6 +8549,7 @@ async def get_optimized_schedule(
         result_data = schedule.result or {}
         schedule_data = _normalize_schedule_payload(result_data)
         start_date, end_date = _resolve_schedule_date_range(result_data, schedule_data)
+        created_by, created_by_name = _extract_schedule_actor(result_data, schedule_data)
         
         return {
             "id": str(schedule.id),
@@ -5686,6 +8559,8 @@ async def get_optimized_schedule(
             "start_date": start_date,
             "end_date": end_date,
             "schedule_data": schedule_data,
+            "created_by": created_by,
+            "created_by_name": created_by_name,
             "created_at": schedule.created_at.isoformat() if schedule.created_at else None,
         }
     except HTTPException:
@@ -5731,9 +8606,11 @@ async def create_draft_schedule(
         
         org_id = auth.organization_id
 
+        payload = _with_actor_metadata(schedule_data, auth)
+
         new_schedule = OptimizedSchedule(
             organization_id=org_id,
-            result=schedule_data or {},
+            result=payload,
             finalized=False,
         )
         db.add(new_schedule)
@@ -5766,7 +8643,7 @@ async def update_draft_schedule(
 
         existing_payload = schedule.result if isinstance(schedule.result, dict) else {}
         patch_payload = schedule_data if isinstance(schedule_data, dict) else {}
-        merged_payload = {**existing_payload, **patch_payload}
+        merged_payload = _with_actor_metadata({**existing_payload, **patch_payload}, auth)
 
         schedule.organization_id = auth.organization_id if auth.is_authenticated else schedule.organization_id
         schedule.result = merged_payload
@@ -5794,8 +8671,7 @@ async def update_draft_schedule(
 
 @router.post("/save-and-finalize")
 async def save_and_finalize_schedule(
-    schedule_data: Dict[str, Any],
-    schedule_id: Optional[str] = None,
+    body: Dict[str, Any],
     auth: AuthContext = Depends(get_optional_auth),
     db: Session = Depends(get_db)
 ):
@@ -5806,6 +8682,11 @@ async def save_and_finalize_schedule(
             raise HTTPException(status_code=401, detail="Authentication required")
         
         org_id = auth.organization_id
+        
+        # Extract schedule_data and schedule_id from the request body
+        # Frontend sends: {schedule_data: {...}, schedule_id: "..."}
+        schedule_data = body.get("schedule_data", body)
+        schedule_id = body.get("schedule_id")
 
         existing_draft = None
         if schedule_id:
@@ -5813,7 +8694,7 @@ async def save_and_finalize_schedule(
 
         if existing_draft:
             existing_draft.organization_id = org_id
-            existing_draft.result = schedule_data
+            existing_draft.result = _with_actor_metadata(schedule_data, auth)
             existing_draft.finalized = True
             # Surface finalize action in Recent Activity ordering
             existing_draft.created_at = datetime.utcnow()
@@ -5828,9 +8709,11 @@ async def save_and_finalize_schedule(
                 "message": "Schedule finalized successfully"
             }
 
+        payload = _with_actor_metadata(schedule_data, auth)
+
         new_schedule = OptimizedSchedule(
             organization_id=org_id,
-            result=schedule_data,
+            result=payload,
             finalized=True,  # Immediately finalized
         )
         db.add(new_schedule)
@@ -5941,29 +8824,90 @@ async def get_schedule_insights(request: InsightsRequest):
         overworked: list = []
         underworked: list = []
 
+        # Debug: Count Z23 tails with hours=0 vs hours>0
+        total_z23_tails = 0
+        z23_with_zero_hours = 0
+        z23_with_positive_hours = 0
+        total_raw_hours = 0.0
         for nurse_name, shifts in request.schedule.items():
-            work_shifts = [s for s in shifts if s.get("shiftType") != "off" and s.get("shift", "") not in ["", "OFF"]]
-            nurse_hours = sum(float(s.get("hours", 0)) for s in work_shifts)
+            for s in shifts:
+                shift_code = (s.get("shift") or "").strip().upper()
+                hours = float(s.get("hours", 0) or 0)
+                total_raw_hours += hours
+                if shift_code == "Z23" or "Z23" in shift_code:
+                    total_z23_tails += 1
+                    if hours == 0:
+                        z23_with_zero_hours += 1
+                    elif hours > 0:
+                        z23_with_positive_hours += 1
+        
+        logger.info(f"DEBUG AI Insights RAW DATA ANALYSIS:")
+        logger.info(f"  Total raw hours (before filtering): {total_raw_hours:.1f}h")
+        logger.info(f"  Total Z23 codes found: {total_z23_tails}")
+        logger.info(f"  Z23 with hours=0: {z23_with_zero_hours}")
+        logger.info(f"  Z23 with hours>0: {z23_with_positive_hours}")
+        
+        # Debug: Log first nurse's raw data from request
+        if request.schedule:
+            first_nurse = list(request.schedule.keys())[0]
+            logger.info(f"DEBUG AI Insights - First nurse raw data: {first_nurse}")
+            logger.info(f"  Total shifts in request: {len(request.schedule[first_nurse])}")
+            for i, s in enumerate(request.schedule[first_nurse][:5]):  # First 5 shifts
+                logger.info(f"    Shift {i}: code='{s.get('shift')}', hours={s.get('hours')}, type='{s.get('shiftType')}'")
+        
+        for nurse_name, shifts in request.schedule.items():
+            # Exclude off days, CF codes (vacation), and empty cells from work hours
+            work_shifts = []
+            for s in shifts:
+                shift_code = (s.get("shift") or "").strip().upper()
+                shift_type = s.get("shiftType", "")
+                hours = float(s.get("hours", 0) or 0)
+                
+                # Exclude offs, empty cells, and simple CF codes (vacation)
+                # Include composite CF codes (CF-4 07) as they are WORK shifts
+                is_composite_cf = bool(re.match(r"^CF[-\s]?\d+\s+(Z?(?:07|11|19|23|E15)(?:\s*B)?)\s*$", shift_code, re.IGNORECASE))
+                is_work = (
+                    hours > 0 and
+                    shift_type not in ("", "off") and
+                    shift_code not in ("", "OFF", "C") and
+                    (not shift_code.startswith("CF") or is_composite_cf)
+                )
+                if is_work:
+                    work_shifts.append(s)
+            
+            nurse_hours = sum(float(s.get("hours", 0) or 0) for s in work_shifts)
             total_scheduled_hours += nurse_hours
             working_days = len(work_shifts)
+            
+            # Debug: Log work shift calculation for first nurse
+            if len(nurse_lines) == 0:
+                logger.info(f"DEBUG AI Insights - {nurse_name}: {len(shifts)} total shifts, {len(work_shifts)} work shifts (filtered), {nurse_hours:.1f}h")
+                logger.info(f"  Sample shifts: {shifts[:3]}")
 
             if nurse_name in nurse_stats_map:
                 stat = nurse_stats_map[nurse_name]
                 target_h = float(stat.get("targetHours", 0))
                 delta_h = float(stat.get("delta", nurse_hours - target_h))
                 emp_type = stat.get("employmentType", "FT")
+                # Count off-requests from metadata
+                off_requests = stat.get("offRequests", [])
+                num_off_requests = len(off_requests) if off_requests else 0
             else:
                 emp_type = "FT"
                 target_h = 37.5 * num_weeks
                 delta_h = nurse_hours - target_h
+                num_off_requests = 0
 
             off_days = [s.get("date") for s in shifts if s.get("shiftType") == "off" or s.get("shift", "") in ["", "OFF"]]
             nurse_lines.append(
                 f"- {nurse_name} ({emp_type}): {working_days} shifts / {nurse_hours:.1f}h | target {target_h:.1f}h | delta {delta_h:+.1f}h | off on {len(off_days)} days"
             )
-            if delta_h > 5:
+            # Only flag as overworked if significantly over target (>10h) to avoid false positives
+            # Nurses with off-requests have adjusted targets, so small positive deltas are normal
+            if delta_h > 10 and emp_type in ("PT", "Part-Time"):
                 overworked.append(f"{nurse_name} ({delta_h:+.1f}h)")
-            elif delta_h < -5:
+            elif delta_h < -10 and num_off_requests == 0:
+                # Only flag underworked if they have NO approved off-requests
                 underworked.append(f"{nurse_name} ({delta_h:+.1f}h)")
 
         total_target_hours = sum(
@@ -6008,6 +8952,9 @@ async def get_schedule_insights(request: InsightsRequest):
         language_instruction = ""
         if request.locale and request.locale.startswith("fr"):
             language_instruction = "\n\nIMPORTANT: Respond in French. All text in the JSON response (summary, issue titles/descriptions, suggestions) must be in French."
+        
+        # Debug: Log the calculated totals before sending to AI
+        logger.info(f"DEBUG AI Insights totals: total_scheduled_hours={total_scheduled_hours:.1f}h, total_target_hours={total_target_hours:.1f}h, delta={total_scheduled_hours - total_target_hours:+.1f}h")
         
         insights_prompt = f"""You are an expert nurse scheduling analyst. Analyze the following optimized nurse schedule and return a structured JSON report.{org_context_line}{language_instruction}
 
@@ -6123,6 +9070,7 @@ Rules:
         # ── Deterministic gap-fill suggestions ──────────────────────────
         # For each date, compute staffing coverage and find underworked
         # nurses who are available (not already scheduled) to fill gaps.
+        # Hours are PAID hours (clock time minus breaks)
         SHIFT_CODE_MAP = {
             "07":  {"start": "07:00", "end": "15:15", "hours": 7.5,   "type": "day"},
             "Z07": {"start": "07:00", "end": "19:25", "hours": 11.25, "type": "day"},
@@ -6130,8 +9078,8 @@ Rules:
             "Z11": {"start": "11:00", "end": "23:25", "hours": 11.25, "type": "day"},
             "E15": {"start": "15:00", "end": "23:15", "hours": 7.5,   "type": "day"},
             "23":  {"start": "23:00", "end": "07:15", "hours": 7.5,   "type": "night"},
-            "Z19": {"start": "19:00", "end": "07:25", "hours": 11.25, "type": "night"},
-            "Z23": {"start": "23:00", "end": "11:25", "hours": 11.25, "type": "night"},
+            "Z19": {"start": "19:00", "end": "23:00", "hours": 4.0,   "type": "night"},
+            "Z23": {"start": "23:00", "end": "07:25", "hours": 7.25,  "type": "night"},
         }
 
         gap_fill_suggestions = []
@@ -6147,22 +9095,53 @@ Rules:
                             worked.add(s["date"])
                 nurse_dates[nurse_name] = worked
 
-            # Per-date headcount
-            date_headcount: dict[str, int] = {}
+            # Per-date headcount (day and night separately)
+            date_headcount: dict[str, dict[str, int]] = {}
             for d in request.dates:
-                count = 0
-                for nurse_name, worked in nurse_dates.items():
-                    if d in worked:
-                        count += 1
-                date_headcount[d] = count
+                day_count = 0
+                night_count = 0
+                for nurse_name, shifts_list in request.schedule.items():
+                    for s in shifts_list:
+                        if s.get("date") == d and (s.get("hours") or 0) > 0:
+                            shift_type = s.get("shiftType", "")
+                            if shift_type == "day":
+                                day_count += 1
+                            elif shift_type == "night":
+                                # Skip Z23 tails (0h continuation)
+                                if (s.get("hours") or 0) > 0:
+                                    night_count += 1
+                date_headcount[d] = {"day": day_count, "night": night_count, "total": day_count + night_count}
 
-            # Find dates with low staffing (below average)
-            if date_headcount:
-                avg_staff = sum(date_headcount.values()) / len(date_headcount)
-                understaffed_dates = sorted(
-                    [(d, c) for d, c in date_headcount.items() if c < avg_staff * 0.85],
-                    key=lambda x: x[1],
-                )
+            # Find dates with staffing BELOW required minimum (not just below average)
+            understaffed_dates = []
+            if date_headcount and request.requiredStaff:
+                # Parse required staff from requiredStaff dict
+                # Format: {"Day Shift (07)": {"2025-08-24": 5, ...}, "Night Shift (19)": {...}}
+                for d in request.dates:
+                    actual = date_headcount.get(d, {"day": 0, "night": 0, "total": 0})
+                    
+                    # Calculate required staff for this date
+                    required_day = 5  # default minimum
+                    required_night = 4  # default minimum
+                    
+                    for shift_type_key, dates_dict in (request.requiredStaff or {}).items():
+                        key_lower = shift_type_key.lower()
+                        if "day" in key_lower or "07" in key_lower or "morning" in key_lower:
+                            req = dates_dict.get(d, 0)
+                            if req > required_day:
+                                required_day = req
+                        elif "night" in key_lower or "19" in key_lower or "23" in key_lower:
+                            req = dates_dict.get(d, 0)
+                            if req > required_night:
+                                required_night = req
+                    
+                    # Only flag if BELOW requirement (not just below average)
+                    if actual["day"] < required_day or actual["night"] < required_night:
+                        gap_size = max(required_day - actual["day"], required_night - actual["night"])
+                        understaffed_dates.append((d, actual["total"], required_day, required_night, gap_size))
+                
+                # Sort by gap size (largest first)
+                understaffed_dates.sort(key=lambda x: x[4], reverse=True)
             else:
                 understaffed_dates = []
 
@@ -6186,7 +9165,7 @@ Rules:
 
             # Generate gap-fill suggestions: match understaffed dates with available nurses
             used_nurse_dates: dict[str, set[str]] = {}  # track suggestions to avoid double-booking
-            for date, headcount in understaffed_dates[:10]:  # limit to top 10 gaps
+            for date, headcount, required_day, required_night, gap_size in understaffed_dates[:10]:  # limit to top 10 gaps
                 for nurse in ranked_nurses:
                     nurse_name = nurse["name"]
                     if nurse_name not in used_nurse_dates:
@@ -6220,6 +9199,9 @@ Rules:
                         recommended_hours = 7.5
 
                     code_info = SHIFT_CODE_MAP.get(recommended_code, {})
+                    
+                    # Calculate required total staff
+                    required_total = required_day + required_night
 
                     gap_fill_suggestions.append({
                         "date": date,
@@ -6230,12 +9212,13 @@ Rules:
                         "shiftHours": recommended_hours,
                         "shiftType": code_info.get("type", "day"),
                         "currentHeadcount": headcount,
-                        "averageHeadcount": round(avg_staff, 1),
+                        "requiredStaff": required_total,
+                        "gapSize": gap_size,
                         "nurseDelta": nurse["delta"],
                         "nurseCurrentHours": nurse["totalHours"],
                         "nurseTargetHours": nurse["targetHours"],
                         "nurseEmploymentType": nurse["employmentType"],
-                        "priority": "high" if headcount <= avg_staff * 0.7 else "medium",
+                        "priority": "high" if gap_size >= 2 else "medium",
                     })
 
                     used_nurse_dates[nurse_name].add(date)
