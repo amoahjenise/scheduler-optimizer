@@ -2163,7 +2163,6 @@ export default function SchedulerPage() {
         staffNotes: Object.keys(staffNotes).length > 0 ? staffNotes : undefined,
         markerComments: autoComments || undefined,
         locale: locale,
-        requiredStaff: requiredStaff,
       });
 
       setInsightsData(data);
@@ -5927,9 +5926,7 @@ export default function SchedulerPage() {
                                       </span>
                                       <span className="text-xs text-gray-500">
                                         ({gf.currentHeadcount} staff vs{" "}
-                                        {gf.requiredStaff ||
-                                          gf.averageHeadcount}{" "}
-                                        required)
+                                        {gf.averageHeadcount} required)
                                       </span>
                                     </div>
                                     <div className="mt-1.5 flex items-center gap-2 text-sm">
