@@ -108,14 +108,13 @@ SHIFT_CODES = {
     "Z07": {"label": "Day 12hr", "type": "day", "hours": 11.25, "contract_hours": MCH_Z_SHIFT_CONTRACT_VALUE, "start": "07:00", "end": "19:25"},
     "Z11": {"label": "Mid 12hr", "type": "day", "hours": 11.25, "contract_hours": MCH_Z_SHIFT_CONTRACT_VALUE, "start": "11:00", "end": "23:25"},
     # Night shift components (MCH bridge/tail system)
-    # Z19   = Night rotation start (19:00→07:25 next day)  — 11.25h paid
+    # Z19   = Night rotation start (19:00→07:25 next day)  — 11.25h paid (merged 12h night)
     # Z23 B = BRIDGE: morning finish + evening return       — 11.25h paid
-    # Z23   = TAIL: morning finish only (end of rotation)   — 0h (in prev shift)
-    # Standalone values below are for lookup only; context-dependent hours are
-    # applied in OCR Step 1 and Step 1.5 (Z19=11.25h, Z23 B=11.25h, Z23=0h).
-    "Z19": {"label": "Night Start", "type": "night", "hours": 4.0, "contract_hours": 4.0, "start": "19:00", "end": "23:59"},
-    "Z23": {"label": "Night Tail", "type": "night", "hours": 7.25, "contract_hours": 7.25, "start": "00:00", "end": "07:25"},
-    "Z23 B": {"label": "Night Bridge", "type": "night", "hours": 7.25, "contract_hours": 7.25, "start": "00:00", "end": "07:25"},
+    # Z23   = TAIL: morning finish only (end of rotation)   — 0h (hours in previous shift)
+    # Context-dependent hours: Z19 always 11.25h, Z23 B always 11.25h, Z23 = 0h when after night shift
+    "Z19": {"label": "Night Start", "type": "night", "hours": 11.25, "contract_hours": MCH_Z_SHIFT_CONTRACT_VALUE, "start": "19:00", "end": "07:25"},
+    "Z23": {"label": "Night Tail", "type": "night", "hours": 0.0, "contract_hours": 0.0, "start": "00:00", "end": "07:25"},
+    "Z23 B": {"label": "Night Bridge", "type": "night", "hours": 11.25, "contract_hours": MCH_Z_SHIFT_CONTRACT_VALUE, "start": "00:00", "end": "07:25"},
     "OFF": {"label": "Off", "type": "off", "hours": 0, "contract_hours": 0, "start": "", "end": ""},
 }
 
