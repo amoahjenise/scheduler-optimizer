@@ -5763,6 +5763,10 @@ class ScheduleOptimizer:
                             logging.info(f"🔒 HARD-CAP OCR-protecting: {schedule_name} on {date_list[a_idx]} = {a_code}")
 
         # Pre-compute per-nurse shift counts and target shift counts for smart removal
+        # CRITICAL: Scale shift targets by period length (41 days = ~3 bi-weekly periods)
+        period_scale = len(date_list) / 14.0  # How many bi-weekly periods in this schedule
+        logging.info(f"PER-NURSE CAP SCALING: period_scale={period_scale:.2f} ({len(date_list)} days / 14)")
+        
         _nurse_shift_counts: dict = {}
         for nname, nrow in schedule.items():
             _nurse_shift_counts[nname] = sum(
@@ -5773,10 +5777,12 @@ class ScheduleOptimizer:
         for n in nurses:
             emp = str(n.get("employmentType", "")).lower()
             if emp in ("full-time", "ft", ""):
-                _nurse_target_shifts[n["name"]] = MCH_FT_SHIFT_COUNT
+                base_target = MCH_FT_SHIFT_COUNT  # 7 shifts per 14 days
+                _nurse_target_shifts[n["name"]] = int(base_target * period_scale + 0.5)
             else:
                 tbw = float(n.get("targetBiWeeklyHours", 37.5) or 37.5)
-                _nurse_target_shifts[n["name"]] = max(1, round(tbw / MCH_Z_SHIFT_CLINICAL_VALUE))
+                base_target = max(1, round(tbw / MCH_Z_SHIFT_CLINICAL_VALUE))
+                _nurse_target_shifts[n["name"]] = int(base_target * period_scale + 0.5)
 
         hardcap_removals = 0
         for d_idx, d_date in enumerate(date_list):
@@ -5844,16 +5850,19 @@ class ScheduleOptimizer:
         # ── PER-NURSE SHIFT LIMIT ENFORCEMENT ──────────────────────────
         # After OCR overlay may have restored shifts that _final_safety_pass
         # trimmed, enforce per-nurse max shifts one more time.
+        # CRITICAL: Scale max_shifts by period length to allow appropriate workload
         nurse_map_for_cap = {n["name"]: n for n in nurses}
         pn_cap_removals = 0
         for nname, nrow in schedule.items():
             meta = nurse_map_for_cap.get(nname, {})
             emp = str(meta.get("employmentType", "")).lower()
             if emp in ("full-time", "ft", ""):
-                max_shifts = MCH_FT_SHIFT_COUNT  # 7
+                base_max = MCH_FT_SHIFT_COUNT  # 7 shifts per 14 days
+                max_shifts = int(base_max * period_scale + 0.5)
             else:
                 tbw = float(meta.get("targetBiWeeklyHours", 37.5) or 37.5)
-                max_shifts = max(1, int(tbw / MCH_Z_SHIFT_CLINICAL_VALUE + 0.5))
+                base_max = max(1, int(tbw / MCH_Z_SHIFT_CLINICAL_VALUE + 0.5))
+                max_shifts = int(base_max * period_scale + 0.5)
 
             # Count paid shifts and collect removable indices
             paid = []
