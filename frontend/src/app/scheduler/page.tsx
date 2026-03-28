@@ -17,8 +17,6 @@ import ConstraintsConfirmation from "../components/ConstraintsConfirmation";
 import ShiftCodesPopover from "../components/ShiftCodesPopover";
 import { useOrganization } from "../context/OrganizationContext";
 import {
-  optimizeScheduleAPI,
-  finalizeScheduleAPI,
   refineScheduleAPI,
   analyzeScheduleInsightsAPI,
   saveAndFinalizeScheduleAPI,
@@ -72,7 +70,6 @@ import {
   normalizeNurseName,
   extractOffDatesFromComments,
   getDefaultDates,
-  deduplicateNightShifts,
   deduplicateGridGhosts,
   deduplicateNurseCandidates,
   matchNursesWithDatabase,
@@ -175,6 +172,9 @@ export default function SchedulerPage() {
   // Step 2: Upload & OCR
   const [screenshots, setScreenshots] = useState<File[]>([]);
   const [ocrLoading, setOcrLoading] = useState(false);
+  const [pageLoading, setPageLoading] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
+  const [creatingNurses, setCreatingNurses] = useState(false);
   const [ocrError, setOcrError] = useState<string | null>(null);
 
   // Step 3: Review
@@ -242,7 +242,6 @@ export default function SchedulerPage() {
     NewNurseCandidate[]
   >([]);
   const [showCreateNursesModal, setShowCreateNursesModal] = useState(false);
-  const [creatingNurses, setCreatingNurses] = useState(false);
 
   // Step 4: Optimize
   // Step 5: Result
@@ -464,7 +463,15 @@ export default function SchedulerPage() {
     let cancelled = false;
     (async () => {
       try {
-        const saved = await getLatestScheduleRuleAPI(currentOrganization.id);
+        const token = await getToken();
+        const headers: Record<string, string> = {};
+        if (token) {
+          headers["Authorization"] = `Bearer ${token}`;
+        }
+        const saved = await getLatestScheduleRuleAPI(
+          currentOrganization.id,
+          headers,
+        );
         if (!cancelled && saved?.rules_text && !rules.trim()) {
           setRules(saved.rules_text);
         }
@@ -477,7 +484,7 @@ export default function SchedulerPage() {
     return () => {
       cancelled = true;
     };
-  }, [rulesLoaded, currentOrganization?.id, rules]);
+  }, [rulesLoaded, currentOrganization?.id, rules, getToken]);
 
   // Wrap setOcrGrid to detect nurse-name edits and sync manualNurses
   const handleSetOcrGrid: React.Dispatch<React.SetStateAction<GridRow[]>> =
@@ -590,16 +597,31 @@ export default function SchedulerPage() {
 
     for (const nurse of organizationNurses) {
       const isPartTime = nurse.employment_type === "part-time";
-      const configuredMaxWeeklyHours = isPartTime
+      const configuredBiWeeklyTarget = isPartTime
         ? defaultPartTimeMaxWeeklyHours
         : defaultFullTimeMaxWeeklyHours;
-      const dbMaxWeeklyHours =
-        typeof nurse.max_weekly_hours === "number"
-          ? nurse.max_weekly_hours
-          : undefined;
 
-      const resolvedMaxHours =
-        dbMaxWeeklyHours == null ? configuredMaxWeeklyHours : dbMaxWeeklyHours;
+      // For PT nurses, max_weekly_hours often contains the actual bi-weekly target
+      // (e.g., 33.75h, 26.25h). Only use bi_weekly_target_hours if it's valid for PT.
+      let resolvedMaxHours: number;
+      if (isPartTime) {
+        const dbTarget = nurse.bi_weekly_target_hours;
+        // If bi_weekly_target_hours >= 65, it's likely the default FT value (75.0)
+        // Use max_weekly_hours as the bi-weekly target instead
+        if (typeof dbTarget === "number" && dbTarget < 65) {
+          resolvedMaxHours = dbTarget;
+        } else if (typeof nurse.max_weekly_hours === "number") {
+          resolvedMaxHours = nurse.max_weekly_hours;
+        } else {
+          resolvedMaxHours = configuredBiWeeklyTarget;
+        }
+      } else {
+        // FT nurses: use bi_weekly_target_hours or default to 75
+        resolvedMaxHours =
+          typeof nurse.bi_weekly_target_hours === "number"
+            ? nurse.bi_weekly_target_hours
+            : configuredBiWeeklyTarget;
+      }
 
       const key = normalizeNurseName(nurse.name);
       const existing = metadata.get(key);
@@ -668,14 +690,16 @@ export default function SchedulerPage() {
     const dateSet = new Set(scheduleDatesForStats);
 
     // Pre-build a map of OCR off-day dates per nurse (from the original OCR
-    // grid).  Only genuine vacation/off codes (C, OFF) reduce the target.
+    // grid).  Codes that count as off days for target reduction:
+    //  - "C" = congé/vacation
+    //  - "OFF" = explicit off
+    //  - "CF-*" = congé férié (statutory holiday) — the nurse is paid
+    //    for the day but does not work a shift, so the target must be
+    //    reduced to avoid a false under-hours / OT warning.
     //
     // NOT counted as off days:
     //  - "*" = comment marker (the actual off determination is in
     //    autoComments / Employee Notes & Time-Off Requests).
-    //  - "CF-*" = paid continuing-education/formation. CF hours are already
-    //    included in the paid-hours total, so deducting them from the target
-    //    as well would double-penalise the nurse.
     const ocrOffDatesByNurse = new Map<string, Set<string>>();
     for (const ocrRow of ocrGrid) {
       const normName = normalizeNurseName(ocrRow.nurse);
@@ -689,8 +713,8 @@ export default function SchedulerPage() {
           .replace(/\s*\*\s*$/, "")
           .trim()
           .toUpperCase();
-        // Only C (congé/vacation) and OFF are genuine off days for target
-        // reduction.  Skip empty codes (bare "*" after stripping).
+        // C and OFF reduce the target. CF-* (statutory holidays) do NOT
+        // reduce the target — they are paid shifts counted in worked hours.
         if (code && (code === "C" || code === "OFF")) {
           offSet.add(shift.date);
         }
@@ -706,64 +730,181 @@ export default function SchedulerPage() {
     return filteredOptimizedGrid
       .map((row) => {
         // ── Step 1: Correct stored hours using SHIFT_CODES as authority ──
-        const correctedShifts = row.shifts.map((s) => {
-          if (!s.shift) return s;
-          const code = s.shift
+        // PAID HOURS: 12h shifts = 11.25h, 8h shifts = 7.5h
+        const correctedShifts: ShiftEntry[] = row.shifts.map(
+          (s): ShiftEntry => {
+            if (!s.shift) return s;
+            const code = s.shift
+              .replace(/\s*\*\s*$/, "")
+              .trim()
+              .toUpperCase();
+
+            // Z19 is ALWAYS a full 12h night (11.25h paid).
+            // The standalone evening interpretation (4h) doesn't apply in
+            // MCH schedules — Z19 always represents the merged Z19+Z23
+            // block. Do NOT let SHIFT_CODES override to 4h.
+            if (code === "Z19") {
+              return { ...s, hours: 11.25, shiftType: "night" };
+            }
+
+            // Z23 / Z23 B: Skip SHIFT_CODES correction entirely.
+            // Context-dependent hours are set in Step 1b below:
+            //   Z23 B in rotation = 11.25h (bridge)
+            //   Z23 in rotation = 0h (tail)
+            //   Standalone = kept as-is from backend
+            if (code === "Z23" || code === "Z23 B") {
+              return s;
+            }
+
+            const def = SHIFT_CODES.find(
+              (sc) => sc.code.toUpperCase() === code,
+            );
+            if (def) {
+              // Exact match found - use its hours
+              if (def.hours !== s.hours) {
+                return { ...s, hours: def.hours, shiftType: def.type };
+              }
+              return s;
+            }
+            // No exact match - infer PAID hours from pattern
+            // Merged night shifts (Z19 + Z23 in any format)
+            if (code.includes("Z19") && code.includes("Z23")) {
+              return { ...s, hours: 11.25, shiftType: "night" };
+            }
+            // 12h Z-codes (Z07, Z11, ZD12-, etc.)
+            if (
+              code.startsWith("Z") &&
+              !code.startsWith("Z19") &&
+              !code.startsWith("Z23")
+            ) {
+              return { ...s, hours: 11.25, shiftType: "day" };
+            }
+            // ZN- or ZE2- combined patterns
+            if (code.includes("ZN") && code.includes("ZE2")) {
+              return { ...s, hours: 11.25, shiftType: "night" };
+            }
+            // Standalone Z23 variants (7.25h night) — only when NOT
+            // a continuation (continuation detection is below).
+            if (code.startsWith("Z23") || code.startsWith("ZN-")) {
+              return { ...s, hours: 7.25, shiftType: "night" };
+            }
+            // Standard 8h codes
+            if (/^(07|11|E15|23|D8-|E8-|N8-|I1)/.test(code)) {
+              const shiftType =
+                code.includes("23") || code.includes("N8") ? "night" : "day";
+              return { ...s, hours: 7.5, shiftType };
+            }
+            return s;
+          },
+        );
+
+        // ── Step 1b: Night rotation context detection ──
+        // MCH NIGHT ROTATION (bridge/tail model):
+        //   Z19(N, 11.25h) → Z23 B(N+1, 11.25h bridge) → ... → Z23(last, 0h tail)
+        //
+        // Z23 B = BRIDGE ("Bascule"): finish morning (00:00-07:25) AND return
+        //   evening (19:00-07:25). Full paid shift = 11.25h.
+        // Z23   = TAIL: finish morning only (00:00-07:25). 0h (already counted
+        //   in previous Z19 or Z23 B).
+        //
+        // This MUST run regardless of what hours the backend sent.
+        for (let i = 1; i < correctedShifts.length; i++) {
+          const curr = correctedShifts[i];
+          const currCode = (curr.shift || "")
             .replace(/\s*\*\s*$/, "")
             .trim()
             .toUpperCase();
-          const def = SHIFT_CODES.find((sc) => sc.code.toUpperCase() === code);
-          if (def && def.hours !== s.hours) {
-            return { ...s, hours: def.hours, shiftType: def.type };
+          if (currCode !== "Z23" && currCode !== "Z23 B") continue;
+
+          const prev = correctedShifts[i - 1];
+          const prevCode = (prev.shift || "")
+            .replace(/\s*\*\s*$/, "")
+            .trim()
+            .toUpperCase();
+
+          // Previous day is a night code → this is part of a rotation
+          if (
+            prevCode === "Z19" ||
+            prevCode === "Z23 B" ||
+            prevCode === "Z23"
+          ) {
+            if (currCode === "Z23 B") {
+              // BRIDGE: finish morning + return evening = 11.25h paid
+              correctedShifts[i] = { ...curr, hours: 11.25 };
+            } else {
+              // TAIL: finish morning only = 0h (hours in previous shift)
+              correctedShifts[i] = { ...curr, hours: 0 };
+            }
           }
-          return s;
-        });
+        }
 
-        // ── Step 2: Deduplicate night-shift wrap-around tails ──
-        const deduplicatedShifts = deduplicateNightShifts(
-          [...correctedShifts].sort((a, b) => a.date.localeCompare(b.date)),
-        );
-
-        // ── Step 3: Compute total hours (sum of shift code values) ──
-        const totalHours = deduplicatedShifts.reduce(
+        // ── Step 2: Compute total hours (sum of shift code values) ──
+        const totalHours = correctedShifts.reduce(
           (sum, shift) => sum + (shift.hours || 0),
           0,
         );
 
-        // ── Step 4: Count shifts by type ──
-        // 12h shifts (Z-codes ≥ 11h) and 8h shifts (< 11h) are counted
-        // separately. CF-* (training/leave) excluded from worked shifts.
+        // ── Step 3: Count shifts by type ──
+        // 12h shifts (Z-codes ≥ 11h), 8h shifts (< 11h), and CF shifts
+        // are counted separately. Composite CF shifts (e.g., "CF-4 07") count
+        // as CF, not as their underlying shift type.
         let count12h = 0;
         let count8h = 0;
-        const workingShifts = deduplicatedShifts.filter((s) => {
+        let countCF = 0;
+        const workingShifts = correctedShifts.filter((s) => {
           if (s.hours <= 0) return false;
-          const code = (s.shift || "")
-            .replace(/\s*\*\s*$/, "")
-            .replace(/\s*↩\s*$/, "")
-            .trim()
-            .toUpperCase();
-          if (code.startsWith("CF")) return false;
+          // Include ALL paid shifts (clinical + CF)
           return true;
         });
+
+        // Helper to detect composite CF codes like "CF-4 07", "CF-11 Z07"
+        const isCompositeCF = (code: string): boolean => {
+          return /^CF[-\s]?\d+\s+(Z?(?:07|11|19|23|E15)(?:\s*B)?)\s*$/i.test(
+            code,
+          );
+        };
+
+        // Helper to extract underlying shift from composite CF
+        const extractShiftFromCF = (code: string): string | null => {
+          const match = code.match(
+            /^CF[-\s]?\d+\s+(Z?(?:07|11|19|23|E15)(?:\s*B)?)\s*$/i,
+          );
+          return match ? match[1] : null;
+        };
+
         for (const s of workingShifts) {
-          if (s.hours >= 11) count12h++;
-          else count8h++;
+          const code = (s.shift || "")
+            .replace(/\s*\*\s*$/, "")
+            .trim()
+            .toUpperCase();
+
+          // Check if it's a composite CF first (e.g., "CF-4 07")
+          if (isCompositeCF(code)) {
+            // Count composite CF shifts separately, not as underlying shift type
+            countCF++;
+          } else if (code.startsWith("CF")) {
+            // Simple CF code (off-day) - shouldn't have hours > 0
+            // but if it does, count as CF
+            countCF++;
+          } else if (s.hours >= 11) {
+            count12h++;
+          } else {
+            count8h++;
+          }
         }
         const workingDays = workingShifts.length;
 
         // ── Step 5: Validate shift composition ──
-        // Total hours must equal (count12h × 11.25) + (count8h × 7.5)
-        // plus any CF/training hours.  Flag if it doesn't match.
-        const cfShifts = deduplicatedShifts.filter((s) => {
+        // Total hours must equal (count12h × 11.25) + (count8h × 7.5) + CF hours.
+        // CF hours include both composite (e.g., "CF-4 07" = 7.5h) and simple CF codes.
+        const cfShifts = correctedShifts.filter((s) => {
           const code = (s.shift || "")
             .replace(/\s*\*\s*$/, "")
-            .replace(/\s*↩\s*$/, "")
             .trim()
             .toUpperCase();
-          return s.hours > 0 && code.startsWith("CF");
+          return s.hours > 0 && (code.startsWith("CF") || isCompositeCF(code));
         });
         const cfHours = cfShifts.reduce((sum, s) => sum + (s.hours || 0), 0);
-        const cfShiftCount = cfShifts.length;
         const expectedHours = toQuarterHour(
           count12h * 11.25 + count8h * 7.5 + cfHours,
         );
@@ -773,7 +914,7 @@ export default function SchedulerPage() {
         const nurseMetadata = nurseMetadataByName.get(
           normalizeNurseName(row.nurse),
         );
-        // Use maxHours (from max_weekly_hours DB field) as bi-weekly target;
+        // Use maxHours (from bi_weekly_target_hours DB field) as bi-weekly target;
         // target_weekly_hours is deprecated. Fall back to employment type defaults.
         const biWeeklyHours =
           typeof nurseMetadata?.maxHours === "number" &&
@@ -800,15 +941,16 @@ export default function SchedulerPage() {
         const ocrOffForNurse =
           ocrOffDatesByNurse.get(normName) || new Set<string>();
 
-        // Optimized grid off codes (fallback for manually-set C/OFF in editor)
+        // Optimized grid off codes (fallback for manually-set C/OFF/CF in editor)
         const optimizedOffDays = new Set(
-          deduplicatedShifts
+          correctedShifts
             .filter((s) => {
               if (!dateSet.has(s.date)) return false;
               const code = (s.shift || "")
                 .replace(/\s*\*\s*$/, "")
                 .trim()
                 .toUpperCase();
+              // Only C and OFF reduce the target. CF is a paid shift.
               return code === "C" || code === "OFF";
             })
             .map((s) => s.date),
@@ -867,13 +1009,22 @@ export default function SchedulerPage() {
         const roundedTargetDays = Math.round(targetDaysExact);
         const targetDaysDisplay = `${roundedTargetDays}`;
 
-        // ── Step 8: Delta = actual paid hours − contract target ──
-        // This is the ONLY delta.  No shift-based inflation.
-        const delta = toQuarterHour(totalHours - contractTargetHours);
+        // ── Step 8: Delta = total paid hours − contract target ──
+        // Delta is simply: sum of ALL paid hours (clinical, not contract-weighted)
+        // minus the base contract target. CF hours count as worked hours.
+        // Example: 7×11.25h + 1×7.5h CF = 86.25h − 75h target = +11.25h delta.
+        const contractHoursForDelta = toQuarterHour(totalHours);
+
+        const delta = toQuarterHour(
+          contractHoursForDelta - contractTargetHours,
+        );
+
+        const clampedDelta = delta;
+
         const dayDelta = workingDays - roundedTargetDays;
         const utilizationPct =
           contractTargetHours > 0
-            ? (totalHours / contractTargetHours) * 100
+            ? (contractHoursForDelta / contractTargetHours) * 100
             : 0;
 
         return {
@@ -882,8 +1033,8 @@ export default function SchedulerPage() {
           workingDays,
           count12h,
           count8h,
+          countCF,
           cfHours: toQuarterHour(cfHours),
-          cfShiftCount,
           hoursValid,
           expectedHours,
           targetHours: contractTargetHours,
@@ -892,7 +1043,7 @@ export default function SchedulerPage() {
           targetDaysMin,
           targetDaysMax,
           targetDaysDisplay,
-          delta,
+          delta: clampedDelta,
           dayDelta,
           biWeeklyHours: toQuarterHour(biWeeklyHours),
           utilizationPct,
@@ -981,6 +1132,14 @@ export default function SchedulerPage() {
           continue;
         }
 
+        // Z23 tails (0h) are already filtered out by the hours > 0 check above.
+        // Z23 B bridges (11.25h) are real staffed shifts and SHOULD count for coverage.
+        // Only skip standalone Z23 entries that somehow passed the hours filter
+        // (shouldn't happen after Step 1b correction, but defensive).
+        if (normalizedCode === "Z23" && (shift.hours || 0) <= 0) {
+          continue;
+        }
+
         const parsed = parseShiftCode(shift.shift || "", shift.date);
         const normalizedShiftType =
           shift.shiftType === "day" || shift.shiftType === "night"
@@ -1015,11 +1174,65 @@ export default function SchedulerPage() {
     let totalOffRequests = 0;
     let respectedOffRequests = 0;
 
+    // Pre-compute off-dates from autoComments outside the per-nurse loop
+    const commentOffByNurse = extractOffDatesFromComments(autoComments);
+
     for (const row of filteredOptimizedGrid) {
       const metadata = nurseMetadataByName.get(normalizeNurseName(row.nurse));
       const offDates = new Set(
         (metadata?.offRequests || []).filter((date) => dateSet.has(date)),
       );
+
+      // Also count off-requests from OCR shift codes (CF, C, OFF) in the
+      // source grid. These represent approved time-off that may not be in
+      // the metadata offRequests array.
+      const ocrRow = ocrGrid.find(
+        (r) => normalizeNurseName(r.nurse) === normalizeNurseName(row.nurse),
+      );
+      if (ocrRow) {
+        for (const s of ocrRow.shifts) {
+          if (!s?.date || !dateSet.has(s.date)) continue;
+          const code = (s.shift || "").replace(/\*/g, "").trim().toUpperCase();
+
+          // Check if it's a composite CF code (work shift on holiday):
+          // Format: "CF-X shift_code" or "CF X shift_code"
+          // Examples: "CF-4 07", "CF-11 Z07", "CF-3 07"
+          // The presence of a shift code after CF-X makes it a WORK shift, not time off
+          const isCompositeCF =
+            /^CF[-\s]?\d+\s+(Z?(?:07|11|19|23|E15)(?:\s*B)?)\s*$/i.test(code);
+
+          // Only count simple CF codes (vacation/off), not composite CF (work shifts)
+          // Simple CF examples: "CF", "C", "OFF", "CF-1", "CF-2" (without shift code)
+          if (!isCompositeCF) {
+            if (
+              code === "C" ||
+              code === "CF" ||
+              code === "OFF" ||
+              (code.startsWith("CF") && !code.includes(" "))
+            ) {
+              offDates.add(s.date);
+            }
+          }
+        }
+      }
+
+      // Also count off-requests from autoComments (Employee Notes &
+      // Time-Off Requests). Uses fuzzy first-name matching so "Demitra"
+      // in comments matches "Demitra Sita" in the grid.
+      const nurseLower = row.nurse.toLowerCase();
+      const nurseFirst = row.nurse.split(" ")[0].toLowerCase();
+      for (const [commentNurse, dates] of Object.entries(commentOffByNurse)) {
+        const commentLower = commentNurse.toLowerCase();
+        if (
+          commentLower.includes(nurseLower) ||
+          nurseLower.includes(commentLower) ||
+          commentNurse.split(" ")[0].toLowerCase() === nurseFirst
+        ) {
+          for (const d of dates) {
+            if (dateSet.has(d)) offDates.add(d);
+          }
+        }
+      }
 
       if (offDates.size === 0) continue;
       totalOffRequests += offDates.size;
@@ -1056,6 +1269,8 @@ export default function SchedulerPage() {
     scheduleDatesForStats,
     requiredStaff,
     filteredOptimizedGrid,
+    ocrGrid,
+    autoComments,
     nurseMetadataByName,
     nurseHoursStats,
   ]);
@@ -1188,15 +1403,14 @@ export default function SchedulerPage() {
           const raw = (ocrShifts[dayIdx] || "").trim();
           if (!raw || raw === "*") continue;
 
-          // Only fill in OCR data for days where the backend didn't
-          // already supply a non-empty shift.  The backend's
-          // apply_authoritative_ocr_overlay already merges OCR codes
-          // into the optimized result with correct hours & metadata.
-          // Re-parsing raw OCR codes via parseShiftCode would
-          // clobber hours (e.g. Z07→11.25h becomes 07→7.5h).
+          // Trust the backend response for any date it returned an
+          // entry for — even if the shift code is empty.  The backend
+          // already merges OCR codes via apply_authoritative_ocr_overlay
+          // and then enforces per-nurse shift caps.  Re-adding OCR
+          // shifts here would undo intentional removals (e.g. PT cap).
           const existingBackend = byDate.get(date);
-          if (existingBackend && String(existingBackend.shift || "").trim()) {
-            continue; // keep backend shift — it already has correct metadata
+          if (existingBackend) {
+            continue; // keep backend decision — includes intentional removals
           }
 
           byDate.set(date, parseShiftCode(raw, date));
@@ -1644,7 +1858,8 @@ export default function SchedulerPage() {
   async function discardDraft() {
     if (!confirm(tScheduler("confirmDeleteDraft"))) return;
     await deleteDraftAndReset();
-    router.replace("/schedules");
+    const redirectPath = isAdmin ? "/admin/schedules" : "/schedules";
+    router.replace(redirectPath);
     console.log("Draft deleted and redirected to schedule list");
   }
 
@@ -1670,49 +1885,6 @@ export default function SchedulerPage() {
     setNewNurseCandidates,
     setShowCreateNursesModal,
   });
-
-  // Math-based optimization (constraint satisfaction)
-  function optimizeWithMath(): GridRow[] {
-    const result: GridRow[] = [];
-
-    // Simple constraint-based assignment
-    // Rules: 1) No more than 5 consecutive days, 2) Balance workload
-    for (const row of ocrGrid) {
-      const optimizedShifts: ShiftEntry[] = [];
-      let consecutiveDays = 0;
-
-      for (const shift of row.shifts) {
-        if (shift.shift && shift.shift.trim() !== "" && shift.shift !== "OFF") {
-          // Check consecutive days constraint
-          if (consecutiveDays >= 5) {
-            // Force a day off after 5 consecutive days
-            optimizedShifts.push({
-              ...shift,
-              shift: "OFF",
-              hours: 0,
-            });
-            consecutiveDays = 0;
-          } else {
-            optimizedShifts.push(shift);
-            consecutiveDays++;
-          }
-        } else {
-          optimizedShifts.push(shift);
-          if (shift.shift === "OFF" || !shift.shift) {
-            consecutiveDays = 0;
-          }
-        }
-      }
-
-      result.push({
-        id: row.id,
-        nurse: row.nurse,
-        shifts: optimizedShifts,
-      });
-    }
-
-    return result;
-  }
 
   // NEW: Refine schedule with AI
   async function refineScheduleWithAI() {
@@ -1882,9 +2054,55 @@ export default function SchedulerPage() {
     setShowInsightsPanel(true);
     setInsightsData(null);
     try {
+      // Apply Z23 tail corrections to match UI calculations
       const scheduleDict: Record<string, any[]> = {};
       optimizedGrid.forEach((row) => {
-        scheduleDict[row.nurse] = row.shifts;
+        const correctedShifts = row.shifts.map((s, i) => {
+          if (!s.shift) return s;
+          const code = s.shift
+            .replace(/\s*\*\s*$/, "")
+            .trim()
+            .toUpperCase();
+
+          // Z19 is always a full 12h night (11.25h paid)
+          if (code === "Z19") {
+            return { ...s, hours: 11.25, shiftType: "night" };
+          }
+
+          // Z23 / Z23 B: Apply night rotation context detection
+          if (code === "Z23" || code === "Z23 B") {
+            if (i > 0) {
+              const prevShift = row.shifts[i - 1];
+              const prevCode = (prevShift.shift || "")
+                .replace(/\s*\*\s*$/, "")
+                .trim()
+                .toUpperCase();
+              // If previous day is a night code, this is part of a rotation
+              if (
+                prevCode === "Z19" ||
+                prevCode === "Z23 B" ||
+                prevCode === "Z23"
+              ) {
+                if (code === "Z23 B") {
+                  // BRIDGE: finish morning + return evening = 11.25h paid
+                  return { ...s, hours: 11.25 };
+                } else {
+                  // TAIL: finish morning only = 0h (hours in previous shift)
+                  return { ...s, hours: 0 };
+                }
+              }
+            }
+            return s;
+          }
+
+          const def = SHIFT_CODES.find((sc) => sc.code.toUpperCase() === code);
+          if (def && def.hours !== s.hours) {
+            return { ...s, hours: def.hours, shiftType: def.type };
+          }
+
+          return s;
+        });
+        scheduleDict[row.nurse] = correctedShifts;
       });
 
       const actualDates = Array.from(
@@ -1931,16 +2149,6 @@ export default function SchedulerPage() {
           );
         }
 
-        // Wrap-around tail markers (deduped night shifts)
-        const tailShifts = row.shifts.filter(
-          (s) => s.shift && s.shift.includes("↩"),
-        );
-        if (tailShifts.length > 0) {
-          notes.push(
-            `${tailShifts.length} night-shift wrap-around tail(s) (0h — counted on start day)`,
-          );
-        }
-
         if (notes.length > 0) {
           staffNotes[row.nurse] = notes;
         }
@@ -1955,6 +2163,7 @@ export default function SchedulerPage() {
         staffNotes: Object.keys(staffNotes).length > 0 ? staffNotes : undefined,
         markerComments: autoComments || undefined,
         locale: locale,
+        requiredStaff: requiredStaff,
       });
 
       setInsightsData(data);
@@ -1973,6 +2182,7 @@ export default function SchedulerPage() {
   }
 
   const handleFinalizeSchedule = useCallback(async () => {
+    setFinalizing(true);
     try {
       const scheduleRows = optimizedGrid.map((row) => ({
         id: row.id,
@@ -2013,6 +2223,8 @@ export default function SchedulerPage() {
         "Failed to finalize schedule: " +
           (err instanceof Error ? err.message : "Unknown error"),
       );
+    } finally {
+      setFinalizing(false);
     }
   }, [endDate, getToken, ocrDates, optimizedGrid, savedScheduleId, startDate]);
 
@@ -2392,12 +2604,17 @@ export default function SchedulerPage() {
           <div className="flex items-center justify-between">
             <div>
               <a
-                href="/dashboard"
+                href="/schedules"
                 className="text-sm text-blue-600 hover:underline mb-1 inline-block"
               >
-                {tScheduler("backToDashboard")}
+                {tScheduler("backToSchedules")}
               </a>
-              <h1 className="text-2xl font-semibold text-gray-900">
+              <h1 className="text-2xl font-semibold text-gray-900 flex items-center gap-2">
+                {(organizationNursesLoading ||
+                  insightsLoading ||
+                  ocrLoading) && (
+                  <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" />
+                )}
                 {tScheduler("scheduleOptimizer")}
               </h1>
             </div>
@@ -3634,8 +3851,12 @@ export default function SchedulerPage() {
                 ) : (
                   <button
                     onClick={handleFinalizeSchedule}
-                    className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700"
+                    disabled={finalizing}
+                    className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
                   >
+                    {finalizing && (
+                      <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                    )}
                     {tScheduler("finalizeAndSave")}
                   </button>
                 )}
@@ -3824,7 +4045,7 @@ export default function SchedulerPage() {
                             {!nurse.hoursValid && (
                               <span
                                 className="ml-1 text-red-500 cursor-help"
-                                title={`Hour mismatch: ${formatQuarterHours(nurse.totalHours)}h actual vs ${formatQuarterHours(nurse.expectedHours)}h expected from ${nurse.count12h}×12h + ${nurse.count8h}×8h shifts`}
+                                title={`Hour mismatch: ${formatQuarterHours(nurse.totalHours)}h actual vs ${formatQuarterHours(nurse.expectedHours)}h expected from ${nurse.count12h}×12h + ${nurse.count8h}×8h${nurse.countCF > 0 ? ` + ${nurse.countCF} CF` : ""} shifts`}
                               >
                                 ⚠
                               </span>
@@ -3844,8 +4065,7 @@ export default function SchedulerPage() {
                           <td className="p-2 text-center">
                             <div className="font-medium">
                               {tScheduler("shiftCount", {
-                                count:
-                                  nurse.workingDays + (nurse.cfShiftCount || 0),
+                                count: nurse.workingDays,
                               })}
                             </div>
                             <div className="text-xs text-gray-500">
@@ -3858,13 +4078,15 @@ export default function SchedulerPage() {
                               {nurse.count8h > 0 && (
                                 <span>{nurse.count8h}×8h</span>
                               )}
-                              {nurse.cfHours > 0 && (
-                                <span className="text-purple-500 ml-1">
-                                  +{formatQuarterHours(nurse.cfHours)}h CF
+                              {(nurse.count12h > 0 || nurse.count8h > 0) &&
+                                nurse.countCF > 0 && <span> + </span>}
+                              {nurse.countCF > 0 && (
+                                <span className="text-purple-600">
+                                  {nurse.countCF} CF
                                 </span>
                               )}
                               {nurse.requestedOffDaysInPeriod > 0 && (
-                                <span className="ml-1">
+                                <span className="ml-1 text-cyan-500 font-medium">
                                   • {nurse.requestedOffDaysInPeriod} off
                                 </span>
                               )}
@@ -3882,12 +4104,12 @@ export default function SchedulerPage() {
                                 scheduleDatesForStats.length / 14.0;
                               // If exactly 2 weeks (1 bi-weekly period), show simplified text
                               if (Math.abs(numBiWeeks - 1) < 0.01) {
-                                return null; // Don't show redundant "75h/2sem." when target is already 75h
+                                return null; // Don't show redundant "75h/2wk" when target is already 75h
                               }
                               return (
                                 <div className="text-xs text-gray-400">
-                                  {formatQuarterHours(nurse.biWeeklyHours)}
-                                  h/2sem.
+                                  {formatQuarterHours(nurse.biWeeklyHours)}h
+                                  {tScheduler("biweeklyIndicator")}
                                 </div>
                               );
                             })()}
@@ -3959,8 +4181,7 @@ export default function SchedulerPage() {
                         <td className="p-2 text-center">
                           <div className="font-medium">
                             {nurseHoursStats.reduce(
-                              (sum, n) =>
-                                sum + n.workingDays + (n.cfShiftCount || 0),
+                              (sum, n) => sum + n.workingDays,
                               0,
                             )}{" "}
                             shifts
@@ -4144,13 +4365,42 @@ export default function SchedulerPage() {
                 Optimized Schedule
               </h2>
               {/* Inject OFF entries from Employee Notes & Time-Off Requests
-                  into the grid so they appear in the Schedule Calendar */}
+                  into the grid so they appear in the Schedule Calendar.
+                  Also handle CF codes from the OCR grid that the backend
+                  may have stored with a blank shift code. */}
               {(() => {
                 const commentOffs = extractOffDatesFromComments(autoComments);
+
+                // Build a map of OCR-sourced CF/OFF dates per nurse (normalized)
+                // so we can restore the original CF code on blank entries the
+                // backend created via the off-request path.
+                const ocrOffCodeByNurseDate = new Map<string, string>();
+                for (const ocrRow of ocrGrid) {
+                  const normName = normalizeNurseName(ocrRow.nurse);
+                  for (const shift of ocrRow.shifts) {
+                    if (!shift?.shift || !shift.date) continue;
+                    const code = shift.shift
+                      .replace(/\s*\*\s*$/, "")
+                      .trim()
+                      .toUpperCase();
+                    if (
+                      code &&
+                      (code === "C" || code === "OFF" || code.startsWith("CF"))
+                    ) {
+                      ocrOffCodeByNurseDate.set(
+                        `${normName}|${shift.date}`,
+                        shift.shift.replace(/\s*\*\s*$/, "").trim(),
+                      );
+                    }
+                  }
+                }
+
                 // Build a grid with comment OFF entries merged in
                 const gridWithOffs = filteredOptimizedGrid.map((row) => {
                   const nurseLower = row.nurse.toLowerCase();
                   const nurseFirst = row.nurse.split(" ")[0].toLowerCase();
+                  const normName = normalizeNurseName(row.nurse);
+
                   // Find matching comment off dates for this nurse (fuzzy)
                   const offDates: string[] = [];
                   for (const [commentNurse, dates] of Object.entries(
@@ -4165,23 +4415,36 @@ export default function SchedulerPage() {
                       offDates.push(...dates);
                     }
                   }
-                  if (offDates.length === 0) return row;
-                  // Merge OFF entries from comments into the grid.
-                  // The backend may already have blank off-entries (shift:"")
-                  // for off-request dates. Those are hidden by the calendar
-                  // filter, so we need to upgrade them to code "OFF".
+
                   const offDateSet = new Set(offDates);
+
+                  // Upgrade blank off-entries to a visible code.
+                  // Priority: original OCR CF code > "OFF".
                   const upgradedShifts = row.shifts.map((s) => {
-                    if (
-                      offDateSet.has(s.date) &&
-                      s.hours === 0 &&
-                      (!s.shift || s.shift.trim() === "")
-                    ) {
-                      // Upgrade blank off → visible "OFF"
-                      return { ...s, shift: "OFF", shiftType: "off" as const };
+                    if (s.hours === 0 && (!s.shift || s.shift.trim() === "")) {
+                      // Check if this blank entry corresponds to an OCR CF/OFF code
+                      const ocrCode = ocrOffCodeByNurseDate.get(
+                        `${normName}|${s.date}`,
+                      );
+                      if (ocrCode) {
+                        return {
+                          ...s,
+                          shift: ocrCode,
+                          shiftType: "off" as const,
+                        };
+                      }
+                      // Otherwise upgrade if date is in comment off-requests
+                      if (offDateSet.has(s.date)) {
+                        return {
+                          ...s,
+                          shift: "OFF",
+                          shiftType: "off" as const,
+                        };
+                      }
                     }
                     return s;
                   });
+
                   // For any off dates that had NO entry at all, add new ones
                   const existingDates = new Set(
                     upgradedShifts.map((s) => s.date),
@@ -4196,6 +4459,13 @@ export default function SchedulerPage() {
                       startTime: "",
                       endTime: "",
                     }));
+
+                  if (
+                    upgradedShifts === row.shifts &&
+                    newOffShifts.length === 0
+                  ) {
+                    return row;
+                  }
                   return {
                     ...row,
                     shifts: [...upgradedShifts, ...newOffShifts],
@@ -4865,7 +5135,8 @@ export default function SchedulerPage() {
                                       : "Part-Time"}
                                   </span>
                                   <span>
-                                    {match.dbNurse.max_weekly_hours}h/2sem.
+                                    {match.dbNurse.max_weekly_hours}h
+                                    {tScheduler("biweeklyIndicator")}
                                   </span>
                                   {match.dbNurse.is_chemo_certified && (
                                     <span>💉</span>
@@ -5036,7 +5307,9 @@ export default function SchedulerPage() {
                               }
                               className="w-14 px-2 py-1 text-sm border border-gray-200 rounded text-center focus:outline-none focus:border-blue-400"
                             />
-                            <span className="text-gray-500">h/2sem.</span>
+                            <span className="text-gray-500">
+                              h{tScheduler("biweeklyIndicator")}
+                            </span>
                           </div>
                         </div>
 
@@ -5653,12 +5926,10 @@ export default function SchedulerPage() {
                                         })}
                                       </span>
                                       <span className="text-xs text-gray-500">
-                                        (
-                                        {tScheduler("staffVsAvg", {
-                                          count: gf.currentHeadcount,
-                                          avg: gf.averageHeadcount,
-                                        })}
-                                        )
+                                        ({gf.currentHeadcount} staff vs{" "}
+                                        {gf.requiredStaff ||
+                                          gf.averageHeadcount}{" "}
+                                        required)
                                       </span>
                                     </div>
                                     <div className="mt-1.5 flex items-center gap-2 text-sm">
@@ -6068,10 +6339,18 @@ export default function SchedulerPage() {
                       type="button"
                       onClick={async () => {
                         try {
-                          await saveScheduleRuleAPI({
-                            name: "default",
-                            rules_text: rules,
-                          });
+                          const token = await getToken();
+                          const headers: Record<string, string> = {};
+                          if (token) {
+                            headers["Authorization"] = `Bearer ${token}`;
+                          }
+                          await saveScheduleRuleAPI(
+                            {
+                              name: "default",
+                              rules_text: rules,
+                            },
+                            headers,
+                          );
                         } catch {
                           /* silent */
                         }
@@ -6085,8 +6364,14 @@ export default function SchedulerPage() {
                       type="button"
                       onClick={async () => {
                         try {
+                          const token = await getToken();
+                          const headers: Record<string, string> = {};
+                          if (token) {
+                            headers["Authorization"] = `Bearer ${token}`;
+                          }
                           const saved = await getLatestScheduleRuleAPI(
                             currentOrganization?.id,
+                            headers,
                           );
                           if (saved?.rules_text) setRules(saved.rules_text);
                         } catch {
@@ -6204,7 +6489,15 @@ export default function SchedulerPage() {
       />
 
       {showManageTemplatesModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={(e) => {
+            // Close modal only if clicking the backdrop, not the modal content
+            if (e.target === e.currentTarget) {
+              setShowManageTemplatesModal(false);
+            }
+          }}
+        >
           <div className="w-full max-w-3xl rounded-2xl bg-white shadow-xl">
             <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
               <h3 className="text-lg font-semibold text-gray-900">
