@@ -18,20 +18,13 @@ import {
 } from "lucide-react";
 import { useOrganization } from "../context/OrganizationContext";
 import { cleanupOldHandoversAPI } from "../lib/api";
+import { getApiBase } from "../lib/runtimeApiBase";
+import { DEFAULT_ROOMS } from "../lib/roomsConfig";
+import { DEFAULT_TEAMS } from "../lib/teamsConfig";
 import {
-  loadRooms,
-  addRoom,
-  removeRoom,
-  resetRooms,
-  DEFAULT_ROOMS,
-} from "../lib/roomsConfig";
-import {
-  loadTeams,
-  addTeam,
-  removeTeam,
-  resetTeams,
-  DEFAULT_TEAMS,
-} from "../lib/teamsConfig";
+  fetchAndCacheOrganizationConfig,
+  updateAndCacheOrganizationConfig,
+} from "../lib/orgConfig";
 import {
   loadStaffingDefaults,
   saveStaffingDefaults,
@@ -40,15 +33,21 @@ import {
 } from "../components/StaffRequirementsEditor";
 
 const DEFAULT_LOGO = "/logo-placeholder.png";
+const CLEANUP_DAYS_STORAGE_KEY = "chronofy_cleanup_days_to_keep";
 
-const getSettingsSections = (t: any) =>
+type SettingsTranslator = (
+  key: string,
+  values?: Record<string, unknown>,
+) => string;
+
+const getSettingsSections = (t: SettingsTranslator, isAdmin: boolean) =>
   [
     { id: "logo-settings", label: t("logo") },
     { id: "organization-settings", label: t("organization") },
     { id: "staffing-defaults", label: t("staffing") },
-    { id: "teams-settings", label: t("teams") },
-    { id: "rooms-settings", label: t("rooms") },
-    { id: "data-management", label: t("data") },
+    ...(isAdmin ? [{ id: "teams-settings", label: t("teams") }] : []),
+    ...(isAdmin ? [{ id: "rooms-settings", label: t("rooms") }] : []),
+    ...(isAdmin ? [{ id: "data-management", label: t("data") }] : []),
     { id: "account-info", label: t("account") },
   ] as const;
 
@@ -67,8 +66,10 @@ export default function SettingsPage() {
     approveMember,
     rejectMember,
     leaveOrganization,
+    refreshOrganizations,
     getAuthHeaders,
   } = useOrganization();
+  const orgId = currentOrganization?.id;
   const [logoUrl, setLogoUrl] = useState(DEFAULT_LOGO);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState("");
@@ -77,21 +78,27 @@ export default function SettingsPage() {
   );
 
   const [copiedCode, setCopiedCode] = useState(false);
-  const [teams, setTeams] = useState<string[]>(DEFAULT_TEAMS);
+  const [teams, setTeams] = useState<string[]>([]);
   const [newTeam, setNewTeam] = useState("");
   const [teamsMessage, setTeamsMessage] = useState("");
   const [teamsMessageType, setTeamsMessageType] = useState<
     "success" | "error" | null
   >(null);
-  const [rooms, setRooms] = useState<string[]>(DEFAULT_ROOMS);
+  const [teamsLoading, setTeamsLoading] = useState(false);
+  const [rooms, setRooms] = useState<string[]>([]);
   const [newRoom, setNewRoom] = useState("");
   const [roomsMessage, setRoomsMessage] = useState("");
   const [roomsMessageType, setRoomsMessageType] = useState<
     "success" | "error" | null
   >(null);
+  const [roomsLoading, setRoomsLoading] = useState(false);
   const [editingRoom, setEditingRoom] = useState<string | null>(null);
   const [editRoomValue, setEditRoomValue] = useState("");
-  const [cleanupDays, setCleanupDays] = useState(7);
+  const [cleanupDays, setCleanupDays] = useState(() => {
+    if (typeof window === "undefined") return 7;
+    const stored = Number(localStorage.getItem(CLEANUP_DAYS_STORAGE_KEY));
+    return Number.isFinite(stored) && stored >= 1 ? stored : 7;
+  });
   const [cleanupMessage, setCleanupMessage] = useState("");
   const [cleanupMessageType, setCleanupMessageType] = useState<
     "success" | "error" | null
@@ -105,6 +112,8 @@ export default function SettingsPage() {
   const [weeklyTargetsMessageType, setWeeklyTargetsMessageType] = useState<
     "success" | "error" | null
   >(null);
+  const orgFullTimeWeeklyTarget = currentOrganization?.full_time_weekly_target;
+  const orgPartTimeWeeklyTarget = currentOrganization?.part_time_weekly_target;
 
   // Staffing defaults
   const [staffingDefaults, setStaffingDefaults] = useState<
@@ -118,6 +127,7 @@ export default function SettingsPage() {
     user_id: string;
     user_email?: string;
     user_name?: string;
+    role?: string;
     is_approved: boolean;
     joined_at: string;
   }
@@ -126,6 +136,13 @@ export default function SettingsPage() {
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [approvingId, setApprovingId] = useState<string | null>(null);
   const [transferringAdmin, setTransferringAdmin] = useState(false);
+  const [transferCandidateId, setTransferCandidateId] = useState<string | null>(
+    null,
+  );
+  const [transferMessage, setTransferMessage] = useState<string | null>(null);
+  const [deletingOrganization, setDeletingOrganization] = useState(false);
+  const [showDeleteOrgConfirm, setShowDeleteOrgConfirm] = useState(false);
+  const [deleteOrgConfirmName, setDeleteOrgConfirmName] = useState("");
 
   // Fetch members for approval (admin only)
   useEffect(() => {
@@ -137,7 +154,7 @@ export default function SettingsPage() {
       try {
         const headers = await getAuthHeaders();
         const res = await fetch(
-          `${process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000"}/organizations/${currentOrganization!.id}/members`,
+          `${getApiBase()}/organizations/${currentOrganization!.id}/members`,
           { headers },
         );
         if (res.ok) {
@@ -191,13 +208,13 @@ export default function SettingsPage() {
     newAdminName: string,
   ) => {
     if (!currentOrganization) return;
-    if (!confirm(t("confirmTransferAdmin", { name: newAdminName }))) return;
 
     setTransferringAdmin(true);
+    setTransferMessage(null);
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000"}/organizations/${currentOrganization.id}/members/${newAdminMemberId}/transfer-admin`,
+        `${getApiBase()}/organizations/${currentOrganization.id}/members/${newAdminMemberId}/transfer-admin`,
         {
           method: "POST",
           headers,
@@ -209,12 +226,65 @@ export default function SettingsPage() {
         throw new Error(error?.detail || t("failedTransferAdminError"));
       }
 
-      // Refresh page to update permissions
-      window.location.reload();
+      // Reflect the new ownership immediately: the caller is no longer admin.
+      setTransferCandidateId(null);
+      setTransferMessage(
+        `${newAdminName} is now the admin. Your role has been changed to nurse.`,
+      );
+
+      const membersRes = await fetch(
+        `${getApiBase()}/organizations/${currentOrganization.id}/members`,
+        { headers },
+      );
+      if (membersRes.ok) {
+        const members: PendingMember[] = await membersRes.json();
+        setPendingMembers(members.filter((m) => !m.is_approved));
+        setApprovedMembers(members.filter((m) => m.is_approved));
+      }
+
+      await refreshOrganizations(currentOrganization.id);
     } catch (err) {
       alert(err instanceof Error ? err.message : t("failedTransferAdminError"));
     } finally {
       setTransferringAdmin(false);
+    }
+  };
+
+  const handleDeleteOrganization = async () => {
+    if (!currentOrganization || !isAdmin) return;
+
+    if (deleteOrgConfirmName.trim() !== currentOrganization.name) {
+      alert("Organization name did not match. Deletion cancelled.");
+      return;
+    }
+
+    setDeletingOrganization(true);
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch(
+        `${getApiBase()}/organizations/${currentOrganization.id}`,
+        {
+          method: "DELETE",
+          headers,
+        },
+      );
+
+      if (!res.ok) {
+        const error = await res.json().catch(() => null);
+        throw new Error(error?.detail || "Failed to delete organization");
+      }
+
+      await refreshOrganizations();
+      setShowDeleteOrgConfirm(false);
+      setDeleteOrgConfirmName("");
+      alert("Organization deleted.");
+      router.push("/dashboard");
+    } catch (err) {
+      alert(
+        err instanceof Error ? err.message : "Failed to delete organization",
+      );
+    } finally {
+      setDeletingOrganization(false);
     }
   };
 
@@ -228,35 +298,89 @@ export default function SettingsPage() {
   }, [currentOrganization?.logo_url]);
 
   useEffect(() => {
-    if (currentOrganization) {
-      setFullTimeBiWeeklyTarget(
-        currentOrganization.full_time_weekly_target ?? 75,
-      );
-      setPartTimeBiWeeklyTarget(
-        currentOrganization.part_time_weekly_target ?? 63.75,
-      );
+    if (orgId) {
+      setFullTimeBiWeeklyTarget(orgFullTimeWeeklyTarget ?? 75);
+      setPartTimeBiWeeklyTarget(orgPartTimeWeeklyTarget ?? 63.75);
     }
-  }, [
-    currentOrganization?.id,
-    currentOrganization?.full_time_weekly_target,
-    currentOrganization?.part_time_weekly_target,
-  ]);
+  }, [orgId, orgFullTimeWeeklyTarget, orgPartTimeWeeklyTarget]);
 
-  // Load teams from localStorage
+  // Load teams/rooms from backend org config
   useEffect(() => {
-    setTeams(loadTeams());
+    if (!orgId) {
+      setTeams([]);
+      setRooms([]);
+      return;
+    }
 
-    const handleTeamsChange = () => {
-      setTeams(loadTeams());
-    };
+    let cancelled = false;
 
-    window.addEventListener("teamsConfigChanged", handleTeamsChange);
+    async function loadOrgConfig() {
+      setTeamsLoading(true);
+      setRoomsLoading(true);
+      try {
+        const headers = await getAuthHeaders();
+        const config = await fetchAndCacheOrganizationConfig(orgId, headers);
+        if (!cancelled) {
+          setTeams(config.team_options);
+          setRooms(config.room_options);
+        }
+      } catch (err) {
+        console.error("Failed to load org config options:", err);
+        if (!cancelled) {
+          setTeams([]);
+          setRooms([]);
+          setTeamsMessage("Unable to load team settings from server");
+          setTeamsMessageType("error");
+          setRoomsMessage("Unable to load room settings from server");
+          setRoomsMessageType("error");
+        }
+      } finally {
+        if (!cancelled) {
+          setTeamsLoading(false);
+          setRoomsLoading(false);
+        }
+      }
+    }
+
+    loadOrgConfig();
     return () => {
-      window.removeEventListener("teamsConfigChanged", handleTeamsChange);
+      cancelled = true;
     };
-  }, []);
+  }, [orgId, getAuthHeaders]);
 
-  const handleAddTeam = () => {
+  const persistTeams = async (nextTeams: string[]) => {
+    if (!orgId) return;
+    setTeamsLoading(true);
+    try {
+      const headers = await getAuthHeaders();
+      const config = await updateAndCacheOrganizationConfig(
+        orgId,
+        { team_options: nextTeams },
+        headers,
+      );
+      setTeams(config.team_options);
+    } finally {
+      setTeamsLoading(false);
+    }
+  };
+
+  const persistRooms = async (nextRooms: string[]) => {
+    if (!orgId) return;
+    setRoomsLoading(true);
+    try {
+      const headers = await getAuthHeaders();
+      const config = await updateAndCacheOrganizationConfig(
+        orgId,
+        { room_options: nextRooms },
+        headers,
+      );
+      setRooms(config.room_options);
+    } finally {
+      setRoomsLoading(false);
+    }
+  };
+
+  const handleAddTeam = async () => {
     const trimmed = newTeam.trim();
     if (!trimmed) return;
 
@@ -267,36 +391,52 @@ export default function SettingsPage() {
       return;
     }
 
-    const updatedTeams = addTeam(trimmed);
-    setTeams(updatedTeams);
-    setNewTeam("");
-    setTeamsMessage(t("teamAdded"));
-    setTeamsMessageType("success");
-    setTimeout(() => setTeamsMessage(""), 3000);
+    try {
+      await persistTeams([...teams, trimmed]);
+      setNewTeam("");
+      setTeamsMessage(t("teamAdded"));
+      setTeamsMessageType("success");
+      setTimeout(() => setTeamsMessage(""), 3000);
+    } catch (err) {
+      setTeamsMessage(
+        err instanceof Error ? err.message : "Failed to save team settings",
+      );
+      setTeamsMessageType("error");
+      setTimeout(() => setTeamsMessage(""), 3000);
+    }
   };
 
-  const handleRemoveTeam = (teamToRemove: string) => {
-    const updatedTeams = removeTeam(teamToRemove);
-    setTeams(updatedTeams);
-    setTeamsMessage(t("teamRemoved"));
-    setTeamsMessageType("success");
-    setTimeout(() => setTeamsMessage(""), 3000);
+  const handleRemoveTeam = async (teamToRemove: string) => {
+    try {
+      await persistTeams(teams.filter((team) => team !== teamToRemove));
+      setTeamsMessage(t("teamRemoved"));
+      setTeamsMessageType("success");
+      setTimeout(() => setTeamsMessage(""), 3000);
+    } catch (err) {
+      setTeamsMessage(
+        err instanceof Error ? err.message : "Failed to save team settings",
+      );
+      setTeamsMessageType("error");
+      setTimeout(() => setTeamsMessage(""), 3000);
+    }
   };
 
-  const handleResetTeams = () => {
-    const updatedTeams = resetTeams();
-    setTeams(updatedTeams);
-    setTeamsMessage(t("teamsReset"));
-    setTeamsMessageType("success");
-    setTimeout(() => setTeamsMessage(""), 3000);
+  const handleResetTeams = async () => {
+    try {
+      await persistTeams(DEFAULT_TEAMS);
+      setTeamsMessage(t("teamsReset"));
+      setTeamsMessageType("success");
+      setTimeout(() => setTeamsMessage(""), 3000);
+    } catch (err) {
+      setTeamsMessage(
+        err instanceof Error ? err.message : "Failed to save team settings",
+      );
+      setTeamsMessageType("error");
+      setTimeout(() => setTeamsMessage(""), 3000);
+    }
   };
 
-  // Load rooms from localStorage
-  useEffect(() => {
-    setRooms(loadRooms());
-  }, []);
-
-  const handleAddRoom = () => {
+  const handleAddRoom = async () => {
     const trimmed = newRoom.trim();
     if (!trimmed) return;
 
@@ -307,20 +447,37 @@ export default function SettingsPage() {
       return;
     }
 
-    const updatedRooms = addRoom(trimmed);
-    setRooms(updatedRooms);
-    setNewRoom("");
-    setRoomsMessage(t("roomAdded"));
-    setRoomsMessageType("success");
-    setTimeout(() => setRoomsMessage(""), 3000);
+    try {
+      const next = [...rooms, trimmed].sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
+      );
+      await persistRooms(next);
+      setNewRoom("");
+      setRoomsMessage(t("roomAdded"));
+      setRoomsMessageType("success");
+      setTimeout(() => setRoomsMessage(""), 3000);
+    } catch (err) {
+      setRoomsMessage(
+        err instanceof Error ? err.message : "Failed to save room settings",
+      );
+      setRoomsMessageType("error");
+      setTimeout(() => setRoomsMessage(""), 3000);
+    }
   };
 
-  const handleRemoveRoom = (roomToRemove: string) => {
-    const updatedRooms = removeRoom(roomToRemove);
-    setRooms(updatedRooms);
-    setRoomsMessage(t("roomRemoved"));
-    setRoomsMessageType("success");
-    setTimeout(() => setRoomsMessage(""), 3000);
+  const handleRemoveRoom = async (roomToRemove: string) => {
+    try {
+      await persistRooms(rooms.filter((room) => room !== roomToRemove));
+      setRoomsMessage(t("roomRemoved"));
+      setRoomsMessageType("success");
+      setTimeout(() => setRoomsMessage(""), 3000);
+    } catch (err) {
+      setRoomsMessage(
+        err instanceof Error ? err.message : "Failed to save room settings",
+      );
+      setRoomsMessageType("error");
+      setTimeout(() => setRoomsMessage(""), 3000);
+    }
   };
 
   const handleEditRoom = (room: string) => {
@@ -328,7 +485,7 @@ export default function SettingsPage() {
     setEditRoomValue(room);
   };
 
-  const handleSaveRoomEdit = () => {
+  const handleSaveRoomEdit = async () => {
     if (!editingRoom) return;
     const trimmed = editRoomValue.trim();
     if (!trimmed) {
@@ -349,30 +506,51 @@ export default function SettingsPage() {
       .sort((a, b) =>
         a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }),
       );
-    setRooms(updatedRooms);
-    localStorage.setItem("patient_rooms_config", JSON.stringify(updatedRooms));
-    window.dispatchEvent(new CustomEvent("roomsConfigChanged"));
-    setEditingRoom(null);
-    setEditRoomValue("");
-    setRoomsMessage(t("roomUpdated"));
-    setRoomsMessageType("success");
-    setTimeout(() => setRoomsMessage(""), 3000);
+    try {
+      await persistRooms(updatedRooms);
+      setEditingRoom(null);
+      setEditRoomValue("");
+      setRoomsMessage(t("roomUpdated"));
+      setRoomsMessageType("success");
+      setTimeout(() => setRoomsMessage(""), 3000);
+    } catch (err) {
+      setRoomsMessage(
+        err instanceof Error ? err.message : "Failed to save room settings",
+      );
+      setRoomsMessageType("error");
+      setTimeout(() => setRoomsMessage(""), 3000);
+    }
   };
 
-  const handleResetRooms = () => {
-    const defaultRooms = resetRooms();
-    setRooms(defaultRooms);
-    setRoomsMessage(t("roomsReset"));
-    setRoomsMessageType("success");
-    setTimeout(() => setRoomsMessage(""), 3000);
+  const handleResetRooms = async () => {
+    try {
+      await persistRooms(DEFAULT_ROOMS);
+      setRoomsMessage(t("roomsReset"));
+      setRoomsMessageType("success");
+      setTimeout(() => setRoomsMessage(""), 3000);
+    } catch (err) {
+      setRoomsMessage(
+        err instanceof Error ? err.message : "Failed to save room settings",
+      );
+      setRoomsMessageType("error");
+      setTimeout(() => setRoomsMessage(""), 3000);
+    }
   };
 
   const handleCleanupHandovers = async () => {
+    if (!isAdmin) {
+      setCleanupMessage(t("adminOnlyCleanup"));
+      setCleanupMessageType("error");
+      setTimeout(() => setCleanupMessage(""), 3000);
+      return;
+    }
+
     setCleaningUp(true);
     setCleanupMessage("");
     setCleanupMessageType(null);
     try {
-      const result = await cleanupOldHandoversAPI(cleanupDays);
+      const authHeaders = await getAuthHeaders();
+      const result = await cleanupOldHandoversAPI(cleanupDays, authHeaders);
       setCleanupMessage(result.message);
       setCleanupMessageType("success");
       setShowCleanupConfirm(false);
@@ -443,7 +621,7 @@ export default function SettingsPage() {
         setUploading(false);
       };
       reader.readAsDataURL(file);
-    } catch (error) {
+    } catch {
       setMessage(t("failedUploadLogo"));
       setMessageType("error");
       setTimeout(() => setMessage(""), 3000);
@@ -528,7 +706,11 @@ export default function SettingsPage() {
     target.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const SETTINGS_SECTIONS = getSettingsSections(t);
+  useEffect(() => {
+    localStorage.setItem(CLEANUP_DAYS_STORAGE_KEY, String(cleanupDays));
+  }, [cleanupDays]);
+
+  const SETTINGS_SECTIONS = getSettingsSections(t, isAdmin);
 
   if (!isLoaded) {
     return (
@@ -878,42 +1060,114 @@ export default function SettingsPage() {
                     <p className="text-xs text-gray-500 mb-3">
                       {t("transferAdminRoleDesc")}
                     </p>
+
+                    {transferMessage && (
+                      <div className="mb-3 rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800">
+                        {transferMessage}
+                      </div>
+                    )}
+
                     <div className="space-y-2">
                       {approvedMembers
                         .filter((m) => m.id !== currentMembership?.id)
-                        .map((member) => (
-                          <div
-                            key={member.id}
-                            className="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-lg px-4 py-3"
-                          >
-                            <div>
-                              <p className="font-medium text-gray-900 text-sm">
-                                {member.user_name ||
-                                  member.user_email ||
-                                  `User ${member.user_id.substring(0, 8)}...`}
-                              </p>
-                              <p className="text-xs text-gray-500">
-                                {member.user_email || `ID: ${member.user_id}`}
-                              </p>
-                            </div>
-                            <button
-                              onClick={() =>
-                                handleTransferAdmin(
-                                  member.id,
-                                  member.user_name ||
-                                    member.user_email ||
-                                    `User ${member.user_id.substring(0, 8)}...`,
-                                )
-                              }
-                              disabled={transferringAdmin}
-                              className="px-3 py-1.5 text-xs font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50"
+                        .map((member) => {
+                          const memberLabel =
+                            member.user_name ||
+                            member.user_email ||
+                            `User ${member.user_id.substring(0, 8)}...`;
+                          const memberIsAdmin = member.role === "admin";
+                          const isConfirming =
+                            transferCandidateId === member.id;
+
+                          return (
+                            <div
+                              key={member.id}
+                              className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3"
                             >
-                              {transferringAdmin
-                                ? t("transferringAdmin")
-                                : t("transferAdminBtn")}
-                            </button>
-                          </div>
-                        ))}
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="font-medium text-gray-900 text-sm">
+                                    {memberLabel}
+                                  </p>
+                                  <p className="text-xs text-gray-500">
+                                    {member.user_email ||
+                                      `ID: ${member.user_id}`}
+                                  </p>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-2">
+                                  <span
+                                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
+                                      memberIsAdmin
+                                        ? "bg-purple-100 text-purple-800"
+                                        : member.role === "manager"
+                                          ? "bg-blue-100 text-blue-800"
+                                          : "bg-green-100 text-green-800"
+                                    }`}
+                                  >
+                                    {member.role || "nurse"}
+                                  </span>
+                                  {memberIsAdmin ? (
+                                    <span className="text-xs text-gray-500">
+                                      Already admin
+                                    </span>
+                                  ) : (
+                                    !isConfirming && (
+                                      <button
+                                        onClick={() =>
+                                          setTransferCandidateId(member.id)
+                                        }
+                                        disabled={transferringAdmin}
+                                        className="px-3 py-1.5 text-xs font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50"
+                                      >
+                                        {t("transferAdminBtn")}
+                                      </button>
+                                    )
+                                  )}
+                                </div>
+                              </div>
+
+                              {isConfirming && (
+                                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                                  <p className="text-xs text-amber-900">
+                                    <AlertTriangle className="mr-1 inline h-3.5 w-3.5" />
+                                    This transfers full admin control of{" "}
+                                    <span className="font-semibold">
+                                      {currentOrganization.name}
+                                    </span>{" "}
+                                    to {memberLabel}. Your own role becomes
+                                    nurse and you lose admin access immediately.{" "}
+                                    {memberLabel} will be notified.
+                                  </p>
+                                  <div className="mt-3 flex items-center gap-2">
+                                    <button
+                                      onClick={() =>
+                                        handleTransferAdmin(
+                                          member.id,
+                                          memberLabel,
+                                        )
+                                      }
+                                      disabled={transferringAdmin}
+                                      className="rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+                                    >
+                                      {transferringAdmin
+                                        ? t("transferringAdmin")
+                                        : "Yes, transfer admin"}
+                                    </button>
+                                    <button
+                                      onClick={() =>
+                                        setTransferCandidateId(null)
+                                      }
+                                      disabled={transferringAdmin}
+                                      className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       {approvedMembers.filter(
                         (m) => m.id !== currentMembership?.id,
                       ).length === 0 && (
@@ -963,8 +1217,12 @@ export default function SettingsPage() {
                       try {
                         await leaveOrganization(currentOrganization.id);
                         router.push("/dashboard");
-                      } catch (err: any) {
-                        alert(err.message || t("failedToLeave"));
+                      } catch (err) {
+                        alert(
+                          err instanceof Error
+                            ? err.message
+                            : t("failedToLeave"),
+                        );
                       }
                     }}
                     className="px-4 py-2 text-sm font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors"
@@ -973,6 +1231,71 @@ export default function SettingsPage() {
                     {t("leaveOrganizationTitle")}
                   </button>
                 </div>
+
+                {/* Delete Organization - Admin only */}
+                {isAdmin && (
+                  <div className="pt-4 border-t border-gray-200">
+                    <label className="block text-sm font-medium text-red-700 mb-1">
+                      <Trash2 className="w-4 h-4 inline mr-1" />
+                      Delete Organization
+                    </label>
+                    <p className="text-xs text-gray-500 mb-3">
+                      Permanently archive this organization and disable member
+                      access. Type the organization name to confirm.
+                    </p>
+                    {!showDeleteOrgConfirm ? (
+                      <button
+                        onClick={() => setShowDeleteOrgConfirm(true)}
+                        className="px-4 py-2 text-sm font-medium text-white bg-red-700 rounded-lg hover:bg-red-800 transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4 inline mr-1" />
+                        Delete Organization
+                      </button>
+                    ) : (
+                      <div className="rounded-lg border border-red-200 bg-red-50 p-3 space-y-3">
+                        <p className="text-xs text-red-700">
+                          This action archives the organization and removes
+                          member access. Type the organization name exactly to
+                          confirm.
+                        </p>
+                        <input
+                          type="text"
+                          value={deleteOrgConfirmName}
+                          onChange={(e) =>
+                            setDeleteOrgConfirmName(e.target.value)
+                          }
+                          placeholder={currentOrganization.name}
+                          className="w-full px-3 py-2 border border-red-300 rounded-lg text-sm focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={handleDeleteOrganization}
+                            disabled={
+                              deletingOrganization ||
+                              deleteOrgConfirmName.trim() !==
+                                currentOrganization.name
+                            }
+                            className="px-4 py-2 text-sm font-medium text-white bg-red-700 rounded-lg hover:bg-red-800 transition-colors disabled:opacity-50"
+                          >
+                            {deletingOrganization
+                              ? "Deleting..."
+                              : "Confirm Delete"}
+                          </button>
+                          <button
+                            onClick={() => {
+                              setShowDeleteOrgConfirm(false);
+                              setDeleteOrgConfirmName("");
+                            }}
+                            disabled={deletingOrganization}
+                            className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -1045,104 +1368,112 @@ export default function SettingsPage() {
           </div>
 
           {/* Teams Management Card */}
-          <div
-            id="teams-settings"
-            className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
-          >
-            <div className="flex items-center gap-3 mb-4">
-              <Users className="w-6 h-6 text-blue-600" />
-              <h2 className="text-xl font-semibold text-gray-900">
-                {t("teamsTitle")}
-              </h2>
-            </div>
-            <p className="text-sm text-gray-600 mb-4">{t("manageTeams")}</p>
-
-            {/* Current Teams */}
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                {t("currentTeams")}
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {teams.map((team) => (
-                  <div
-                    key={team}
-                    className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg border border-blue-200"
-                  >
-                    <span className="text-sm font-medium">{team}</span>
-                    <button
-                      onClick={() => handleRemoveTeam(team)}
-                      className="text-blue-600 hover:text-red-600 transition-colors"
-                      title={t("removeTeam")}
-                    >
-                      <svg
-                        className="w-4 h-4"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M6 18L18 6M6 6l12 12"
-                        />
-                      </svg>
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Add New Team */}
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                {t("addNewTeam")}
-              </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={newTeam}
-                  onChange={(e) => setNewTeam(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      handleAddTeam();
-                    }
-                  }}
-                  placeholder={t("enterTeamName")}
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                />
-                <button
-                  onClick={handleAddTeam}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
-                >
-                  {tCommon("add")}
-                </button>
-              </div>
-            </div>
-
-            {/* Reset Button */}
-            <button
-              onClick={handleResetTeams}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+          {isAdmin && (
+            <div
+              id="teams-settings"
+              className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
             >
-              <RefreshCw className="w-4 h-4" />
-              {t("resetToDefaultTeams")}
-            </button>
-
-            {/* Teams Message */}
-            {teamsMessage && (
-              <div
-                className={`mt-4 p-3 rounded-lg text-sm ${
-                  teamsMessageType === "success"
-                    ? "bg-green-50 text-green-800 border border-green-200"
-                    : "bg-red-50 text-red-800 border border-red-200"
-                }`}
-              >
-                {teamsMessage}
+              <div className="flex items-center gap-3 mb-4">
+                <Users className="w-6 h-6 text-blue-600" />
+                <h2 className="text-xl font-semibold text-gray-900">
+                  {t("teamsTitle")}
+                </h2>
+                <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
+                  {t("admin")}
+                </span>
               </div>
-            )}
-          </div>
+              <p className="text-sm text-gray-600 mb-4">{t("manageTeams")}</p>
+
+              {/* Current Teams */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {t("currentTeams")}
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {teams.map((team) => (
+                    <div
+                      key={team}
+                      className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 text-blue-700 rounded-lg border border-blue-200"
+                    >
+                      <span className="text-sm font-medium">{team}</span>
+                      <button
+                        onClick={() => handleRemoveTeam(team)}
+                        className="text-blue-600 hover:text-red-600 transition-colors"
+                        title={t("removeTeam")}
+                      >
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M6 18L18 6M6 6l12 12"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Add New Team */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {t("addNewTeam")}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newTeam}
+                    onChange={(e) => setNewTeam(e.target.value)}
+                    disabled={teamsLoading}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleAddTeam();
+                      }
+                    }}
+                    placeholder={t("enterTeamName")}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                  <button
+                    onClick={handleAddTeam}
+                    disabled={teamsLoading}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+                  >
+                    {tCommon("add")}
+                  </button>
+                </div>
+              </div>
+
+              {/* Reset Button */}
+              <button
+                onClick={handleResetTeams}
+                disabled={teamsLoading}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+              >
+                <RefreshCw className="w-4 h-4" />
+                {t("resetToDefaultTeams")}
+              </button>
+
+              {/* Teams Message */}
+              {teamsMessage && (
+                <div
+                  className={`mt-4 p-3 rounded-lg text-sm ${
+                    teamsMessageType === "success"
+                      ? "bg-green-50 text-green-800 border border-green-200"
+                      : "bg-red-50 text-red-800 border border-red-200"
+                  }`}
+                >
+                  {teamsMessage}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Rooms Management Card (Admin Only) */}
           {isAdmin && (
@@ -1192,6 +1523,7 @@ export default function SettingsPage() {
                           />
                           <button
                             onClick={handleSaveRoomEdit}
+                            disabled={roomsLoading}
                             className="text-green-600 hover:text-green-800 transition-colors"
                             title={t("save")}
                           >
@@ -1225,6 +1557,7 @@ export default function SettingsPage() {
                           <span className="text-sm font-medium">{room}</span>
                           <button
                             onClick={() => handleEditRoom(room)}
+                            disabled={roomsLoading}
                             className="text-green-600 hover:text-blue-600 transition-colors"
                             title={t("editRoom")}
                           >
@@ -1244,6 +1577,7 @@ export default function SettingsPage() {
                           </button>
                           <button
                             onClick={() => handleRemoveRoom(room)}
+                            disabled={roomsLoading}
                             className="text-green-600 hover:text-red-600 transition-colors"
                             title={t("removeRoom")}
                           >
@@ -1278,6 +1612,7 @@ export default function SettingsPage() {
                     type="text"
                     value={newRoom}
                     onChange={(e) => setNewRoom(e.target.value)}
+                    disabled={roomsLoading}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
@@ -1289,6 +1624,7 @@ export default function SettingsPage() {
                   />
                   <button
                     onClick={handleAddRoom}
+                    disabled={roomsLoading}
                     className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium"
                   >
                     {tCommon("add")}
@@ -1299,6 +1635,7 @@ export default function SettingsPage() {
               {/* Reset Button */}
               <button
                 onClick={handleResetRooms}
+                disabled={roomsLoading}
                 className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
               >
                 <RefreshCw className="w-4 h-4" />
@@ -1320,110 +1657,115 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {/* Data Management Card */}
-          <div
-            id="data-management"
-            className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
-          >
-            <div className="flex items-center gap-3 mb-4">
-              <Trash2 className="w-6 h-6 text-red-600" />
-              <h2 className="text-xl font-semibold text-gray-900">
-                {t("dataManagement")}
-              </h2>
-            </div>
-            <p className="text-sm text-gray-600 mb-4">
-              {t("cleanupOldHandoffs")}
-            </p>
-
-            {/* Cleanup Days Selector */}
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                {t("keepHandoffsFromLast")}
-              </label>
-              <div className="flex items-center gap-3">
-                <select
-                  value={cleanupDays}
-                  onChange={(e) => setCleanupDays(Number(e.target.value))}
-                  className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                >
-                  <option value={7}>{`7 ${t("days")}`}</option>
-                  <option value={14}>{`14 ${t("days")}`}</option>
-                  <option value={30}>{`30 ${t("days")}`}</option>
-                  <option value={60}>{`60 ${t("days")}`}</option>
-                  <option value={90}>{`90 ${t("days")}`}</option>
-                  <option value={180}>{`180 ${t("days")}`}</option>
-                  <option value={365}>{`365 ${t("days")}`}</option>
-                </select>
-                <span className="text-sm text-gray-500">
-                  {t("olderHandoffsDeleted")}
+          {/* Data Management Card (Admin Only) */}
+          {isAdmin && (
+            <div
+              id="data-management"
+              className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <Trash2 className="w-6 h-6 text-red-600" />
+                <h2 className="text-xl font-semibold text-gray-900">
+                  {t("dataManagement")}
+                </h2>
+                <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
+                  {t("admin")}
                 </span>
               </div>
-            </div>
+              <p className="text-sm text-gray-600 mb-4">
+                {t("cleanupOldHandoffs")}
+              </p>
 
-            {/* Cleanup Button */}
-            {!showCleanupConfirm ? (
-              <button
-                onClick={() => setShowCleanupConfirm(true)}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-700 bg-red-50 rounded-lg hover:bg-red-100 transition-colors border border-red-200"
-              >
-                <Trash2 className="w-4 h-4" />
-                {t("cleanUpOldHandoffs")}
-              </button>
-            ) : (
-              <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
-                <div className="flex items-start gap-3 mb-4">
-                  <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="font-medium text-red-800">
-                      {t("confirmDeleteHandoffs")}
-                    </p>
-                    <p className="text-sm text-red-700 mt-1">
-                      {t("deleteHandoffsWarning", { days: cleanupDays })}
-                    </p>
+              {/* Cleanup Days Selector */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {t("keepHandoffsFromLast")}
+                </label>
+                <div className="flex items-center gap-3">
+                  <select
+                    value={cleanupDays}
+                    onChange={(e) => setCleanupDays(Number(e.target.value))}
+                    className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value={7}>{`7 ${t("days")}`}</option>
+                    <option value={14}>{`14 ${t("days")}`}</option>
+                    <option value={30}>{`30 ${t("days")}`}</option>
+                    <option value={60}>{`60 ${t("days")}`}</option>
+                    <option value={90}>{`90 ${t("days")}`}</option>
+                    <option value={180}>{`180 ${t("days")}`}</option>
+                    <option value={365}>{`365 ${t("days")}`}</option>
+                  </select>
+                  <span className="text-sm text-gray-500">
+                    {t("olderHandoffsDeleted")}
+                  </span>
+                </div>
+              </div>
+
+              {/* Cleanup Button */}
+              {!showCleanupConfirm ? (
+                <button
+                  onClick={() => setShowCleanupConfirm(true)}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-700 bg-red-50 rounded-lg hover:bg-red-100 transition-colors border border-red-200"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {t("cleanUpOldHandoffs")}
+                </button>
+              ) : (
+                <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+                  <div className="flex items-start gap-3 mb-4">
+                    <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-medium text-red-800">
+                        {t("confirmDeleteHandoffs")}
+                      </p>
+                      <p className="text-sm text-red-700 mt-1">
+                        {t("deleteHandoffsWarning", { days: cleanupDays })}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleCleanupHandovers}
+                      disabled={cleaningUp}
+                      className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50"
+                    >
+                      {cleaningUp ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          {t("deleting")}
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 className="w-4 h-4" />
+                          {t("yesDeleteHandoffs")}
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setShowCleanupConfirm(false)}
+                      disabled={cleaningUp}
+                      className="px-4 py-2 text-sm font-medium text-gray-700 bg-white rounded-lg hover:bg-gray-100 transition-colors border border-gray-300 disabled:opacity-50"
+                    >
+                      {tCommon("cancel")}
+                    </button>
                   </div>
                 </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={handleCleanupHandovers}
-                    disabled={cleaningUp}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50"
-                  >
-                    {cleaningUp ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        {t("deleting")}
-                      </>
-                    ) : (
-                      <>
-                        <Trash2 className="w-4 h-4" />
-                        {t("yesDeleteHandoffs")}
-                      </>
-                    )}
-                  </button>
-                  <button
-                    onClick={() => setShowCleanupConfirm(false)}
-                    disabled={cleaningUp}
-                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-white rounded-lg hover:bg-gray-100 transition-colors border border-gray-300 disabled:opacity-50"
-                  >
-                    {tCommon("cancel")}
-                  </button>
-                </div>
-              </div>
-            )}
+              )}
 
-            {/* Cleanup Message */}
-            {cleanupMessage && (
-              <div
-                className={`mt-4 p-3 rounded-lg text-sm ${
-                  cleanupMessageType === "success"
-                    ? "bg-green-50 text-green-800 border border-green-200"
-                    : "bg-red-50 text-red-800 border border-red-200"
-                }`}
-              >
-                {cleanupMessage}
-              </div>
-            )}
-          </div>
+              {/* Cleanup Message */}
+              {cleanupMessage && (
+                <div
+                  className={`mt-4 p-3 rounded-lg text-sm ${
+                    cleanupMessageType === "success"
+                      ? "bg-green-50 text-green-800 border border-green-200"
+                      : "bg-red-50 text-red-800 border border-red-200"
+                  }`}
+                >
+                  {cleanupMessage}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* User Info Card */}
           <div

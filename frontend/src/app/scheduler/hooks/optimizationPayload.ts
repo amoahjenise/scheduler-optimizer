@@ -1,5 +1,9 @@
 import { GridRow, ManualNurse } from "../types";
-import { extractOffDatesFromComments, normalizeNurseName } from "./utils";
+import {
+  extractOffDatesFromComments,
+  findFuzzyMatchInMap,
+  normalizeNurseName,
+} from "./utils";
 
 export type SchedulerOptimizationNurse = {
   id: string;
@@ -16,6 +20,10 @@ export type SchedulerOptimizationNurse = {
   targetBiWeeklyHours?: number;
   preferredShiftLengthHours?: number;
   offRequests: string[];
+  // MCH Contract Constraints (hard constraints for the optimizer)
+  minShiftsPerPeriod: number; // FT: 7 (must hit 75h), PT: 0
+  maxShiftsPerPeriod: number; // FT: 8 (overtime threshold), PT: 10
+  minZShiftsPerPeriod: number; // FT: 5 (min 12h shifts), PT: 0
   // Leave status
   isOnMaternityLeave?: boolean;
   isOnSickLeave?: boolean;
@@ -82,47 +90,13 @@ function getOffRequestsFromShiftCodes(row: GridRow): string[] {
   return Array.from(offRequests);
 }
 
-/**
- * Night-start codes whose next-day "tail" in the OCR grid is a visual
- * artefact, NOT a separate worked shift.
- */
-const NIGHT_START_CODES = new Set(["Z19", "Z23", "Z23 B", "23"]);
-/** Only plain Z23 (without "B") is ever a ghost tail. */
-const GHOST_TAIL_CODES = new Set(["Z23"]);
-
-/**
- * Pre-clean an array of shift codes: remove ghost tails left→right.
- * Returns a NEW array (does not mutate the original).
- */
-function removeGhostTails(shifts: string[]): string[] {
-  const cleaned = [...shifts];
-  for (let i = 0; i < cleaned.length - 1; i++) {
-    const code = cleaned[i].replace(/\*/g, "").trim().toUpperCase();
-    if (!code || !NIGHT_START_CODES.has(code)) continue;
-    const next = cleaned[i + 1].replace(/\*/g, "").trim().toUpperCase();
-    if (GHOST_TAIL_CODES.has(next)) {
-      cleaned[i + 1] = ""; // null out ghost tail
-    }
-  }
-  return cleaned;
-}
-
 export function buildSchedulerAssignments(
   ocrGrid: GridRow[],
 ): Record<string, string[]> {
   const result = Object.fromEntries(
     ocrGrid.map((row) => [
       row.nurse,
-      // De-Duplication Command: clean ghost tails BEFORE data leaves the frontend.
-      removeGhostTails(
-        row.shifts.map((shift) => {
-          const code = shift.shift.replace(/\*/g, "").trim();
-          // Wrap-around night tails (marked with ↩ by dedup) are not real shifts.
-          // Send empty so the optimizer treats the day as a rest/recovery day.
-          if (code.includes("↩")) return "";
-          return code;
-        }),
-      ),
+      row.shifts.map((shift) => shift.shift.replace(/\*/g, "").trim()),
     ]),
   );
 
@@ -195,23 +169,15 @@ export function buildSchedulerNurses({
         ...(nurseMetadata?.offRequests || []),
       ]);
 
-      // maxHours from DB/metadata is stored as BI-WEEKLY in our nurse records.
-      // The optimizer expects maxWeeklyHours to be WEEKLY, so convert here.
+      // maxHours from DB/metadata contains the bi-weekly target hours.
+      // We use it as the target for optimization (75h/2wks for FT, varies for PT).
       const rawMax = nurseMetadata?.maxHours;
-      console.log(
-        `[DEBUG] Nurse: ${row.nurse}, rawMax: ${rawMax}, nurseMetadata:`,
-        nurseMetadata,
-      );
       const maxWeeklyHours =
         typeof rawMax === "number" && rawMax > 0
-          ? rawMax / 2.0
+          ? rawMax
           : getDefaultMaxWeeklyHours(isPartTime ? "PT" : "FT");
-      console.log(
-        `[DEBUG] Final maxWeeklyHours for ${row.nurse}: ${maxWeeklyHours}`,
-      );
 
-      // For target hours: use maxHours if available, otherwise use org defaults
-      // maxHours is bi-weekly, so that becomes our targetBiWeeklyHours
+      // For target hours: use maxHours (bi-weekly target) if available, otherwise use org defaults
       const targetBiWeeklyHours =
         typeof rawMax === "number" && rawMax > 0
           ? rawMax
@@ -236,6 +202,10 @@ export function buildSchedulerNurses({
         targetBiWeeklyHours,
         preferredShiftLengthHours: nurseMetadata?.preferredShiftLengthHours,
         offRequests: Array.from(offRequests),
+        // MCH Contract Constraints
+        minShiftsPerPeriod: isPartTime ? 0 : 7,
+        maxShiftsPerPeriod: isPartTime ? 10 : 8,
+        minZShiftsPerPeriod: isPartTime ? 0 : 5,
         // Leave status
         isOnMaternityLeave: nurseMetadata?.isOnMaternityLeave,
         isOnSickLeave: nurseMetadata?.isOnSickLeave,
@@ -248,12 +218,12 @@ export function buildSchedulerNurses({
     (nurse, idx) => {
       const isPartTime = nurse.employmentType === "PT";
 
-      // Manual nurse maxHours is bi-weekly from the DB; convert to weekly
-      // for optimizer maxWeeklyHours.
+      // Manual nurse maxHours is bi-weekly from the DB.
+      // We keep it as bi-weekly to match frontend display (75h/2wks for FT, etc.)
       const rawManualMax = nurse.maxHours;
       const maxWeeklyHours =
         typeof rawManualMax === "number" && rawManualMax > 0
-          ? rawManualMax / 2.0
+          ? rawManualMax
           : getDefaultMaxWeeklyHours(nurse.employmentType);
 
       // Target hours: use maxHours if available, otherwise org defaults
@@ -281,6 +251,10 @@ export function buildSchedulerNurses({
         targetBiWeeklyHours,
         preferredShiftLengthHours: nurse.preferredShiftLengthHours,
         offRequests: nurse.offRequests || [],
+        // MCH Contract Constraints
+        minShiftsPerPeriod: isPartTime ? 0 : 7,
+        maxShiftsPerPeriod: isPartTime ? 10 : 8,
+        minZShiftsPerPeriod: isPartTime ? 0 : 5,
         // Leave status
         isOnMaternityLeave: nurse.isOnMaternityLeave,
         isOnSickLeave: nurse.isOnSickLeave,
@@ -296,8 +270,16 @@ export function buildSchedulerNurses({
 
   for (const nurse of ocrNurseObjects) {
     const key = normalizeNurseName(nurse.name);
-    const existing = nurseMap.get(key);
-    if (existing) {
+
+    // First try exact match, then fuzzy match
+    let existingKey = nurseMap.has(key) ? key : undefined;
+    if (!existingKey) {
+      // Fuzzy match: find a nurse with similar name (e.g., "Tiffany Glodoviza" vs "Tiffany Glodovizay")
+      existingKey = findFuzzyMatchInMap(key, nurseMap);
+    }
+
+    if (existingKey) {
+      const existing = nurseMap.get(existingKey)!;
       // Merge OCR-derived nurse with the existing manual nurse entry.
       // Prefer authoritative/manual fields (employeeId, certifications,
       // employmentType, max/target hours) while combining offRequests.
@@ -316,9 +298,12 @@ export function buildSchedulerNurses({
         offRequests: mergedOff,
       } as SchedulerOptimizationNurse;
 
-      nurseMap.set(key, merged);
+      // Keep the existing key (the manual nurse's name) as the canonical name
+      nurseMap.set(existingKey, merged);
       continue;
     }
+
+    // No match found - add as new nurse
     nurseMap.set(key, nurse);
   }
 

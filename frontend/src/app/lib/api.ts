@@ -1,5 +1,7 @@
 // lib/api.ts
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL!;
+import { getApiBase } from "./runtimeApiBase";
+
+const API_BASE = getApiBase();
 
 const DEFAULT_API_TIMEOUT_MS = 30000;
 
@@ -8,6 +10,11 @@ type ApiRequestOptions = RequestInit & {
   retryCount?: number;
   retryDelayMs?: number;
 };
+
+type RequestTuningOptions = Pick<
+  ApiRequestOptions,
+  "timeoutMs" | "retryCount" | "retryDelayMs"
+>;
 
 function getErrorMessage(payload: unknown, fallback: string): string {
   if (payload && typeof payload === "object") {
@@ -114,6 +121,8 @@ export interface OptimizedSchedule {
   id: string;
   name?: string;
   organization_id?: string;
+  created_by?: string | null;
+  created_by_name?: string | null;
   start_date: string;
   end_date: string;
   is_finalized: boolean;
@@ -131,6 +140,11 @@ export interface DeletionActivity {
   performed_by_user_id?: string | null;
   performed_by_name?: string | null;
   occurred_at: string;
+}
+
+export interface OrganizationConfigOptions {
+  team_options: string[];
+  room_options: string[];
 }
 
 export async function parseImageWithFastAPI(
@@ -223,44 +237,26 @@ export async function createScheduleAPI(
   });
 }
 
-export async function optimizeScheduleAPI(reqBody: {
-  schedule_id: string | null;
-  nurses: Array<{
-    id: string;
-    name: string;
-    isChemoCertified?: boolean;
-    isHeadNurse?: boolean;
-    employmentType?: string;
-    maxWeeklyHours?: number;
-    offRequests?: string[];
-  }>;
-  dates: string[];
-  assignments: Record<string, string[]>;
-  comments: Record<string, Record<string, string>>;
-  rules: Record<string, string | number>;
-  notes: string;
-  staffRequirements?: {
-    minDayStaff: number;
-    minNightStaff: number;
-  };
-}): Promise<any> {
-  return apiRequest<any>("/optimize/", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(reqBody),
-    timeoutMs: 300000,
-  });
-}
-
 // Fetch list of saved optimized schedules
 export async function fetchOptimizedSchedulesAPI(
   headers?: Record<string, string>,
+  options?:
+    | (RequestTuningOptions & {
+        includeScheduleData?: boolean;
+      })
+    | undefined,
 ): Promise<OptimizedSchedule[]> {
-  return apiRequest<OptimizedSchedule[]>("/optimize/", {
+  const searchParams = new URLSearchParams();
+  if (options?.includeScheduleData === false) {
+    searchParams.set("include_schedule_data", "false");
+  }
+  const query = searchParams.toString();
+  const path = query ? `/optimize/?${query}` : "/optimize/";
+
+  return apiRequest<OptimizedSchedule[]>(path, {
+    ...options,
     headers: headers || {},
-    retryCount: 2,
+    retryCount: options?.retryCount ?? 2,
   });
 }
 
@@ -268,21 +264,12 @@ export async function fetchOptimizedSchedulesAPI(
 export async function fetchOptimizedScheduleByIdAPI(
   scheduleId: string,
   headers?: Record<string, string>,
+  options?: RequestTuningOptions,
 ) {
   return apiRequest<any>(`/optimize/${scheduleId}`, {
-    headers,
-    retryCount: 2,
-  });
-}
-
-// Finalize (approve) an optimized schedule
-export async function finalizeScheduleAPI(
-  scheduleId: string,
-  headers?: Record<string, string>,
-) {
-  return apiRequest<any>(`/optimize/${scheduleId}/finalize`, {
-    method: "PATCH",
-    headers,
+    ...options,
+    headers: headers || {},
+    retryCount: options?.retryCount ?? 2,
   });
 }
 
@@ -339,15 +326,45 @@ export async function deleteScheduleAPI(
   });
 }
 
+export async function fetchOrganizationConfigOptionsAPI(
+  orgId: string,
+  headers?: Record<string, string>,
+): Promise<OrganizationConfigOptions> {
+  return apiRequest<OrganizationConfigOptions>(
+    `/organizations/${orgId}/config-options`,
+    {
+      headers,
+      retryCount: 2,
+    },
+  );
+}
+
+export async function updateOrganizationConfigOptionsAPI(
+  orgId: string,
+  payload: Partial<OrganizationConfigOptions>,
+  headers?: Record<string, string>,
+): Promise<OrganizationConfigOptions> {
+  return apiRequest<OrganizationConfigOptions>(
+    `/organizations/${orgId}/config-options`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...(headers || {}) },
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
 export async function fetchDeletionActivitiesAPI(
   headers?: Record<string, string>,
   limit: number = 50,
+  options?: RequestTuningOptions,
 ): Promise<DeletionActivity[]> {
   return apiRequest<DeletionActivity[]>(
     `/deletion-activities/?limit=${limit}`,
     {
+      ...options,
       headers,
-      retryCount: 2,
+      retryCount: options?.retryCount ?? 2,
     },
   );
 }
@@ -446,12 +463,12 @@ export async function fetchPatientsAPI(
     searchParams.set("search", params.search);
   }
 
-  const res = await fetch(`${API_BASE}/patients/?${searchParams}`, { headers });
-  if (!res.ok) {
-    const err = await res.json().catch(() => null);
-    throw new Error(err?.detail || "Failed to fetch patients");
-  }
-  return res.json();
+  const query = searchParams.toString();
+  const path = query ? `/patients/?${query}` : "/patients/";
+  return apiRequest<{ patients: Patient[]; total: number }>(path, {
+    headers,
+    retryCount: 2,
+  });
 }
 
 export async function createPatientAPI(
@@ -618,6 +635,7 @@ export interface Handover {
   pca_checkbox?: boolean;
   nca_checkbox?: boolean;
   pca_nca_bolus?: string;
+  pca_description?: string;
   pain_notes?: string;
   monitoring_cardiac?: boolean;
   monitoring_o2_sat?: boolean;
@@ -903,6 +921,7 @@ export interface HandoverUpdate {
   pca_checkbox?: boolean;
   nca_checkbox?: boolean;
   pca_nca_bolus?: string;
+  pca_description?: string;
   pain_notes?: string;
   monitoring_cardiac?: boolean;
   monitoring_o2_sat?: boolean;
@@ -1421,6 +1440,7 @@ export interface Nurse {
   seniority?: string;
   employment_type: "full-time" | "part-time";
   max_weekly_hours: number;
+  bi_weekly_target_hours: number;
   target_weekly_hours?: number;
   preferred_shift_length_hours?: number;
   is_chemo_certified: boolean;
@@ -1461,6 +1481,7 @@ export interface NurseUpdate {
   seniority?: string;
   employment_type?: "full-time" | "part-time";
   max_weekly_hours?: number;
+  bi_weekly_target_hours?: number;
   target_weekly_hours?: number;
   preferred_shift_length_hours?: number;
   is_chemo_certified?: boolean;
@@ -2061,28 +2082,639 @@ export interface ScheduleRule {
 
 export async function getLatestScheduleRuleAPI(
   orgId?: string,
+  headers?: Record<string, string>,
 ): Promise<ScheduleRule | null> {
   try {
     const opts: any = { timeoutMs: 10000 };
+    const combinedHeaders = { ...(headers || {}) };
     if (orgId) {
-      opts.headers = { "X-Organization-ID": orgId };
+      combinedHeaders["X-Organization-ID"] = orgId;
     }
+    opts.headers = combinedHeaders;
     return await apiRequest("/schedule-rules/latest", opts);
   } catch {
     return null;
   }
 }
 
-export async function saveScheduleRuleAPI(payload: {
-  name?: string;
-  rules_text: string;
-}): Promise<ScheduleRule> {
+export async function saveScheduleRuleAPI(
+  payload: {
+    name?: string;
+    rules_text: string;
+  },
+  headers?: Record<string, string>,
+): Promise<ScheduleRule> {
   return apiRequest("/schedule-rules", {
     method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(headers || {}),
+    },
     body: JSON.stringify({
       name: payload.name || "default",
       rules_text: payload.rules_text,
     }),
     timeoutMs: 10000,
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// Ambient Documentation API
+// ═══════════════════════════════════════════════════════════
+
+export interface AmbientSession {
+  id: string;
+  organization_id: string;
+  nurse_id: string;
+  patient_mrn: string | null;
+  status:
+    | "recording"
+    | "processing"
+    | "draft"
+    | "reviewed"
+    | "committed"
+    | "discarded";
+  started_at: string;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  transcript: string | null;
+  extracted_data: Record<string, unknown> | null;
+  nurse_corrections: Record<string, unknown> | null;
+  confidence_score: number | null;
+  reviewed_at: string | null;
+  committed_at: string | null;
+  created_at: string;
+}
+
+export async function startAmbientSessionAPI(
+  body: { patient_mrn?: string; interaction_type?: string },
+  headers?: Record<string, string>,
+): Promise<AmbientSession> {
+  return apiRequest("/ambient", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function fetchAmbientSessionsAPI(
+  params: { status?: string; patient_mrn?: string; page?: number },
+  headers?: Record<string, string>,
+): Promise<{ sessions: AmbientSession[]; total: number }> {
+  const qs = new URLSearchParams();
+  if (params.status) qs.set("status", params.status);
+  if (params.patient_mrn) qs.set("patient_mrn", params.patient_mrn);
+  if (params.page) qs.set("page", String(params.page));
+  return apiRequest(`/ambient?${qs.toString()}`, { headers });
+}
+
+export async function fetchAmbientSessionAPI(
+  id: string,
+  headers?: Record<string, string>,
+): Promise<AmbientSession> {
+  return apiRequest(`/ambient/${id}`, { headers });
+}
+
+export async function submitAmbientTranscriptAPI(
+  id: string,
+  transcript: string,
+  headers?: Record<string, string>,
+): Promise<AmbientSession> {
+  return apiRequest(`/ambient/${id}/transcript`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify({ transcript }),
+  });
+}
+
+export async function reviewAmbientSessionAPI(
+  id: string,
+  body: { corrections?: Record<string, unknown>; approved: boolean },
+  headers?: Record<string, string>,
+): Promise<AmbientSession> {
+  return apiRequest(`/ambient/${id}/review`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function commitAmbientSessionAPI(
+  id: string,
+  headers?: Record<string, string>,
+): Promise<AmbientSession> {
+  return apiRequest(`/ambient/${id}/commit`, {
+    method: "POST",
+    headers,
+  });
+}
+
+export async function discardAmbientSessionAPI(
+  id: string,
+  headers?: Record<string, string>,
+): Promise<void> {
+  return apiRequest(`/ambient/${id}`, {
+    method: "DELETE",
+    headers,
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// Burnout & Retention Prediction API
+// ═══════════════════════════════════════════════════════════
+
+export interface BurnoutSnapshot {
+  id: string;
+  nurse_id: string;
+  overall_risk_score: number;
+  risk_level: "low" | "moderate" | "high" | "critical";
+  overtime_score: number | null;
+  schedule_density_score: number | null;
+  night_shift_load_score: number | null;
+  weekend_load_score: number | null;
+  short_rest_score: number | null;
+  pattern_disruption_score: number | null;
+  tenure_risk_score: number | null;
+  metrics: Record<string, unknown> | null;
+  previous_risk_score: number | null;
+  trend: "improving" | "stable" | "worsening" | null;
+  snapshot_date: string;
+}
+
+export interface BurnoutAlert {
+  id: string;
+  nurse_id: string;
+  alert_type: string;
+  severity: "info" | "warning" | "critical";
+  title: string;
+  message: string;
+  recommendation: string | null;
+  acknowledged_by: string | null;
+  acknowledged_at: string | null;
+  action_taken: string | null;
+  resolved_at: string | null;
+  created_at: string;
+}
+
+export interface BurnoutTopRiskItem {
+  id: string;
+  nurse_id: string;
+  nurse_name: string;
+  overall_risk_score: number;
+  risk_level: "low" | "moderate" | "high" | "critical";
+  overtime_score: number | null;
+  schedule_density_score: number | null;
+  night_shift_load_score: number | null;
+  weekend_load_score: number | null;
+  short_rest_score: number | null;
+  pattern_disruption_score: number | null;
+  tenure_risk_score: number | null;
+  trend: "improving" | "stable" | "worsening" | null;
+  snapshot_date: string;
+}
+
+export interface BurnoutDashboard {
+  total_nurses: number;
+  risk_distribution: Record<string, number>;
+  top_risks: BurnoutTopRiskItem[];
+  recent_alerts: BurnoutAlert[];
+  trend_summary: Record<string, number>;
+}
+
+export interface BurnoutNurseDetail {
+  nurse_id: string;
+  nurse_name: string;
+  current_snapshot: BurnoutSnapshot | null;
+  history: BurnoutSnapshot[];
+  alerts: BurnoutAlert[];
+}
+
+export async function fetchBurnoutDashboardAPI(
+  headers?: Record<string, string>,
+): Promise<BurnoutDashboard> {
+  return apiRequest("/burnout/dashboard", { headers });
+}
+
+export async function fetchBurnoutNurseDetailAPI(
+  nurseId: string,
+  days?: number,
+  headers?: Record<string, string>,
+): Promise<BurnoutNurseDetail> {
+  const qs = days ? `?days=${days}` : "";
+  return apiRequest(`/burnout/nurses/${nurseId}${qs}`, { headers });
+}
+
+export async function runBurnoutAssessmentAPI(
+  nurseId?: string,
+  headers?: Record<string, string>,
+): Promise<{
+  assessed: number;
+  results: Array<{ nurse_id: string; risk_level: string; score: number }>;
+}> {
+  const qs = nurseId ? `?nurse_id=${nurseId}` : "";
+  return apiRequest(`/burnout/assess${qs}`, {
+    method: "POST",
+    headers,
+  });
+}
+
+export async function fetchBurnoutAlertsAPI(
+  params?: { acknowledged?: boolean; severity?: string },
+  headers?: Record<string, string>,
+): Promise<BurnoutAlert[]> {
+  const qs = new URLSearchParams();
+  if (params?.acknowledged !== undefined)
+    qs.set("acknowledged", String(params.acknowledged));
+  if (params?.severity) qs.set("severity", params.severity);
+  return apiRequest(`/burnout/alerts?${qs.toString()}`, { headers });
+}
+
+export async function acknowledgeBurnoutAlertAPI(
+  alertId: string,
+  actionTaken?: string,
+  headers?: Record<string, string>,
+): Promise<BurnoutAlert> {
+  return apiRequest(`/burnout/alerts/${alertId}/acknowledge`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify({ action_taken: actionTaken || null }),
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// Micro-Learning / Onboarding API
+// ═══════════════════════════════════════════════════════════
+
+export interface LearningModule {
+  id: string;
+  organization_id: string | null;
+  title: string;
+  description: string | null;
+  category: string;
+  content_type: "interactive" | "video" | "quiz" | "checklist" | "simulation";
+  content: Record<string, unknown>;
+  estimated_duration_minutes: number;
+  difficulty_level: "beginner" | "intermediate" | "advanced";
+  tags: string[] | null;
+  prerequisite_module_ids: string[] | null;
+  target_roles: string[] | null;
+  required_for_onboarding: boolean;
+  is_mandatory: boolean;
+  is_published: boolean;
+  passing_score: number;
+  sort_order: number;
+  version: number;
+  created_at: string;
+}
+
+export interface LearningProgress {
+  id: string;
+  nurse_id: string;
+  module_id: string;
+  status: "not_started" | "in_progress" | "completed" | "failed" | "expired";
+  progress_percentage: number;
+  current_step: number;
+  quiz_score: number | null;
+  quiz_attempts: number;
+  passed: boolean | null;
+  time_spent_seconds: number;
+  started_at: string | null;
+  completed_at: string | null;
+  last_accessed_at: string | null;
+}
+
+export interface LearningPath {
+  id: string;
+  title: string;
+  description: string | null;
+  category: string | null;
+  module_ids: string[];
+  target_roles: string[] | null;
+  is_required: boolean;
+  estimated_total_minutes: number | null;
+  is_published: boolean;
+  created_at: string;
+}
+
+export interface NurseOnboardingStatus {
+  nurse_id: string;
+  nurse_name: string;
+  total_modules: number;
+  completed_modules: number;
+  in_progress_modules: number;
+  completion_percentage: number;
+  mandatory_completed: boolean;
+  last_activity_at: string | null;
+}
+
+export interface LearningDashboard {
+  total_nurses: number;
+  fully_onboarded: number;
+  in_progress: number;
+  not_started: number;
+  modules_available: number;
+  paths_available: number;
+  nurse_statuses: NurseOnboardingStatus[];
+}
+
+export async function fetchLearningModulesAPI(
+  params?: { category?: string; published_only?: boolean },
+  headers?: Record<string, string>,
+): Promise<{ modules: LearningModule[]; total: number }> {
+  const qs = new URLSearchParams();
+  if (params?.category) qs.set("category", params.category);
+  if (params?.published_only !== undefined)
+    qs.set("published_only", String(params.published_only));
+  return apiRequest(`/learning/modules?${qs.toString()}`, { headers });
+}
+
+export async function fetchLearningModuleAPI(
+  id: string,
+  headers?: Record<string, string>,
+): Promise<LearningModule> {
+  return apiRequest(`/learning/modules/${id}`, { headers });
+}
+
+export async function createLearningModuleAPI(
+  body: Partial<LearningModule>,
+  headers?: Record<string, string>,
+): Promise<LearningModule> {
+  return apiRequest("/learning/modules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function startLearningModuleAPI(
+  moduleId: string,
+  headers?: Record<string, string>,
+): Promise<LearningProgress> {
+  return apiRequest(`/learning/modules/${moduleId}/start`, {
+    method: "POST",
+    headers,
+  });
+}
+
+export async function updateLearningProgressAPI(
+  moduleId: string,
+  body: {
+    current_step?: number;
+    progress_percentage?: number;
+    time_spent_seconds?: number;
+    quiz_answers?: Record<string, unknown>;
+    checklist_state?: Record<string, boolean>;
+  },
+  headers?: Record<string, string>,
+): Promise<LearningProgress> {
+  return apiRequest(`/learning/modules/${moduleId}/progress`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function fetchMyLearningProgressAPI(
+  headers?: Record<string, string>,
+): Promise<LearningProgress[]> {
+  return apiRequest("/learning/my-progress", { headers });
+}
+
+export async function fetchLearningPathsAPI(
+  headers?: Record<string, string>,
+): Promise<LearningPath[]> {
+  return apiRequest("/learning/paths", { headers });
+}
+
+export async function fetchLearningDashboardAPI(
+  headers?: Record<string, string>,
+): Promise<LearningDashboard> {
+  return apiRequest("/learning/dashboard", { headers });
+}
+
+// ============================================
+// LEARNING ASSIGNMENTS
+// ============================================
+
+export interface LearningAssignment {
+  id: string;
+  organization_id: string;
+  title: string;
+  description?: string | null;
+  assignment_type: "module" | "link" | "reading";
+  module_id?: string | null;
+  url?: string | null;
+  target_team?: string | null;
+  due_date?: string | null;
+  is_mandatory: boolean;
+  created_by_name?: string | null;
+  created_at: string;
+  completed_by_me: boolean;
+  completed_count: number;
+}
+
+export interface AssignmentCompletion {
+  id: string;
+  assignment_id: string;
+  user_id: string;
+  user_name?: string | null;
+  completed_at: string;
+}
+
+export async function fetchLearningAssignmentsAPI(
+  headers?: Record<string, string>,
+): Promise<LearningAssignment[]> {
+  return apiRequest("/learning/assignments", { headers });
+}
+
+export async function createLearningAssignmentAPI(
+  body: {
+    title: string;
+    description?: string;
+    assignment_type: "module" | "link" | "reading";
+    module_id?: string;
+    url?: string;
+    target_team?: string | null;
+    due_date?: string | null;
+    is_mandatory?: boolean;
+  },
+  headers?: Record<string, string>,
+): Promise<LearningAssignment> {
+  return apiRequest("/learning/assignments", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteLearningAssignmentAPI(
+  assignmentId: string,
+  headers?: Record<string, string>,
+): Promise<void> {
+  await apiRequest(`/learning/assignments/${assignmentId}`, {
+    method: "DELETE",
+    headers,
+  });
+}
+
+export async function completeLearningAssignmentAPI(
+  assignmentId: string,
+  headers?: Record<string, string>,
+): Promise<AssignmentCompletion> {
+  return apiRequest(`/learning/assignments/${assignmentId}/complete`, {
+    method: "POST",
+    headers,
+  });
+}
+
+export async function fetchAssignmentCompletionsAPI(
+  assignmentId: string,
+  headers?: Record<string, string>,
+): Promise<AssignmentCompletion[]> {
+  return apiRequest(`/learning/assignments/${assignmentId}/completions`, {
+    headers,
+  });
+}
+
+// ============================================
+// ANNOUNCEMENTS
+// ============================================
+
+export interface Announcement {
+  id: string;
+  organization_id: string;
+  title: string;
+  body: string;
+  target_team?: string | null;
+  is_pinned: boolean;
+  expires_at?: string | null;
+  created_by?: string | null;
+  created_by_name?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchAnnouncementsAPI(
+  headers?: Record<string, string>,
+  includeExpired = false,
+): Promise<Announcement[]> {
+  const query = includeExpired ? "?include_expired=true" : "";
+  return apiRequest(`/announcements/${query}`, { headers });
+}
+
+export async function createAnnouncementAPI(
+  body: {
+    title: string;
+    body: string;
+    target_team?: string | null;
+    is_pinned?: boolean;
+    expires_at?: string | null;
+  },
+  headers?: Record<string, string>,
+): Promise<Announcement> {
+  return apiRequest("/announcements/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updateAnnouncementAPI(
+  announcementId: string,
+  body: Partial<{
+    title: string;
+    body: string;
+    target_team: string | null;
+    is_pinned: boolean;
+    expires_at: string | null;
+  }>,
+  headers?: Record<string, string>,
+): Promise<Announcement> {
+  return apiRequest(`/announcements/${announcementId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteAnnouncementAPI(
+  announcementId: string,
+  headers?: Record<string, string>,
+): Promise<void> {
+  await apiRequest(`/announcements/${announcementId}`, {
+    method: "DELETE",
+    headers,
+  });
+}
+
+// ============================================
+// NOTIFICATIONS
+// ============================================
+
+export interface AppNotification {
+  id: string;
+  organization_id?: string | null;
+  user_id: string;
+  type: string;
+  title: string;
+  body?: string | null;
+  link?: string | null;
+  is_read: boolean;
+  created_at: string;
+}
+
+export async function fetchNotificationsAPI(
+  headers?: Record<string, string>,
+  unreadOnly = false,
+  options?: RequestTuningOptions,
+): Promise<AppNotification[]> {
+  const query = unreadOnly ? "?unread_only=true" : "";
+  return apiRequest(`/notifications/${query}`, { ...options, headers });
+}
+
+export async function markNotificationReadAPI(
+  notificationId: string,
+  headers?: Record<string, string>,
+): Promise<AppNotification> {
+  return apiRequest(`/notifications/${notificationId}/read`, {
+    method: "POST",
+    headers,
+  });
+}
+
+// ============================================
+// SCHEDULE VERSIONS
+// ============================================
+
+export interface ScheduleVersion {
+  id: string;
+  organization_id?: string | null;
+  is_finalized: boolean;
+  start_date?: string | null;
+  end_date?: string | null;
+  created_by?: string | null;
+  created_by_name?: string | null;
+  created_at?: string | null;
+  is_active: boolean;
+}
+
+export async function fetchScheduleVersionsAPI(
+  scheduleId: string,
+  headers?: Record<string, string>,
+): Promise<{
+  root_id: string;
+  active_id: string | null;
+  versions: ScheduleVersion[];
+}> {
+  return apiRequest(`/optimize/${scheduleId}/versions`, { headers });
+}
+
+export async function promoteScheduleVersionAPI(
+  scheduleId: string,
+  headers?: Record<string, string>,
+): Promise<{ success: boolean; active_id: string }> {
+  return apiRequest(`/optimize/${scheduleId}/promote`, {
+    method: "POST",
+    headers,
   });
 }

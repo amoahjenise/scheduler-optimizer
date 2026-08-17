@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
+import path from "path";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
@@ -17,9 +18,13 @@ function resolveDevPort(): string {
 
 const isDev = process.env.NODE_ENV !== "production";
 const devPort = resolveDevPort();
+const apiBaseUrl =
+  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
 const nextConfig: NextConfig = {
   distDir: isDev ? `.next/dev-${devPort}` : ".next",
+  // Fix lockfile detection warning by explicitly setting the workspace root
+  outputFileTracingRoot: path.join(__dirname, "./"),
   pageExtensions: ["js", "jsx", "ts", "tsx"],
   eslint: {
     ignoreDuringBuilds: true,
@@ -50,10 +55,10 @@ const nextConfig: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           // Prevent information leakage via referrer
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          // Disable unnecessary browser features
+          // Disable unnecessary browser features (allow microphone for Ambient Documentation)
           {
             key: "Permissions-Policy",
-            value: "camera=(), microphone=(), geolocation=(), payment=()",
+            value: "camera=(), microphone=(self), geolocation=(), payment=()",
           },
           // Content Security Policy
           {
@@ -66,7 +71,7 @@ const nextConfig: NextConfig = {
               "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
               "font-src 'self' https://fonts.gstatic.com",
               "img-src 'self' data: blob: https://*.clerk.com https://img.clerk.com",
-              "connect-src 'self' https://*.clerk.accounts.dev https://*.clerk.com http://localhost:8000 ws://localhost:3000",
+              `connect-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://clerk-telemetry.com ${apiBaseUrl} http://localhost:8000 http://localhost:8001 ws://localhost:3000 ws://localhost:3001`,
               "frame-src https://challenges.cloudflare.com https://*.clerk.accounts.dev",
               "object-src 'none'",
               "base-uri 'self'",

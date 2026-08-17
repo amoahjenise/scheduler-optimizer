@@ -18,13 +18,51 @@ interface OrganizationSwitcherProps {
   onShareCode?: () => void;
 }
 
+const DEFAULT_LOGO = "/logo-placeholder.png";
+
+function OrganizationAvatar({
+  name,
+  logoUrl,
+  size = "md",
+}: {
+  name: string;
+  logoUrl?: string;
+  size?: "sm" | "md";
+}) {
+  const sizeClasses = size === "sm" ? "w-6 h-6 rounded" : "w-8 h-8 rounded-lg";
+
+  if (logoUrl) {
+    return (
+      <div
+        className={`relative ${sizeClasses} overflow-hidden bg-white border border-gray-200`}
+      >
+        <img
+          src={logoUrl}
+          alt={`${name} logo`}
+          className="w-full h-full object-cover"
+          onError={(e) => {
+            e.currentTarget.src = DEFAULT_LOGO;
+          }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`${sizeClasses} bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-semibold text-sm`}
+    >
+      {name.charAt(0).toUpperCase()}
+    </div>
+  );
+}
+
 export function OrganizationSwitcher({
   onCreateOrg,
   onJoinOrg,
   onShareCode,
 }: OrganizationSwitcherProps) {
   const t = useTranslations("organization");
-  const tCommon = useTranslations("common");
   const {
     currentOrganization,
     currentMembership,
@@ -119,8 +157,7 @@ export function OrganizationSwitcher({
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center gap-2 px-3 py-2 bg-gray-50 hover:bg-gray-100 rounded-lg transition-colors border border-gray-200"
       >
-        <Building2 className="w-5 h-5 text-gray-600" />
-        <span className="font-medium text-gray-900 max-w-[150px] truncate">
+        <span className="text-[11px] leading-tight font-medium text-gray-900 max-w-[220px] whitespace-normal break-words text-left">
           {currentOrganization.name}
         </span>
         {currentMembership && (
@@ -157,9 +194,10 @@ export function OrganizationSwitcher({
                     : ""
                 }`}
               >
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white font-semibold text-sm">
-                  {membership.organization.name.charAt(0).toUpperCase()}
-                </div>
+                <OrganizationAvatar
+                  name={membership.organization.name}
+                  logoUrl={membership.organization.logo_url}
+                />
                 <div className="flex-1 text-left">
                   <p className="font-medium text-gray-900 truncate">
                     {membership.organization.name}

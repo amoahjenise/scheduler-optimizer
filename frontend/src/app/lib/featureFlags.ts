@@ -17,4 +17,13 @@ export const FEATURES = {
    * API, or if a standalone patient census feature is explicitly required.
    */
   PATIENT_MANAGEMENT: false,
+
+  /** Ambient Documentation — AI-assisted nurse-patient interaction capture. */
+  AMBIENT_DOCUMENTATION: true,
+
+  /** Burnout/Retention Predictor — shift-data-driven risk dashboard for managers. */
+  BURNOUT_PREDICTOR: true,
+
+  /** Micro-Learning & Onboarding — mobile-first training modules. */
+  MICRO_LEARNING: true,
 } as const;

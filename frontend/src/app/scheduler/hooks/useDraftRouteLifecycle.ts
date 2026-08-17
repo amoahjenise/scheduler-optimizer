@@ -379,6 +379,14 @@ export function useDraftRouteLifecycle({
           isFinalized: false,
         });
         markDraftSaved();
+
+        // Update URL from ?new=1 to ?draft=<id> so the draft ID is visible
+        if (result?.id && typeof window !== "undefined") {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("new");
+          url.searchParams.set("draft", result.id);
+          window.history.replaceState({}, "", url);
+        }
       } catch (error) {
         console.error("Failed to create new draft:", error);
         hasInitializedNewDraftRef.current = false;
@@ -435,6 +443,24 @@ export function useDraftRouteLifecycle({
       } catch (error) {
         console.error("Failed to load schedule for editing:", error);
         loadedScheduleIdRef.current = null;
+
+        // If schedule not found, clear local state and reset to setup step
+        // This can happen when trying to load an unsaved optimization result
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        if (errorMessage.toLowerCase().includes("not found")) {
+          console.warn(
+            "Schedule not found (may be an unsaved optimization result). Resetting to clean state.",
+          );
+          resetLocalState();
+          // Optionally navigate to clean state by removing query params
+          if (typeof window !== "undefined") {
+            const url = new URL(window.location.href);
+            url.searchParams.delete("scheduleId");
+            url.searchParams.delete("draft");
+            window.history.replaceState({}, "", url);
+          }
+        }
       } finally {
         setTimeout(() => {
           isHydratingDraftRef.current = false;

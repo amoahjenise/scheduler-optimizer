@@ -50,16 +50,25 @@ def _load_shift_codes_from_db(db: Session) -> Optional[List[Dict[str, Any]]]:
 
 
 # Hard-coded fallback (used when no DB codes exist)
+# MCH MERGE RULE: Z19 + Z23 = ONE 12h night shift (11.25h paid, 19:00-07:25)
+# - Z19 alone = 4h evening (19:00-23:00)
+# - Z23 alone = ~8h clock / 7.25h paid night (23:00-07:25 next day)
+# - When BOTH appear for the same nurse on the same day/night sequence, merge into one 11.25h paid block
+# PAID HOURS: All hours are actual paid time (clock time minus unpaid breaks)
 _FALLBACK_SHIFT_CODES: List[Dict[str, Any]] = [
+    # 8h Day Shifts (7.5h paid)
     {"code": "07",    "start": "07:00", "end": "15:15", "hours": 7.5,   "type": "day",      "label": "Day 8hr"},
-    {"code": "Z07",   "start": "07:00", "end": "19:25", "hours": 11.25, "type": "day",      "label": "Day 12hr"},
     {"code": "11",    "start": "11:00", "end": "19:15", "hours": 7.5,   "type": "day",      "label": "Mid 8hr"},
-    {"code": "Z11",   "start": "11:00", "end": "23:25", "hours": 11.25, "type": "day",      "label": "Mid 12hr"},
     {"code": "E15",   "start": "15:00", "end": "23:15", "hours": 7.5,   "type": "day",      "label": "Evening 8hr"},
     {"code": "23",    "start": "23:00", "end": "07:15", "hours": 7.5,   "type": "night",    "label": "Night 8hr"},
-    {"code": "Z19",   "start": "19:00", "end": "23:00", "hours": 3.75,  "type": "night",    "label": "Night Start"},
-    {"code": "Z23",   "start": "23:00", "end": "07:25", "hours": 7.5,   "type": "night",    "label": "Night Finish"},
-    {"code": "Z23 B", "start": "23:00", "end": "07:25", "hours": 7.5,   "type": "combined", "label": "Night Finish + Back at 19:00"},
+    # 12h Day Shifts (11.25h paid: 12h minus 0.75h break)
+    {"code": "Z07",   "start": "07:00", "end": "19:25", "hours": 11.25, "type": "day",      "label": "Day 12hr"},
+    {"code": "Z11",   "start": "11:00", "end": "23:25", "hours": 11.25, "type": "day",      "label": "Mid 12hr"},
+    # Night shift components (MCH split system - can be assigned separately or together)
+    {"code": "Z19",   "start": "19:00", "end": "23:00", "hours": 4.0,   "type": "night",    "label": "Evening 4hr (can merge with Z23)"},
+    {"code": "Z23",   "start": "23:00", "end": "07:25", "hours": 7.25,  "type": "night",    "label": "Night 8hr (can merge with Z19)"},
+    # Combined/Back shifts
+    {"code": "Z23 B", "start": "23:00", "end": "07:25", "hours": 7.25,  "type": "combined", "label": "Night 8hr + Back at 19:00"},
 ]
 
 
@@ -162,12 +171,22 @@ _PROMPT_TEMPLATE = (
     "10. For full-time nurses, prefer at least one worked weekend in each 14-day pay period when feasible\n"
     "11. Compute expected average daily staffing from target hours and avoid large overstaffing spikes\n\n"
     + _SHIFT_CODES_MARKER + "\n"
-    "NIGHT SHIFTS - OVERNIGHT SPLIT:\n"
-    "IMPORTANT: Overnight shifts use Z19 + Z23 pattern (breaks included in times)\n"
-    "Example: Z19 on Monday, Z23 B on Tuesday means:\n"
-    "  Monday 19:00-23:00: Z19 = 3.75h\n"
-    "  Tuesday 23:00-07:25: Z23 = 7.5h AND back at 19:00 Tuesday for next shift\n"
-    "Total overnight: 3.75h + 7.5h = 11.25h\n\n"
+    "MCH NIGHT SHIFTS - MERGE RULE:\n"
+    "IMPORTANT: The MCH system splits 12-hour night shifts into two separate codes:\n"
+    "- Z19 (ZE2-): Evening start (19:00-23:00) = 4 hours\n"
+    "- Z23 (ZN-): Night finish (23:00-07:25 next day) = 7.25h paid\n\n"
+    "MERGE RULE: When Z19 AND Z23 appear together for the same nurse on the same day/night sequence,\n"
+    "they form ONE continuous 12-hour night shift (11.25h paid, 19:00-07:25 next day).\n\n"
+    "Visual Rendering Rules:\n"
+    "- Z19 alone: Short 4-hour evening block (19:00-23:00)\n"
+    "- Z23 alone: ~8h night block starting at 23:00 and crossing midnight to 07:25 (7.25h paid)\n"
+    "- Z19 + Z23 together (or Z19 + Z23 B): ONE continuous 12-hour block from 19:00 to 07:25 (11.25h paid)\n\n"
+    "BACK-TO-BACK SHIFTS ('B' suffix):\n"
+    "- Z23 B means the nurse works 23:00-07:25 AND is coming back for another night shift\n"
+    "- Example: Z19, Z23 B, Z23 = TWO consecutive 12-hour night shifts:\n"
+    "  Day 1: Z19 (19:00-23:00) + Z23 B (23:00-07:25 Day 2) = 11.25h paid\n"
+    "  Day 2: Returns at 19:00, works until 07:25 Day 3 = 11.25h paid\n"
+    "- CRITICAL: Z23 after Z23 B is a REAL second shift, NOT a ghost/duplicate\n\n"
     "REQUIRED JSON STRUCTURE:\n"
     "{{\n"
     '  "dateRange": {{\n'

@@ -2,8 +2,39 @@
 
 import { useTransition } from "react";
 import { useLocale } from "next-intl";
-import { locales, localeNames, localeFlags, type Locale } from "@/i18n/config";
+import { locales, localeNames, type Locale } from "@/i18n/config";
 import { Globe } from "lucide-react";
+
+function FlagIcon({ locale }: { locale: Locale }) {
+  if (locale === "fr") {
+    return (
+      <svg
+        viewBox="0 0 640 480"
+        className="h-4 w-4 shrink-0 rounded-sm border border-gray-200"
+        aria-hidden="true"
+      >
+        <rect width="640" height="480" fill="#ffffff" />
+        <rect width="213.333" height="480" fill="#002654" />
+        <rect x="213.333" width="213.333" height="480" fill="#ffffff" />
+        <rect x="426.666" width="213.334" height="480" fill="#ce1126" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg
+      viewBox="0 0 640 480"
+      className="h-4 w-4 shrink-0 rounded-sm border border-gray-200"
+      aria-hidden="true"
+    >
+      <rect width="640" height="480" fill="#012169" />
+      <path d="M0 0L640 480M640 0L0 480" stroke="#ffffff" strokeWidth="80" />
+      <path d="M0 0L640 480M640 0L0 480" stroke="#c8102e" strokeWidth="40" />
+      <path d="M320 0V480M0 240H640" stroke="#ffffff" strokeWidth="120" />
+      <path d="M320 0V480M0 240H640" stroke="#c8102e" strokeWidth="60" />
+    </svg>
+  );
+}
 
 export default function LanguageSwitcher() {
   const locale = useLocale() as Locale;
@@ -26,7 +57,7 @@ export default function LanguageSwitcher() {
         title={localeNames[locale]}
       >
         <Globe className="w-4 h-4" />
-        <span className="text-base leading-none">{localeFlags[locale]}</span>
+        <FlagIcon locale={locale} />
       </button>
 
       <div className="absolute right-0 mt-1 w-40 bg-white border border-gray-200 rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-50">
@@ -41,7 +72,7 @@ export default function LanguageSwitcher() {
             }`}
             disabled={isPending}
           >
-            <span>{localeFlags[loc]}</span>
+            <FlagIcon locale={loc} />
             <span>{localeNames[loc]}</span>
             {loc === locale && <span className="ml-auto text-blue-600">✓</span>}
           </button>

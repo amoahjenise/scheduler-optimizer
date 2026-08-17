@@ -82,27 +82,27 @@ const SHIFT_CODES = [
   },
   {
     code: "Z19",
-    label: "Night 12hr",
+    label: "Evening 4hr (start of 12hr night)",
     type: "night" as const,
-    hours: 11.25,
+    hours: 4.0,
     start: "19:00",
-    end: "07:25",
+    end: "23:59",
   },
   {
     code: "Z23",
-    label: "Night 12hr",
+    label: "Night 8hr (end of 12hr night)",
     type: "night" as const,
-    hours: 11.25,
-    start: "23:00",
-    end: "11:25",
+    hours: 7.25,
+    start: "00:00",
+    end: "07:25",
   },
   {
     code: "Z23 B",
-    label: "Night 12hr Balance",
+    label: "Night 8hr Back (end + returning)",
     type: "night" as const,
-    hours: 11.25,
-    start: "23:00",
-    end: "11:25",
+    hours: 7.25,
+    start: "00:00",
+    end: "07:25",
   },
 ];
 
@@ -304,6 +304,7 @@ function createShiftMapFromGrid(
       // Previously, parseShiftCode had a substring bug that stored wrong
       // hours (e.g. Z07 → 7.5h instead of 11.25h, Z23 B → 7.5h instead of
       // 11.25h).  Re-validate on load so the calendar displays correct hours.
+      // IMPORTANT: Preserve hours=0 for Z23 tail shifts (intentional marker).
       const corrected = { ...shiftEntry };
       if (corrected.shift) {
         const code = corrected.shift
@@ -312,7 +313,10 @@ function createShiftMapFromGrid(
           .toUpperCase();
         const def = SHIFT_CODES.find((s) => s.code.toUpperCase() === code);
         if (def) {
-          corrected.hours = def.hours;
+          // Don't overwrite hours if they're 0 (Z23 tail marker)
+          if (corrected.hours !== 0) {
+            corrected.hours = def.hours;
+          }
           corrected.startTime = def.start;
           corrected.endTime = def.end;
           corrected.shiftType = def.type;
@@ -326,18 +330,28 @@ function createShiftMapFromGrid(
   return map;
 }
 
-const shiftColor = (shiftType: string, shift?: string) => {
+const shiftColor = (shiftType: string, shift?: string, hours?: number) => {
   // Special styling for OFF days and holiday codes
   const upperShift = shift?.toUpperCase() || "";
+
+  // Composite CF codes (e.g., "CF-4 07") are WORKING shifts - style by shiftType
+  const isCompositeCF =
+    /^CF[-\s]?\d+\s+(Z?(?:07|11|19|23|E15)(?:\s*B)?)\s*$/i.test(upperShift);
+
   if (
     !shift ||
     shift === "" ||
     upperShift === "OFF" ||
     upperShift === "C" ||
-    upperShift.startsWith("CF") ||
+    (upperShift.startsWith("CF") && !isCompositeCF) || // Only simple CF codes are off-days
     shiftType === "off"
   ) {
     return "bg-gray-100 text-gray-500 border-dashed border-gray-300";
+  }
+
+  // Z23 tail shifts (0 hours) - faded ghost appearance
+  if (upperShift === "Z23" && hours === 0) {
+    return "bg-indigo-50/50 text-indigo-400 border-dashed border-indigo-200 opacity-60";
   }
 
   switch (shiftType) {
@@ -403,6 +417,7 @@ function DraggableShift({
   onDelete,
   onUpdateShift,
   nurseMetadata,
+  isTail,
 }: {
   id: string;
   nurse: string;
@@ -415,6 +430,7 @@ function DraggableShift({
     isChemoCertified?: boolean;
     maxHours?: number;
   };
+  isTail?: boolean;
 }) {
   const t = useTranslations("scheduler");
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
@@ -454,9 +470,13 @@ function DraggableShift({
       }),
     );
   } else {
-    const offDef = OFF_CODES.find(
-      (o) => o.code.toUpperCase() === (shiftEntry.shift || "").toUpperCase(),
-    );
+    const shiftUpper = (shiftEntry.shift || "").toUpperCase();
+    // Exact match first, then prefix match for compound codes like "CF-4 07"
+    const offDef =
+      OFF_CODES.find((o) => o.code.toUpperCase() === shiftUpper) ||
+      (shiftUpper.startsWith("CF")
+        ? OFF_CODES.find((o) => shiftUpper.startsWith(o.code.toUpperCase()))
+        : undefined);
     if (offDef) tooltipLines.push(offDef.label);
   }
 
@@ -492,8 +512,13 @@ function DraggableShift({
       className={`group text-xs px-1.5 py-0.5 rounded-md font-medium border cursor-move flex items-center gap-1 transition-all hover:shadow-md ${shiftColor(
         shiftEntry.shiftType,
         shiftEntry.shift,
+        shiftEntry.hours,
       )} ${isDragging ? "opacity-50 scale-105" : ""}`}
-      title={tooltipLines.join("\n")}
+      title={
+        isTail
+          ? `${tooltipLines.join("\n")}\n(Tail: ending previous night shift at 07:25)`
+          : tooltipLines.join("\n")
+      }
     >
       {/* Name — truncated, compact */}
       <span className="font-semibold truncate text-[11px] leading-tight flex-1 min-w-0">
@@ -542,6 +567,16 @@ function DraggableShift({
             ))}
         </optgroup>
       </select>
+
+      {/* Tail shift indicator */}
+      {isTail && (
+        <span
+          className="text-[8px] text-indigo-400 opacity-70"
+          title="Tail: ending previous night"
+        >
+          ↩
+        </span>
+      )}
 
       {/* Delete — visible on hover only */}
       <button
@@ -605,9 +640,35 @@ function DroppableDay({
   const dayShifts = shifts
     .filter((s) => s.shiftEntry.shiftType === "day" && s.shiftEntry.hours > 0)
     .sort(sortAlpha);
+
+  // Helper to check if a shift is a Z23 tail (should be displayed but not counted)
+  const isZ23Tail = (s: { nurse: string; shiftEntry: ShiftEntry }) => {
+    const code = (s.shiftEntry.shift || "").trim().toUpperCase();
+    // Z23 without "B" and with 0 hours = tail shift (end of night rotation)
+    return code === "Z23" && s.shiftEntry.hours === 0;
+  };
+
+  // Include all night shifts (including Z23 tails for display)
+  // Sort so tails appear at the bottom
   const nightShifts = shifts
-    .filter((s) => s.shiftEntry.shiftType === "night" && s.shiftEntry.hours > 0)
-    .sort(sortAlpha);
+    .filter(
+      (s) =>
+        s.shiftEntry.shiftType === "night" &&
+        (s.shiftEntry.hours > 0 || isZ23Tail(s)),
+    )
+    .sort((a, b) => {
+      const aTail = isZ23Tail(a);
+      const bTail = isZ23Tail(b);
+      // Non-tails first, then tails
+      if (aTail && !bTail) return 1;
+      if (!aTail && bTail) return -1;
+      // Within same group, sort alphabetically
+      return a.nurse.localeCompare(b.nurse);
+    });
+
+  // Z23 tails: displayed but not counted
+  const z23Tails = shifts.filter((s) => isZ23Tail(s)).sort(sortAlpha);
+
   // Only show off entries with a recognized code (C, CF-*, OFF) from OCR or manual edit.
   // Suppress blank algorithm-generated offs so the calendar isn't cluttered.
   const offShifts = shifts
@@ -624,10 +685,17 @@ function DroppableDay({
         return false;
       const code = (s.shiftEntry.shift || "").trim().toUpperCase();
       if (!code) return false; // blank = algorithm-generated, hide
-      return OFF_CODES.some((oc) => oc.code.toUpperCase() === code);
+      // Accept exact OFF_CODES matches AND compound CF codes like "CF-4 07"
+      return (
+        OFF_CODES.some((oc) => oc.code.toUpperCase() === code) ||
+        code.startsWith("CF")
+      );
     })
     .sort(sortAlpha);
-  const totalStaff = dayShifts.length + nightShifts.length;
+
+  // Count active nurses (exclude Z23 tails from count)
+  const activeNightShifts = nightShifts.length - z23Tails.length;
+  const totalStaff = dayShifts.length + activeNightShifts;
 
   // State for add nurse modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -730,7 +798,15 @@ function DroppableDay({
       {nightShifts.length > 0 && (
         <div className="mb-1">
           <div className="text-[10px] uppercase tracking-wider text-indigo-600 font-semibold mb-0.5 flex items-center gap-1">
-            <span>🌙</span> {t("night", { count: nightShifts.length })}
+            <span>🌙</span> {t("night", { count: activeNightShifts })}
+            {z23Tails.length > 0 && (
+              <span
+                className="text-indigo-300 font-normal text-[9px]"
+                title="Ending previous night shift"
+              >
+                +{z23Tails.length} tail{z23Tails.length > 1 ? "s" : ""}
+              </span>
+            )}
           </div>
           <div className="flex flex-col gap-0.5">
             <SortableContext
@@ -741,6 +817,7 @@ function DroppableDay({
             >
               {nightShifts.map(({ nurse, shiftEntry }, idx) => {
                 const id = makeId(nurse, shiftEntry, idx);
+                const isTailShift = isZ23Tail({ nurse, shiftEntry });
                 return (
                   <DraggableShift
                     key={id}
@@ -752,6 +829,7 @@ function DroppableDay({
                     }
                     nurseMetadata={getNurseMetadata(nurse)}
                     onDelete={() => handleDelete(date, id)}
+                    isTail={isTailShift}
                   />
                 );
               })}

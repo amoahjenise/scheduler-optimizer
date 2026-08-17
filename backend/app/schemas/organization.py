@@ -21,6 +21,12 @@ class OrganizationBase(BaseModel):
     timezone: str = "America/Montreal"
     full_time_weekly_target: float = Field(75.0, ge=0, le=336)
     part_time_weekly_target: float = Field(63.75, ge=0, le=336)
+    handoff_retention_days: int = Field(30, ge=1, le=365)
+    team_options: List[str] = Field(default_factory=lambda: ["Heme-Onc", "ENT", "Pink", "Blue", "Psych", "Renal"])
+    room_options: List[str] = Field(default_factory=lambda: [
+        "B7.01", "B7.02", "B7.03", "B7.04", "B7.05", "B7.06", "B7.07", "B7.08",
+        "B7.09", "B7.10", "B7.11", "B7.12", "B7.13", "B7.14", "B7.15", "B7.16",
+    ])
 
 
 class OrganizationCreate(OrganizationBase):
@@ -36,6 +42,9 @@ class OrganizationUpdate(BaseModel):
     logo_url: Optional[str] = None  # Base64 data URL or external URL
     full_time_weekly_target: Optional[float] = Field(None, ge=0, le=336)
     part_time_weekly_target: Optional[float] = Field(None, ge=0, le=336)
+    handoff_retention_days: Optional[int] = Field(None, ge=1, le=365)
+    team_options: Optional[List[str]] = None
+    room_options: Optional[List[str]] = None
 
 
 class OrganizationInDB(OrganizationBase):
@@ -132,6 +141,18 @@ class CurrentUserContext(BaseModel):
     organizations: List[OrganizationMemberWithOrg] = []
     current_organization_id: Optional[str] = None
     current_role: Optional[MemberRole] = None
+
+
+class OrganizationConfigOptions(BaseModel):
+    """Shared org-scoped options used by handover and patient workflows."""
+    team_options: List[str]
+    room_options: List[str]
+
+
+class OrganizationConfigOptionsUpdate(BaseModel):
+    """Admin updates to shared org-scoped options."""
+    team_options: Optional[List[str]] = None
+    room_options: Optional[List[str]] = None
 
 
 # Forward reference resolution

@@ -338,8 +338,11 @@ export const TIME_SLOTS: TimeSlot[] = [
 // Z23 (23:00→07:25) appearing AFTER a Z19 or Z23 B is just the visual tail —
 //   NOT a separate shift. The deduplicateNightShifts() function handles this.
 //
-// Hours in this table represent the standalone value. The dedup function
-// corrects the totals by zeroing out wrap-around tails.
+// PAID HOURS: Actual time credited for payroll (clock time minus breaks).
+// - 12h shifts: 11.25h paid (12h minus 0.75h unpaid meal break)
+// - 8h shifts: 7.5h paid (8h minus 0.5h unpaid break)
+// - Z19 (4h): 4.0h (short shift, no break deduction)
+// The dedup function handles Z19+Z23 merge to prevent double-counting.
 export const SHIFT_CODES: ShiftCode[] = [
   {
     code: "07",
@@ -353,7 +356,7 @@ export const SHIFT_CODES: ShiftCode[] = [
     code: "Z07",
     start: "07:00",
     end: "19:25",
-    hours: 11.25,
+    hours: 11.25, // PAID: 12h - 0.75h break
     type: "day",
     label: "Day 12hr (07:00-19:25)",
   },
@@ -369,7 +372,7 @@ export const SHIFT_CODES: ShiftCode[] = [
     code: "Z11",
     start: "11:00",
     end: "23:25",
-    hours: 11.25,
+    hours: 11.25, // PAID: 12h - 0.75h break
     type: "day",
     label: "Mid 12hr (11:00-23:25)",
   },
@@ -392,27 +395,40 @@ export const SHIFT_CODES: ShiftCode[] = [
   {
     code: "Z19",
     start: "19:00",
-    end: "07:25",
-    hours: 11.25,
+    end: "23:59",
+    hours: 4.0, // Short block, no break
     type: "night",
-    label: "Night 12hr (19:00-07:25)",
+    label: "Evening 4hr (19:00-23:59)",
   },
   {
     code: "Z23",
-    start: "23:00",
-    end: "11:25",
-    hours: 11.25,
+    start: "00:00",
+    end: "07:25",
+    hours: 7.25, // Morning portion of split night shift
     type: "night",
-    label: "Night 12hr (23:00-11:25)",
+    label: "Night 8hr (00:00-07:25)",
   },
   {
     code: "Z23 B",
-    start: "23:00",
-    end: "11:25",
-    hours: 11.25,
+    start: "00:00",
+    end: "07:25",
+    hours: 7.25, // Same as Z23 + coming back
     type: "night",
-    label: "Night 12hr Balance (23:00-11:25)",
+    label: "Night 8hr Back (00:00-07:25)",
   },
+  // NOTE: MCH Night Rotation (bridge/tail model):
+  //   Z19(N, 11.25h) → Z23 B(N+1, 11.25h bridge) → ... → Z23(last, 0h tail)
+  //
+  // Z19   = Start of night rotation (19:00→07:25) = 11.25h paid
+  // Z23 B = BRIDGE ("Bascule"): finish morning + return evening = 11.25h paid
+  // Z23   = TAIL: finish morning only (end of rotation) = 0h
+  //
+  // Standalone values above are for SHIFT_CODES lookup only.
+  // Context-dependent hours are applied in page.tsx Step 1 & 1b.
+  // Example for 2 consecutive 12h nights (Mon-Tue):
+  //   Monday: Z19, Tuesday: Z23 B, Wednesday: Z23
+  // Example for 3 consecutive 12h nights (Mon-Wed):
+  //   Monday: Z19, Tuesday: Z23 B, Wednesday: Z23 B, Thursday: Z23
 ];
 
 /**
@@ -548,44 +564,6 @@ export const OFF_DAY_CODES: ShiftCode[] = [
 
 /** All shift codes including working shifts and off-day codes */
 export const ALL_SHIFT_CODES: ShiftCode[] = [...SHIFT_CODES, ...OFF_DAY_CODES];
-
-/**
- * Night shift codes that START an overnight block and wrap into the next day.
- * Kept for reference / backward compat — the dedup logic now uses
- * NIGHT_DEDUP_PAIRS instead.
- */
-export const NIGHT_START_CODES = new Set(["Z19", "Z23", "Z23 B"]);
-
-/**
- * Night shift codes that can appear as the "tail" on the next calendar day.
- * Kept for reference — the dedup logic now uses NIGHT_DEDUP_PAIRS.
- */
-export const NIGHT_TAIL_CODES = new Set(["Z23", "Z23 B"]);
-
-/**
- * Pair-based dedup map: for each night-start code, which codes on the NEXT
- * calendar day are a wrap-around tail (continuation of the same shift) and
- * should be zeroed out.
- *
- * Rules (from MCH hospital scheduling):
- *   • Z19 (19:00→07:25)  — plain Z23 the next day is a ghost tail.
- *                           Z23 B after Z19 is a NEW shift (16h gap).
- *   • Z23 (23:00→11:25)  — plain Z23 the next day is a ghost tail.
- *   • Z23 B (23:00→11:25, back-at-19:00) — plain Z23 the next day is a
- *     ghost tail.  But Z23 B the next day is a NEW consecutive night
- *     shift (the nurse starts another overnight — the "B" marker means
- *     a real assignment, not a visual continuation).
- *
- * Key insight: ONLY plain Z23 (without "B") is ever a ghost.
- * Z23 B is ALWAYS a real shift.
- *
- * Example: Z19, Z23 B, Z23 B, Z23  →  3 real shifts + 1 ghost (last Z23)
- */
-export const NIGHT_DEDUP_PAIRS: Record<string, Set<string>> = {
-  Z19: new Set(["Z23"]),
-  Z23: new Set(["Z23"]),
-  "Z23 B": new Set(["Z23"]),
-};
 
 // Scheduler state interface for the main hook
 export interface SchedulerState {

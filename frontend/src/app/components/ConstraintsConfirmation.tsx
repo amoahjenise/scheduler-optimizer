@@ -650,7 +650,9 @@ export default function ConstraintsConfirmation({
                           )}
                         </div>
                         <div className="mt-2 flex items-center gap-4 text-sm text-gray-600">
-                          <span>Max: {nurse.maxWeeklyHours}h/2sem.</span>
+                          <span>
+                            Max: {nurse.maxWeeklyHours}h{t("biweeklyIndicator")}
+                          </span>
                           {nurse.offRequests &&
                             nurse.offRequests.length > 0 && (
                               <span className="text-orange-600">

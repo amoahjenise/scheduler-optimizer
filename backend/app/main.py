@@ -6,6 +6,11 @@ from app.api.routes import optimized_schedule
 from app.api.routes import schedule_rules
 from app.api.routes import fhir
 from app.api.routes import analytics
+from app.api.routes import ambient
+from app.api.routes import burnout
+from app.api.routes import learning
+from app.api.routes import announcement
+from app.api.routes import notification
 # from app.api.routes import privacy  # TODO: Fix parameter ordering
 from app.core.config import settings
 import sys
@@ -23,11 +28,15 @@ app = FastAPI(
 cors_origins = settings.ALLOW_ORIGINS if settings.ALLOW_ORIGINS else [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
 ]
 allow_all_origins = "*" in cors_origins
+dev_origin_regex = r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3})(:\d+)?$"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=None if allow_all_origins else dev_origin_regex,
     allow_credentials=not allow_all_origins,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -57,6 +66,13 @@ app.include_router(fhir.router, prefix="/fhir/r5", tags=["FHIR R5"])
 
 # Analytics API for pilot study ROI tracking
 app.include_router(analytics.router, prefix="/analytics", tags=["Analytics"])
+
+# 2026 Features
+app.include_router(ambient.router, prefix="/ambient", tags=["Ambient Documentation"])
+app.include_router(burnout.router, prefix="/burnout", tags=["Burnout Prediction"])
+app.include_router(learning.router, prefix="/learning", tags=["Micro-Learning"])
+app.include_router(announcement.router, prefix="/announcements", tags=["Announcements"])
+app.include_router(notification.router, prefix="/notifications", tags=["Notifications"])
 
 # Privacy API for Law 25 (Quebec) compliance
 # app.include_router(privacy.router, prefix="/privacy", tags=["Privacy"])  # TODO: Fix parameter ordering

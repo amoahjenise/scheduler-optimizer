@@ -9,6 +9,7 @@ from app.db.database import Base
 import app.models.user
 import app.models.schedule
 import app.models.optimized_schedule
+import app.models.organization
 
 import app.models.deletion_activity
 import app.models.recurrence

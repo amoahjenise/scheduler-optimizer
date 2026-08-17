@@ -163,16 +163,28 @@ export default function InactivityGuard() {
   useEffect(() => {
     if (!isSignedIn) return;
 
+    // Use Pointer Events (pointerdown/pointermove) instead of separate
+    // mouse + touch events. In Chrome DevTools mobile emulation, a single
+    // tap would fire both mousemove AND touchstart, calling resetTimers()
+    // twice per interaction and flooding React with rapid state updates.
+    // Pointer events fire exactly once per interaction regardless of input
+    // type (mouse, touch, stylus).
     const activityEvents = [
-      "mousedown",
-      "mousemove",
+      "pointerdown",
+      "pointermove",
       "keydown",
       "scroll",
-      "touchstart",
       "click",
     ];
 
+    // Throttle: only act on activity at most once per 200 ms to prevent
+    // bursts of pointer/scroll events from triggering excessive state churn.
+    let lastActivity = 0;
     const handleActivity = () => {
+      const now = Date.now();
+      if (now - lastActivity < 200) return;
+      lastActivity = now;
+
       if (showWarningRef.current && !isPausedRef.current) {
         // Warning countdown is running → pause and ask for confirmation
         pauseCountdown();

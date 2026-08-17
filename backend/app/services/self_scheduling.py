@@ -108,9 +108,9 @@ def _build_shift_library() -> Dict[str, ShiftDefinition]:
     # 12-hour Z-codes: 12h on-site, 0.75h break -> 11.25h paid
     _add("Z07",   "day",   12.0, 11.25,  7.0, 19.417, "Day 12hr")
     _add("Z11",   "day",   12.0, 11.25, 11.0, 23.417, "Mid 12hr")
-    _add("Z19",   "night", 12.0, 11.25, 19.0, 31.417, "Night 12hr")
-    _add("Z23",   "night", 12.0, 11.25, 23.0, 35.417, "Night 12hr")
-    _add("Z23 B", "night", 12.0, 11.25, 23.0, 35.417, "Night 12hr Balance")
+    _add("Z19",   "night", 4.0,  4.0,   19.0, 23.0,   "Evening 4hr")
+    _add("Z23",   "night", 8.42, 7.25,  23.0, 31.417, "Night 8hr")
+    _add("Z23 B", "night", 8.42, 7.25,  23.0, 31.417, "Night 8hr Back")
 
     # 8-hour standard: 8h on-site, 0.5h break -> 7.5h paid
     _add("07",    "day",    8.0,  7.5,   7.0, 15.25,  "Day 8hr")

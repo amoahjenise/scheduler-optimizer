@@ -15,16 +15,23 @@ from app.schemas.organization import (
     OrganizationWithMembers, OrganizationMember as MemberSchema,
     OrganizationMemberCreate, OrganizationMemberUpdate,
     JoinOrganization, InviteResponse, CurrentUserContext,
-    OrganizationMemberWithOrg
+    OrganizationMemberWithOrg, OrganizationConfigOptions, OrganizationConfigOptionsUpdate
 )
 from app.core.auth import (
     RequiredAuth, OrgAuth, AdminAuth, AuthContext,
     get_required_auth, get_org_required_auth, get_admin_auth
 )
+from app.api.routes.notification import create_notification
 from app.core.config import settings
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+DEFAULT_TEAMS = ["Heme-Onc", "ENT", "Pink", "Blue", "Psych", "Renal"]
+DEFAULT_ROOMS = [
+    "B7.01", "B7.02", "B7.03", "B7.04", "B7.05", "B7.06", "B7.07", "B7.08",
+    "B7.09", "B7.10", "B7.11", "B7.12", "B7.13", "B7.14", "B7.15", "B7.16",
+]
 
 # Initialize Clerk client
 clerk_client = Clerk(bearer_auth=settings.CLERK_SECRET_KEY)
@@ -54,8 +61,37 @@ def generate_invite_code() -> str:
     return secrets.token_urlsafe(12)[:16].upper()
 
 
+def _normalize_option_list(values, default_values):
+    if not isinstance(values, list):
+        return list(default_values)
+
+    cleaned = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        item = value.strip()
+        if not item:
+            continue
+        key = item.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(item)
+
+    return cleaned or list(default_values)
+
+
+def _current_org_config(org: Organization) -> OrganizationConfigOptions:
+    return OrganizationConfigOptions(
+        team_options=_normalize_option_list(org.team_options, DEFAULT_TEAMS),
+        room_options=_normalize_option_list(org.room_options, DEFAULT_ROOMS),
+    )
+
+
 # ============== Organization CRUD ==============
 
+@router.post("", response_model=OrganizationSchema, include_in_schema=False)
 @router.post("/", response_model=OrganizationSchema)
 def create_organization(
     org_in: OrganizationCreate,
@@ -79,6 +115,11 @@ def create_organization(
             slug=slug,
             description=org_in.description,
             timezone=org_in.timezone,
+            full_time_weekly_target=org_in.full_time_weekly_target,
+            part_time_weekly_target=org_in.part_time_weekly_target,
+            handoff_retention_days=org_in.handoff_retention_days,
+            team_options=_normalize_option_list(org_in.team_options, DEFAULT_TEAMS),
+            room_options=_normalize_option_list(org_in.room_options, DEFAULT_ROOMS),
             invite_code=generate_invite_code()
         )
         db.add(org)
@@ -108,6 +149,7 @@ def create_organization(
         raise HTTPException(status_code=500, detail="Failed to create organization")
 
 
+@router.get("", response_model=List[OrganizationMemberWithOrg], include_in_schema=False)
 @router.get("/", response_model=List[OrganizationMemberWithOrg])
 def list_my_organizations(
     auth: AuthContext = Depends(get_required_auth),
@@ -227,11 +269,53 @@ def update_organization(
         org.full_time_weekly_target = org_in.full_time_weekly_target
     if org_in.part_time_weekly_target is not None:
         org.part_time_weekly_target = org_in.part_time_weekly_target
+    if org_in.handoff_retention_days is not None:
+        org.handoff_retention_days = org_in.handoff_retention_days
+    if org_in.team_options is not None:
+        org.team_options = _normalize_option_list(org_in.team_options, DEFAULT_TEAMS)
+    if org_in.room_options is not None:
+        org.room_options = _normalize_option_list(org_in.room_options, DEFAULT_ROOMS)
     
     db.commit()
     db.refresh(org)
     
     return org
+
+
+@router.get("/{org_id}/config-options", response_model=OrganizationConfigOptions)
+def get_organization_config_options(
+    org_id: str,
+    auth: AuthContext = Depends(get_org_required_auth),
+    db: Session = Depends(get_db)
+):
+    """Get shared org-scoped teams and rooms options for members."""
+    if auth.organization_id != org_id:
+        raise HTTPException(status_code=403, detail="Cannot view a different organization")
+
+    return _current_org_config(auth.organization)
+
+
+@router.patch("/{org_id}/config-options", response_model=OrganizationConfigOptions)
+def update_organization_config_options(
+    org_id: str,
+    config_in: OrganizationConfigOptionsUpdate,
+    auth: AuthContext = Depends(get_admin_auth),
+    db: Session = Depends(get_db)
+):
+    """Update shared org-scoped teams and rooms options. Admin only."""
+    if auth.organization_id != org_id:
+        raise HTTPException(status_code=403, detail="Cannot update a different organization")
+
+    org = auth.organization
+
+    if config_in.team_options is not None:
+        org.team_options = _normalize_option_list(config_in.team_options, DEFAULT_TEAMS)
+    if config_in.room_options is not None:
+        org.room_options = _normalize_option_list(config_in.room_options, DEFAULT_ROOMS)
+
+    db.commit()
+    db.refresh(org)
+    return _current_org_config(org)
 
 
 @router.delete("/{org_id}")
@@ -486,6 +570,90 @@ def update_member(
     db.refresh(member)
     
     return member
+
+
+@router.post("/{org_id}/members/{member_id}/transfer-admin")
+def transfer_admin_role(
+    org_id: str,
+    member_id: str,
+    auth: AuthContext = Depends(get_admin_auth),
+    db: Session = Depends(get_db)
+):
+    """
+    Transfer admin role from current admin to another approved active member.
+    """
+    if auth.organization_id != org_id:
+        raise HTTPException(status_code=403, detail="Cannot manage members of a different organization")
+
+    target_member = db.query(OrganizationMember).filter(
+        OrganizationMember.id == member_id,
+        OrganizationMember.organization_id == org_id,
+        OrganizationMember.is_active == True,
+    ).first()
+
+    if not target_member:
+        raise HTTPException(status_code=404, detail="Target member not found")
+
+    if not target_member.is_approved:
+        raise HTTPException(status_code=400, detail="Target member must be approved before admin transfer")
+
+    if target_member.role == MemberRole.ADMIN:
+        raise HTTPException(status_code=400, detail="Target member is already an admin")
+
+    current_admin_membership = db.query(OrganizationMember).filter(
+        OrganizationMember.organization_id == org_id,
+        OrganizationMember.user_id == auth.user_id,
+        OrganizationMember.is_active == True,
+    ).first()
+
+    if not current_admin_membership or current_admin_membership.role != MemberRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Only current admins can transfer admin role")
+
+    # Promote target to admin and demote current admin to nurse by default.
+    target_member.role = MemberRole.ADMIN
+    current_admin_membership.role = MemberRole.NURSE
+
+    # Alert the incoming admin, and leave a record for the outgoing admin.
+    org_name = auth.organization.name if auth.organization else "your organization"
+    create_notification(
+        db,
+        user_id=target_member.user_id,
+        organization_id=org_id,
+        type="admin_transfer",
+        title="You are now an admin",
+        body=(
+            f"{auth.user_name or auth.user_email or 'An admin'} transferred the admin role "
+            f"for {org_name} to you. You can now manage members and organization settings."
+        ),
+        link="/settings",
+    )
+    create_notification(
+        db,
+        user_id=auth.user_id,
+        organization_id=org_id,
+        type="admin_transfer",
+        title="Admin role transferred",
+        body=(
+            f"You transferred the admin role for {org_name} to "
+            f"{target_member.user_name or target_member.user_email or 'another member'}. "
+            "Your role is now nurse."
+        ),
+        link="/settings",
+    )
+
+    db.commit()
+    db.refresh(target_member)
+
+    logger.info(
+        f"Admin role transferred in org {org_id}: {auth.user_id} -> {target_member.user_id}"
+    )
+
+    return {
+        "message": "Admin role transferred",
+        "new_admin_member_id": str(target_member.id),
+        "previous_admin_member_id": str(current_admin_membership.id),
+        "previous_admin_new_role": MemberRole.NURSE.value,
+    }
 
 
 @router.delete("/{org_id}/members/{member_id}")

@@ -1,14 +1,13 @@
 /**
  * Internationalization Configuration
  *
- * Quebec Law 25 Compliance: French is the primary language
- * Bill S-5 Compliance: Multi-language support for healthcare accessibility
+ * Multi-language support for healthcare accessibility.
  */
 
-export const locales = ["fr", "en"] as const;
+export const locales = ["en", "fr"] as const;
 export type Locale = (typeof locales)[number];
 
-export const defaultLocale: Locale = "fr"; // French is primary for Quebec
+export const defaultLocale: Locale = "en";
 
 export const localeNames: Record<Locale, string> = {
   fr: "Français",
@@ -16,6 +15,6 @@ export const localeNames: Record<Locale, string> = {
 };
 
 export const localeFlags: Record<Locale, string> = {
-  fr: "🇨🇦",
+  fr: "�🇷",
   en: "🇬🇧",
 };

@@ -2,8 +2,9 @@
 
 import { useCallback } from "react";
 import { useOrganization } from "../context/OrganizationContext";
+import { getApiBase } from "../lib/runtimeApiBase";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL!;
+const API_BASE = getApiBase();
 
 /**
  * Hook to get API fetch function with auth headers

@@ -20,8 +20,9 @@ import LabTrendBanner from "./LabTrendBanner";
 import CarriedForwardBanner from "./CarriedForwardBanner";
 import { loadPatientConfig, PatientFieldConfig } from "../../lib/patientConfig";
 import { loadRooms } from "../../lib/roomsConfig";
-import { loadTeams, DEFAULT_TEAMS } from "../../lib/teamsConfig";
+import { loadTeams } from "../../lib/teamsConfig";
 import { loadDiagnoses, addDiagnosis } from "../../lib/diagnosesConfig";
+import { fetchAndCacheOrganizationConfig } from "../../lib/orgConfig";
 
 interface HandoverFormProps {
   handover: Handover;
@@ -589,7 +590,8 @@ export default function HandoverForm({
 }: HandoverFormProps) {
   const t = useTranslations("handover");
   const { user } = useUser();
-  const { getAuthHeaders } = useOrganization();
+  const { getAuthHeaders, currentOrganization } = useOrganization();
+  const orgId = currentOrganization?.id;
   const isFormReadOnly = readOnly || handover.is_completed;
   // Load patient field configuration
   const [patientConfig, setPatientConfig] = useState<PatientFieldConfig>(() =>
@@ -658,30 +660,34 @@ export default function HandoverForm({
     last_name: handover.p_last_name || patient.last_name || "",
     date_of_birth: handover.p_date_of_birth || patient.date_of_birth || "",
     age: handover.p_age || patient.age || "",
-    team: loadTeams()[0] || DEFAULT_TEAMS[0],
+    team: loadTeams(orgId, true)[0] || "",
   });
-  const [teamOptions, setTeamOptions] = useState<string[]>(loadTeams());
+  const [teamOptions, setTeamOptions] = useState<string[]>(
+    loadTeams(orgId, true),
+  );
   const [showRoomDropdown, setShowRoomDropdown] = useState(false);
   const [showDiagnosisDropdown, setShowDiagnosisDropdown] = useState(false);
   const [showBowelDropdown, setShowBowelDropdown] = useState(false);
   const bowelDropdownRef = useRef<HTMLDivElement>(null);
-  const [roomSuggestions, setRoomSuggestions] = useState<string[]>(loadRooms());
+  const [roomSuggestions, setRoomSuggestions] = useState<string[]>(
+    loadRooms(orgId, true),
+  );
   const [diagnosisSuggestions, setDiagnosisSuggestions] =
     useState<string[]>(loadDiagnoses());
 
   // Load rooms from config and listen for changes
   useEffect(() => {
-    setRoomSuggestions(loadRooms());
+    setRoomSuggestions(loadRooms(orgId, true));
 
     const handleRoomsChange = () => {
-      setRoomSuggestions(loadRooms());
+      setRoomSuggestions(loadRooms(orgId, true));
     };
 
     window.addEventListener("roomsConfigChanged", handleRoomsChange);
     return () => {
       window.removeEventListener("roomsConfigChanged", handleRoomsChange);
     };
-  }, []);
+  }, [orgId]);
 
   // Load diagnoses from config and listen for changes
   useEffect(() => {
@@ -694,11 +700,11 @@ export default function HandoverForm({
 
   useEffect(() => {
     const syncTeams = () => {
-      const nextTeams = loadTeams();
+      const nextTeams = loadTeams(orgId, true);
       setTeamOptions(nextTeams);
       setPatientData((prev) => {
         if (nextTeams.length === 0) {
-          return { ...prev, team: DEFAULT_TEAMS[0] };
+          return { ...prev, team: "" };
         }
         if (nextTeams.includes(prev.team)) {
           return prev;
@@ -712,7 +718,36 @@ export default function HandoverForm({
     return () => {
       window.removeEventListener("teamsConfigChanged", syncTeams);
     };
-  }, []);
+  }, [orgId]);
+
+  useEffect(() => {
+    if (!orgId) return;
+    let cancelled = false;
+
+    async function hydrateOrgConfig() {
+      try {
+        const headers = await getAuthHeaders();
+        const config = await fetchAndCacheOrganizationConfig(orgId, headers);
+        if (!cancelled) {
+          setRoomSuggestions(config.room_options);
+          setTeamOptions(config.team_options);
+          setPatientData((prev) => {
+            const nextTeam = config.team_options.includes(prev.team)
+              ? prev.team
+              : config.team_options[0] || "";
+            return { ...prev, team: nextTeam };
+          });
+        }
+      } catch (err) {
+        console.error("Failed to hydrate org config in HandoverForm:", err);
+      }
+    }
+
+    hydrateOrgConfig();
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId, getAuthHeaders]);
 
   // Handle click outside for bowel dropdown
   useEffect(() => {
@@ -767,6 +802,7 @@ export default function HandoverForm({
     pca_checkbox: handover.pca_checkbox,
     nca_checkbox: handover.nca_checkbox,
     pca_nca_bolus: handover.pca_nca_bolus,
+    pca_description: handover.pca_description,
     pain_notes: handover.pain_notes,
     monitoring_cardiac: handover.monitoring_cardiac,
     monitoring_o2_sat: handover.monitoring_o2_sat,
@@ -1381,13 +1417,12 @@ export default function HandoverForm({
                       }
                       className="font-semibold text-sm border-0 p-0 focus:ring-0 bg-transparent"
                     >
-                      {(teamOptions.length ? teamOptions : DEFAULT_TEAMS).map(
-                        (team) => (
-                          <option key={team} value={team}>
-                            {team}
-                          </option>
-                        ),
-                      )}
+                      <option value="">Select team...</option>
+                      {teamOptions.map((team) => (
+                        <option key={team} value={team}>
+                          {team}
+                        </option>
+                      ))}
                     </select>
                   </>
                 )}
@@ -1830,6 +1865,24 @@ export default function HandoverForm({
                   />
                 </div>
               </div>
+              {/* PCA/NCA Description */}
+              {(formData.pca_checkbox || formData.nca_checkbox) && (
+                <div className="mt-2">
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    {formData.pca_checkbox ? "PCA" : "NCA"} Description / Notes
+                  </label>
+                  <textarea
+                    value={formData.pca_description || ""}
+                    onChange={(e) =>
+                      updateField("pca_description", e.target.value)
+                    }
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-1 focus:ring-blue-500 resize-none"
+                    rows={2}
+                    placeholder={`Enter ${formData.pca_checkbox ? "PCA" : "NCA"} settings, medication details, nursing observations...`}
+                    disabled={isFormReadOnly}
+                  />
+                </div>
+              )}
               <div className="flex flex-wrap gap-4 items-center mt-2 pt-2 border-t border-gray-200">
                 <span className="text-xs font-medium text-gray-700">
                   Monitoring:

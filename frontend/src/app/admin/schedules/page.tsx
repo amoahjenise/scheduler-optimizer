@@ -29,7 +29,7 @@ export default function AdminSchedulesPage() {
   const t = useTranslations("schedules");
   const {
     currentOrganization,
-    isAdmin,
+    canManage,
     isLoading: orgLoading,
     getAuthHeaders,
   } = useOrganization();
@@ -41,13 +41,13 @@ export default function AdminSchedulesPage() {
   useEffect(() => {
     if (orgLoading) return;
 
-    if (!isAdmin) {
+    if (!canManage) {
       router.replace("/schedules");
       return;
     }
 
     loadSchedules();
-  }, [isAdmin, orgLoading]);
+  }, [canManage, orgLoading]);
 
   async function loadSchedules() {
     try {
@@ -157,7 +157,7 @@ export default function AdminSchedulesPage() {
     return null;
   }
 
-  if (!isAdmin) {
+  if (!canManage) {
     return null;
   }
 

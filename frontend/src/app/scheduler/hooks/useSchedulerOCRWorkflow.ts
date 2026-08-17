@@ -6,6 +6,7 @@ import { GridRow, ManualNurse, OCRWarning, ShiftEntry, Step } from "../types";
 import {
   cleanNurseName,
   deduplicateGridGhosts,
+  deduplicateNightShifts,
   deduplicateNurseCandidates,
   deduplicateOCRGrid,
   detectOCRIssues,
@@ -277,12 +278,8 @@ export function useSchedulerOCRWorkflow({
 
       const sortedDates = Array.from(allDates).sort();
       const gridRows: GridRow[] = Object.entries(cleanGrid).map(
-        ([, data], idx) => ({
-          id: String(idx),
-          nurse: data.displayName,
-          employeeId: data.employeeId,
-          seniority: data.seniority,
-          shifts: sortedDates.map(
+        ([, data], idx) => {
+          const rawShifts = sortedDates.map(
             (date) =>
               data.shifts[date] || {
                 date,
@@ -292,8 +289,18 @@ export function useSchedulerOCRWorkflow({
                 startTime: "",
                 endTime: "",
               },
-          ),
-        }),
+          );
+          // Deduplicate wrap-around night shifts — a plain Z23 after a
+          // night code (Z19, Z23 B) is a ghost tail, not a real shift.
+          const dedupedShifts = deduplicateNightShifts(rawShifts);
+          return {
+            id: String(idx),
+            nurse: data.displayName,
+            employeeId: data.employeeId,
+            seniority: data.seniority,
+            shifts: dedupedShifts,
+          };
+        },
       );
 
       gridRows.sort((a, b) => a.nurse.localeCompare(b.nurse));

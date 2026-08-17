@@ -319,7 +319,7 @@ export default function SchedulerPage() {
   // Get organization context for org-scoped storage and access control
   const {
     currentOrganization,
-    isAdmin,
+    canManage,
     isLoading: orgLoading,
     getAuthHeaders,
   } = useOrganization();
@@ -1674,12 +1674,12 @@ export default function SchedulerPage() {
     [],
   );
 
-  // Redirect non-admins away from scheduler
+  // Redirect non-managers away from scheduler
   useEffect(() => {
-    if (!orgLoading && !isAdmin) {
+    if (!orgLoading && !canManage) {
       router.replace("/schedules");
     }
-  }, [orgLoading, isAdmin, router]);
+  }, [orgLoading, canManage, router]);
 
   const isCreatingNewDraftRef = useRef(false);
   const {
@@ -1858,7 +1858,7 @@ export default function SchedulerPage() {
   async function discardDraft() {
     if (!confirm(tScheduler("confirmDeleteDraft"))) return;
     await deleteDraftAndReset();
-    const redirectPath = isAdmin ? "/admin/schedules" : "/schedules";
+    const redirectPath = canManage ? "/admin/schedules" : "/schedules";
     router.replace(redirectPath);
     console.log("Draft deleted and redirected to schedule list");
   }
@@ -2028,10 +2028,8 @@ export default function SchedulerPage() {
       // On error, clear the pre-refinement state since nothing was applied
       setPreRefinementGrid(null);
       setPreRefinementDates(null);
-      alert(
-        "Refinement failed: " +
-          (err instanceof Error ? err.message : "Unknown error"),
-      );
+      const message = err instanceof Error ? err.message : "Unknown error";
+      alert(`Refinement failed: ${message}`);
     } finally {
       setRefining(false);
     }
@@ -2167,10 +2165,9 @@ export default function SchedulerPage() {
 
       setInsightsData(data);
     } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
       setInsightsData({
-        summary:
-          "Failed to generate insights: " +
-          (err instanceof Error ? err.message : "Unknown error"),
+        summary: `Failed to generate insights: ${message}`,
         score: null,
         issues: [],
         suggestions: [],

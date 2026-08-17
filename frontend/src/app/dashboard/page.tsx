@@ -8,10 +8,14 @@ import {
   fetchPatientsAPI,
   fetchTodaysHandoversAPI,
   fetchOptimizedSchedulesAPI,
+  fetchOptimizedScheduleByIdAPI,
   fetchDeletionActivitiesAPI,
+  fetchNotificationsAPI,
+  markNotificationReadAPI,
   type Handover,
   type OptimizedSchedule,
   type DeletionActivity,
+  type AppNotification,
 } from "../lib/api";
 import {
   Calendar,
@@ -26,6 +30,7 @@ import {
   User,
   RefreshCw,
   UserCheck,
+  Bell,
 } from "lucide-react";
 import { useOrganization } from "../context/OrganizationContext";
 import type { Patient } from "../lib/api";
@@ -98,7 +103,7 @@ export default function Dashboard() {
   const { user } = useUser();
   const {
     currentOrganization,
-    isAdmin,
+    canManage,
     getAuthHeaders,
     isLoading: orgLoading,
   } = useOrganization();
@@ -124,6 +129,8 @@ export default function Dashboard() {
   const [hoveredDay, setHoveredDay] = useState<number | null>(null);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<Date | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [pendingJoinApprovals, setPendingJoinApprovals] = useState(0);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
 
   useEffect(() => {
     async function loadStats() {
@@ -133,22 +140,105 @@ export default function Dashboard() {
       try {
         const authHeaders = await getAuthHeaders();
 
-        // Fetch independently so one group failing doesn't zero-out the other
-        const [patientsRes, dayHandovers, nightHandovers] = await Promise.all([
-          fetchPatientsAPI({ active_only: true }, authHeaders),
-          fetchTodaysHandoversAPI("day", authHeaders),
-          fetchTodaysHandoversAPI("night", authHeaders),
-        ]);
+        // Load core dashboard stats fail-soft so one slow endpoint doesn't block all tiles.
+        const [patientsResult, dayHandoversResult, nightHandoversResult] =
+          await Promise.allSettled([
+            fetchPatientsAPI({ active_only: true }, authHeaders),
+            fetchTodaysHandoversAPI("day", authHeaders),
+            fetchTodaysHandoversAPI("night", authHeaders),
+          ]);
+
+        const patientsRes =
+          patientsResult.status === "fulfilled"
+            ? patientsResult.value
+            : { patients: [], total: 0 };
+        const dayHandovers =
+          dayHandoversResult.status === "fulfilled"
+            ? dayHandoversResult.value
+            : { handovers: [], total: 0 };
+        const nightHandovers =
+          nightHandoversResult.status === "fulfilled"
+            ? nightHandoversResult.value
+            : { handovers: [], total: 0 };
 
         let schedulesList: OptimizedSchedule[] = [];
         let deletionActivities: DeletionActivity[] = [];
+        const [schedulesResult, deletionsResult] = await Promise.allSettled([
+          fetchOptimizedSchedulesAPI(authHeaders, {
+            includeScheduleData: false,
+            timeoutMs: 12000,
+            retryCount: 0,
+          }),
+          fetchDeletionActivitiesAPI(authHeaders, 25, {
+            timeoutMs: 10000,
+            retryCount: 0,
+          }),
+        ]);
+
+        if (schedulesResult.status === "fulfilled") {
+          schedulesList = schedulesResult.value;
+        } else {
+          console.warn("Failed to load schedules list:", schedulesResult.reason);
+        }
+
+        if (deletionsResult.status === "fulfilled") {
+          deletionActivities = deletionsResult.value;
+        } else {
+          console.warn(
+            "Failed to load deletion activities:",
+            deletionsResult.reason,
+          );
+        }
+
+        if (canManage && currentOrganization?.id) {
+          const membersController = new AbortController();
+          const membersTimeout = setTimeout(
+            () => membersController.abort(),
+            8000,
+          );
+
+          try {
+            const membersRes = await fetch(
+              `/api/organizations/${currentOrganization.id}/members`,
+              {
+                method: "GET",
+                headers: authHeaders,
+                signal: membersController.signal,
+              },
+            );
+
+            if (membersRes.ok) {
+              const members: Array<{
+                is_approved?: boolean;
+                is_active?: boolean;
+              }> = await membersRes.json();
+              const pendingCount = members.filter(
+                (member) =>
+                  member.is_active !== false && member.is_approved === false,
+              ).length;
+              setPendingJoinApprovals(pendingCount);
+            }
+          } catch (membersErr) {
+            console.warn(
+              "Failed to load pending member approvals:",
+              membersErr,
+            );
+          } finally {
+            clearTimeout(membersTimeout);
+          }
+        } else {
+          setPendingJoinApprovals(0);
+        }
+
         try {
-          [schedulesList, deletionActivities] = await Promise.all([
-            fetchOptimizedSchedulesAPI(authHeaders),
-            fetchDeletionActivitiesAPI(authHeaders, 25),
-          ]);
-        } catch (authErr) {
-          console.warn("Failed to load schedule/deletion data:", authErr);
+          setNotifications(
+            await fetchNotificationsAPI(authHeaders, true, {
+              timeoutMs: 8000,
+              retryCount: 0,
+            }),
+          );
+        } catch (notificationErr) {
+          console.warn("Failed to load notifications:", notificationErr);
         }
 
         // Include ALL handovers: both linked (patient_id) and embedded (p_first_name)
@@ -458,9 +548,32 @@ export default function Dashboard() {
           return;
         }
 
-        // Use schedule data directly from the list response (no need for second API call)
-        // Parse schedule data
-        const { data: scheduleData } = resolveRange(activeSchedule);
+        // Use list response for discovery, then hydrate only the active schedule.
+        let { data: scheduleData } = resolveRange(activeSchedule);
+        const needsHydration =
+          !Array.isArray(scheduleData?.dates) || scheduleData.dates.length === 0;
+
+        if (needsHydration && activeSchedule.id) {
+          try {
+            const fullSchedule = await fetchOptimizedScheduleByIdAPI(
+              activeSchedule.id,
+              authHeaders,
+              {
+                timeoutMs: 10000,
+                retryCount: 0,
+              },
+            );
+            const rawData =
+              typeof fullSchedule?.schedule_data === "string"
+                ? JSON.parse(fullSchedule.schedule_data)
+                : fullSchedule?.schedule_data;
+            if (rawData && typeof rawData === "object") {
+              scheduleData = rawData as Record<string, any>;
+            }
+          } catch (hydrateErr) {
+            console.warn("Failed to hydrate active schedule details:", hydrateErr);
+          }
+        }
 
         // Build map of dates to staff
         const weekMap = new Map<string, DaySchedule>();
@@ -538,7 +651,14 @@ export default function Dashboard() {
     if (!orgLoading && !user?.id) {
       setStats((prev) => ({ ...prev, loading: false }));
     }
-  }, [currentOrganization, getAuthHeaders, refreshKey, user?.id, orgLoading]);
+  }, [
+    currentOrganization,
+    getAuthHeaders,
+    refreshKey,
+    user?.id,
+    orgLoading,
+    canManage,
+  ]);
 
   const currentTime = new Date();
   const isDayShiftActive =
@@ -636,6 +756,74 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {notifications.length > 0 && (
+            <div className="mb-4 space-y-2">
+              {notifications.map((notification) => (
+                <div
+                  key={notification.id}
+                  className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 flex items-start justify-between gap-3"
+                >
+                  <div className="flex items-start gap-2 text-blue-900 text-sm">
+                    <Bell className="w-4 h-4 mt-0.5 shrink-0" />
+                    <div>
+                      <p className="font-medium">{notification.title}</p>
+                      {notification.body && (
+                        <p className="text-blue-800">{notification.body}</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3">
+                    {notification.link && (
+                      <Link
+                        href={notification.link}
+                        className="text-sm font-medium text-blue-900 hover:text-blue-950"
+                      >
+                        View
+                      </Link>
+                    )}
+                    <button
+                      onClick={async () => {
+                        try {
+                          const authHeaders = await getAuthHeaders();
+                          await markNotificationReadAPI(
+                            notification.id,
+                            authHeaders,
+                          );
+                          setNotifications((prev) =>
+                            prev.filter((n) => n.id !== notification.id),
+                          );
+                        } catch (err) {
+                          console.warn("Failed to dismiss notification:", err);
+                        }
+                      }}
+                      className="text-sm font-medium text-blue-700 hover:text-blue-900"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {canManage && pendingJoinApprovals > 0 && (
+            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-amber-800 text-sm">
+                <UserCheck className="w-4 h-4" />
+                <span>
+                  {pendingJoinApprovals} pending organization join
+                  {pendingJoinApprovals > 1 ? " requests" : " request"}
+                </span>
+              </div>
+              <Link
+                href="/settings"
+                className="text-sm font-medium text-amber-900 hover:text-amber-950"
+              >
+                Review in Settings
+              </Link>
+            </div>
+          )}
+
           {/* Stats Cards Row */}
           <div
             className={`grid grid-cols-1 ${FEATURES.PATIENT_MANAGEMENT ? "md:grid-cols-3" : "md:grid-cols-2"} gap-4 mb-6`}
@@ -713,7 +901,7 @@ export default function Dashboard() {
 
             {/* Schedules Card - Clickable */}
             <Link
-              href={isAdmin ? "/admin/schedules" : "/schedules"}
+              href={canManage ? "/admin/schedules" : "/schedules"}
               className="bg-gradient-to-br from-purple-50 to-white rounded-2xl p-4 border border-purple-100 text-left hover:shadow-lg hover:-translate-y-0.5 transition-all cursor-pointer block"
             >
               <div className="flex items-center justify-between mb-3">
@@ -729,12 +917,12 @@ export default function Dashboard() {
                   <p className="text-3xl font-bold text-gray-900">
                     {stats.loading
                       ? "–"
-                      : isAdmin
+                      : canManage
                         ? `${stats.finalizedSchedules}/${stats.schedulesCreated}`
                         : stats.finalizedSchedules}
                   </p>
                   <p className="text-sm text-gray-500 mt-1">
-                    {isAdmin
+                    {canManage
                       ? t("finalizedTotalSchedules")
                       : t("finalizedSchedulesLabel")}
                   </p>
@@ -800,7 +988,7 @@ export default function Dashboard() {
               )}
 
               <Link
-                href={isAdmin ? "/scheduler" : "/schedules"}
+                href={canManage ? "/scheduler" : "/schedules"}
                 className="flex items-center gap-3 rounded-xl border border-purple-200 bg-white px-4 py-3 hover:bg-purple-50 hover:shadow-sm transition-all"
               >
                 <div className="w-9 h-9 rounded-lg bg-purple-100 flex items-center justify-center">
@@ -808,10 +996,10 @@ export default function Dashboard() {
                 </div>
                 <div>
                   <p className="text-sm font-semibold text-gray-900">
-                    {isAdmin ? t("scheduleOptimizer") : t("schedulesAction")}
+                    {canManage ? t("scheduleOptimizer") : t("schedulesAction")}
                   </p>
                   <p className="text-xs text-gray-500">
-                    {isAdmin
+                    {canManage
                       ? t("scheduleOptimizerDesc")
                       : t("schedulesActionDesc")}
                   </p>

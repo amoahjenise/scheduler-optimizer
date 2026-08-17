@@ -102,6 +102,7 @@ class Handover(Base):
     pca_checkbox = Column(Boolean, nullable=True)
     nca_checkbox = Column(Boolean, nullable=True)
     pca_nca_bolus = Column(Text, nullable=True)
+    pca_description = Column(Text, nullable=True)  # PCA/NCA description for nursing notes
     pain_notes = Column(Text, nullable=True)
     monitoring_cardiac = Column(Boolean, nullable=True)
     monitoring_o2_sat = Column(Boolean, nullable=True)

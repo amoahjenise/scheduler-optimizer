@@ -269,6 +269,7 @@ export function generatePrintHtml(h: Handover, p: Patient): string {
                 <span class="cb"><span class="cb-box">${h.nca_checkbox ? "✓" : ""}</span> NCA</span>
                 <span style="margin-left:10px;"><span class="field-label">Bolus:</span> ${fEmpty(h.pca_nca_bolus) || "________"}</span>
               </div>
+              ${h.pca_description ? `<div class="field" style="margin-top:3px"><div class="field-label">${h.pca_checkbox ? "PCA" : "NCA"} Description</div><div class="field-value">${f(h.pca_description)}</div></div>` : ""}
               <div class="inline-fields" style="margin-top:3px; padding-top:3px; border-top:1px solid #e5e7eb;">
                 <span style="font-size:8px; font-weight:bold; color:#6b7280;">MONITORING:</span>
                 <span class="cb"><span class="cb-box">${h.monitoring_cardiac ? "✓" : ""}</span> Cardiac</span>

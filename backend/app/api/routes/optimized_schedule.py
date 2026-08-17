@@ -13,7 +13,7 @@ from typing import Dict, List, Union, Set, Tuple, Any, Optional
 import math
 from collections import defaultdict
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Header
+from fastapi import APIRouter, Body, Depends, HTTPException, Header, Query
 from pydantic import UUID4, BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -49,6 +49,16 @@ logger.addHandler(handler)
 
 router = APIRouter(redirect_slashes=False)
 client = OpenAI(api_key=settings.OPENAI_API_KEY, timeout=360.0)
+
+
+def _humanize_ai_error(action: str, exc: Exception) -> str:
+    raw = str(exc)
+    if "RateLimitError" in raw or "429" in raw or "rate limit" in raw.lower():
+        return (
+            f"AI provider is rate-limited right now, so {action} is temporarily unavailable. "
+            "Please retry in about 30-60 seconds."
+        )
+    return f"Unable to {action} right now. Please try again."
 
 # ============================================================================
 # MCH CONTRACT CONSTANTS
@@ -6818,6 +6828,11 @@ class ScheduleOptimizer:
                                 and float(next_entry.get("hours", 0) or 0) > 0):
                             continue
                     
+                    # Check consecutive stretch constraint
+                    consecutive = ScheduleOptimizer._calculate_consecutive_stretch(schedule, date_list, nurse_name, day_idx)
+                    if consecutive > 6:  # max_consecutive_any
+                        continue
+                    
                     # This day is suitable - record it with its current coverage
                     coverage = count_day_coverage(day_idx)
                     candidates.append((day_idx, date, coverage))
@@ -6856,6 +6871,38 @@ class ScheduleOptimizer:
         
         logging.info(f"Under-target fill complete: {fills} shifts added")
         return schedule
+    
+    @staticmethod
+    def _calculate_consecutive_stretch(schedule: Dict[str, List[Dict]], date_list: List[str], nurse_name: str, day_idx: int) -> int:
+        """
+        Calculate how many consecutive work days would result if a shift is assigned at day_idx.
+        Scans backward and forward through the schedule to count consecutive work shifts.
+        Returns total consecutive stretch (backward + current day + forward).
+        """
+        stretch = 1  # Count the current day itself
+        nurse_row = schedule.get(nurse_name, [])
+        
+        # Scan backward from day_idx - 1
+        for i in range(day_idx - 1, -1, -1):
+            if i >= len(nurse_row):
+                break
+            shift = nurse_row[i]
+            if shift and shift.get("shiftType") not in ("off", None) and float(shift.get("hours", 0) or 0) > 0:
+                stretch += 1
+            else:
+                break
+        
+        # Scan forward from day_idx + 1
+        for i in range(day_idx + 1, len(date_list)):
+            if i >= len(nurse_row):
+                break
+            shift = nurse_row[i]
+            if shift and shift.get("shiftType") not in ("off", None) and float(shift.get("hours", 0) or 0) > 0:
+                stretch += 1
+            else:
+                break
+        
+        return stretch
     
     @staticmethod
     def patch_coverage_gaps(result, date_list, nurses, shifts_info, day_shift_codes, night_shift_codes, day_req, night_req):
@@ -6920,6 +6967,10 @@ class ScheduleOptimizer:
                                 pt_max = int(base_pt_max * period_scale + 0.5)
                                 if paid_count >= pt_max:
                                     continue
+                            # Check consecutive stretch constraint
+                            consecutive = ScheduleOptimizer._calculate_consecutive_stretch(result, date_list, name, d_idx)
+                            if consecutive > 6:  # max_consecutive_any
+                                continue
                             off_nurses.append(name)
                     else:
                         # Shift cap: skip nurses already at their max paid shifts
@@ -6934,6 +6985,10 @@ class ScheduleOptimizer:
                             pt_max = int(base_pt_max * period_scale + 0.5)
                             if paid_count >= pt_max:
                                 continue
+                        # Check consecutive stretch constraint
+                        consecutive = ScheduleOptimizer._calculate_consecutive_stretch(result, date_list, name, d_idx)
+                        if consecutive > 6:  # max_consecutive_any
+                            continue
                         off_nurses.append(name)
             
             # Patch day shifts if needed
@@ -7871,7 +7926,7 @@ IMPORTANT:
     
     except Exception as e:
         logger.error(f"Error refining schedule: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to refine schedule: {str(e)}")
+        raise HTTPException(status_code=500, detail=_humanize_ai_error("refine this schedule", e))
 
 
 # ============================================================================
@@ -8517,6 +8572,10 @@ async def optimize_schedule(
 
 @router.get("/")
 async def list_optimized_schedules(
+    include_schedule_data: bool = Query(
+        True,
+        description="Include full schedule_data payload in each row",
+    ),
     auth: AuthContext = Depends(get_optional_auth),
     db: Session = Depends(get_db)
 ):
@@ -8545,7 +8604,7 @@ async def list_optimized_schedules(
             "is_finalized": s.finalized,
             "start_date": start_date,
             "end_date": end_date,
-            "schedule_data": schedule_data,
+            "schedule_data": schedule_data if include_schedule_data else {},
             "created_by": created_by,
             "created_by_name": created_by_name,
             "created_at": s.created_at.isoformat() if s.created_at else None,
@@ -8607,6 +8666,130 @@ async def finalize_schedule(
         raise
     except Exception as e:
         logger.error(f"Error finalizing schedule: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _schedule_revision_root(schedule) -> str:
+    """Return the id of the family root this schedule belongs to."""
+    result_data = schedule.result or {}
+    schedule_data = _normalize_schedule_payload(result_data)
+
+    root = None
+    if isinstance(schedule_data, dict):
+        root = schedule_data.get("revision_of")
+        if not root:
+            draft_state = schedule_data.get("draft_state")
+            if isinstance(draft_state, dict):
+                root = draft_state.get("revision_of")
+    if not root and isinstance(result_data, dict):
+        root = result_data.get("revision_of")
+
+    return str(root) if root else str(schedule.id)
+
+
+def _serialize_version_entry(schedule) -> Dict[str, Any]:
+    result_data = schedule.result or {}
+    schedule_data = _normalize_schedule_payload(result_data)
+    start_date, end_date = _resolve_schedule_date_range(result_data, schedule_data)
+    created_by, created_by_name = _extract_schedule_actor(result_data, schedule_data)
+
+    return {
+        "id": str(schedule.id),
+        "organization_id": schedule.organization_id,
+        "is_finalized": schedule.finalized,
+        "start_date": start_date,
+        "end_date": end_date,
+        "created_by": created_by,
+        "created_by_name": created_by_name,
+        "created_at": schedule.created_at.isoformat() if schedule.created_at else None,
+    }
+
+
+def _load_version_family(db: Session, auth: AuthContext, schedule) -> List[Any]:
+    """Load every schedule that belongs to the same revision family, oldest first."""
+    root_id = _schedule_revision_root(schedule)
+
+    siblings = (
+        db.query(OptimizedSchedule)
+        .filter(OptimizedSchedule.organization_id == auth.organization_id)
+        .order_by(OptimizedSchedule.created_at.asc())
+        .all()
+    )
+
+    return [s for s in siblings if _schedule_revision_root(s) == root_id]
+
+
+@router.get("/{schedule_id}/versions")
+async def list_schedule_versions(
+    schedule_id: str,
+    auth: AuthContext = Depends(get_optional_auth),
+    db: Session = Depends(get_db),
+):
+    """List every revision in this schedule's version family, oldest first."""
+    try:
+        schedule = _get_scoped_schedule_or_404(db, auth, schedule_id)
+        family = _load_version_family(db, auth, schedule)
+
+        entries = [_serialize_version_entry(s) for s in family]
+
+        # The active version is the newest finalized revision, else the newest revision.
+        finalized = [e for e in entries if e["is_finalized"]]
+        active_id = (finalized[-1]["id"] if finalized else entries[-1]["id"]) if entries else None
+        for entry in entries:
+            entry["is_active"] = entry["id"] == active_id
+
+        return {
+            "root_id": _schedule_revision_root(schedule),
+            "active_id": active_id,
+            "versions": entries,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing schedule versions: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{schedule_id}/promote")
+async def promote_schedule_version(
+    schedule_id: str,
+    auth: AuthContext = Depends(get_optional_auth),
+    db: Session = Depends(get_db),
+):
+    """
+    Promote a revision to be the active version of its family.
+
+    The promoted revision becomes finalized; every sibling is un-finalized so
+    exactly one version in the family is active at a time.
+    """
+    try:
+        if not auth.is_authenticated or not auth.can_manage:
+            raise HTTPException(
+                status_code=403,
+                detail="Only managers and admins can promote a schedule version",
+            )
+
+        schedule = _get_scoped_schedule_or_404(db, auth, schedule_id)
+        family = _load_version_family(db, auth, schedule)
+
+        for sibling in family:
+            sibling.finalized = str(sibling.id) == str(schedule.id)
+
+        db.commit()
+        db.refresh(schedule)
+
+        logger.info(
+            f"Schedule version {schedule_id} promoted to active by {auth.user_id}"
+        )
+        return {
+            "success": True,
+            "active_id": str(schedule.id),
+            "versions": [_serialize_version_entry(s) for s in family],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error promoting schedule version: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -9252,4 +9435,4 @@ Rules:
         raise
     except Exception as e:
         logger.error(f"Error generating schedule insights: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate insights: {str(e)}")
+        raise HTTPException(status_code=500, detail=_humanize_ai_error("generate schedule insights", e))

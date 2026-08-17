@@ -3,6 +3,7 @@
 import React from "react";
 import { SignedIn, SignedOut, SignInButton, SignUpButton } from "@clerk/nextjs";
 import { motion } from "framer-motion";
+import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -12,9 +13,18 @@ import {
   Sparkles,
   ChevronRight,
   Check,
+  ClipboardList,
+  Users,
+  FileText,
+  CalendarDays,
+  Mic,
+  Brain,
+  BookOpenText,
+  Activity,
 } from "lucide-react";
 import Image from "next/image";
 import TrustCompliancePanel from "./components/TrustCompliancePanel";
+import LanguageSwitcher from "./components/LanguageSwitcher";
 
 // GlassCard Component
 const GlassCard = ({
@@ -52,6 +62,7 @@ const FloatingBadge = ({
 // Navigation Component (floating pill with scroll detection)
 const Navigation = () => {
   const [isScrolled, setIsScrolled] = React.useState(false);
+  const t = useTranslations("landing");
 
   React.useEffect(() => {
     const handleScroll = () => {
@@ -94,7 +105,7 @@ const Navigation = () => {
                 isScrolled ? "hover:text-gray-900" : "hover:text-white"
               }`}
             >
-              Features
+              {t("nav.features")}
             </a>
             <span className={isScrolled ? "text-gray-300" : "text-white/30"}>
               /
@@ -105,7 +116,7 @@ const Navigation = () => {
                 isScrolled ? "hover:text-gray-900" : "hover:text-white"
               }`}
             >
-              Solutions
+              {t("nav.solutions")}
             </a>
             <span className={isScrolled ? "text-gray-300" : "text-white/30"}>
               /
@@ -116,12 +127,13 @@ const Navigation = () => {
                 isScrolled ? "hover:text-gray-900" : "hover:text-white"
               }`}
             >
-              About
+              {t("nav.about")}
             </a>
           </div>
 
           {/* Right Actions */}
           <div className="flex items-center gap-3">
+            <LanguageSwitcher />
             <SignedOut>
               <SignInButton mode="modal">
                 <button
@@ -131,12 +143,12 @@ const Navigation = () => {
                       : "text-white/80 hover:text-white"
                   }`}
                 >
-                  Sign In
+                  {t("nav.signIn")}
                 </button>
               </SignInButton>
               <SignUpButton mode="modal">
                 <button className="flex items-center gap-2 px-5 py-2.5 bg-white text-gray-900 text-sm font-semibold rounded-full transition-all hover:bg-white/90 shadow-lg">
-                  Get Started
+                  {t("nav.getStarted")}
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </SignUpButton>
@@ -154,12 +166,13 @@ const Navigation = () => {
 // Dashboard Button Component
 const DashboardButton = () => {
   const router = useRouter();
+  const t = useTranslations("landing");
   return (
     <button
       onClick={() => router.push("/dashboard")}
       className="flex items-center gap-2 px-5 py-2.5 bg-white text-gray-900 text-sm font-semibold rounded-full transition-all hover:bg-white/90 shadow-lg"
     >
-      Dashboard
+      {t("nav.dashboard")}
       <ArrowRight className="w-4 h-4" />
     </button>
   );
@@ -167,6 +180,7 @@ const DashboardButton = () => {
 
 // Hero Section
 const HeroSection = () => {
+  const t = useTranslations("landing");
   return (
     <section className="relative min-h-screen flex items-center pt-24 pb-16">
       {/* Background Image */}
@@ -190,20 +204,19 @@ const HeroSection = () => {
           <FloatingBadge className="mb-6">
             <Sparkles className="w-4 h-4 text-[#2D7073]" />
             <span className="text-sm font-medium text-gray-700">
-              AI-Powered Healthcare Workflow Innovation
+              {t("hero.badge")}
             </span>
           </FloatingBadge>
 
           <h1 className="text-5xl md:text-6xl font-bold text-white leading-[1.1] mb-6">
-            Advancing Healthcare{" "}
+            {t("hero.headline1")}{" "}
             <span className="text-blue-200 italic font-light">
-              through Technology
+              {t("hero.headline2")}
             </span>
           </h1>
 
           <p className="text-lg text-white/90 max-w-lg mb-8 leading-relaxed">
-            Leveraging AI to reduce administrative burden so clinicians can
-            focus on what matters most: patient care.
+            {t("hero.body")}
           </p>
 
           <div className="flex flex-wrap items-center gap-4">
@@ -213,7 +226,7 @@ const HeroSection = () => {
             <SignedOut>
               <SignUpButton mode="modal">
                 <button className="flex items-center gap-2 px-8 py-4 bg-[#1A5CFF] hover:bg-[#1550E5] text-white font-semibold rounded-full transition-all shadow-xl shadow-blue-500/30">
-                  Get Started
+                  {t("hero.cta")}
                   <ArrowRight className="w-5 h-5" />
                 </button>
               </SignUpButton>
@@ -227,21 +240,22 @@ const HeroSection = () => {
 
 // Features Section
 const FeaturesSection = () => {
+  const t = useTranslations("landing");
   const features = [
     {
       icon: <Shield className="w-5 h-5" />,
-      title: "Digital Hand-off Reports",
-      desc: "Streamline shift handovers with structured patient reports",
+      title: t("features.item0Title"),
+      desc: t("features.item0Desc"),
     },
     {
       icon: <Zap className="w-5 h-5" />,
-      title: "AI-Powered Schedule Management",
-      desc: "Create and optimize staff schedules automatically with AI-driven recommendations",
+      title: t("features.item1Title"),
+      desc: t("features.item1Desc"),
     },
     {
       icon: <Sparkles className="w-5 h-5" />,
-      title: "Team Coordination",
-      desc: "Keep your healthcare team synchronized and informed",
+      title: t("features.item2Title"),
+      desc: t("features.item2Desc"),
     },
   ];
 
@@ -257,14 +271,13 @@ const FeaturesSection = () => {
         >
           <span className="inline-flex items-center gap-2 px-4 py-2 bg-white rounded-full text-sm font-medium text-[#2D7073] mb-4 shadow-sm">
             <Sparkles className="w-4 h-4" />
-            Powerful Features
+            {t("features.badge")}
           </span>
           <h2 className="text-4xl font-bold text-gray-900 mb-4">
-            Everything you need to streamline workflows
+            {t("features.headline")}
           </h2>
           <p className="text-lg text-gray-500 max-w-2xl mx-auto">
-            Purpose-built tools designed in collaboration with healthcare
-            professionals.
+            {t("features.body")}
           </p>
         </motion.div>
 
@@ -296,6 +309,83 @@ const FeaturesSection = () => {
 
 // Solutions Section
 const SolutionsSection = () => {
+  const t = useTranslations("landing");
+
+  const tools = [
+    {
+      title: t("solutions.schedulerTitle"),
+      desc: t("solutions.schedulerDesc"),
+      cta: t("solutions.schedulerCta"),
+      href: "/scheduler",
+      gradient: "from-[#1A5CFF] to-indigo-600",
+      glow: "hover:shadow-blue-500/20",
+      icon: <ClipboardList className="w-7 h-7" />,
+    },
+    {
+      title: t("solutions.handoverTitle"),
+      desc: t("solutions.handoverDesc"),
+      cta: t("solutions.handoverCta"),
+      href: "/handover",
+      gradient: "from-[#2D7073] to-teal-500",
+      glow: "hover:shadow-teal-500/20",
+      icon: <FileText className="w-7 h-7" />,
+    },
+    {
+      title: t("solutions.nursesTitle"),
+      desc: t("solutions.nursesDesc"),
+      cta: t("solutions.nursesCta"),
+      href: "/nurses",
+      gradient: "from-purple-500 to-pink-500",
+      glow: "hover:shadow-purple-500/20",
+      icon: <Users className="w-7 h-7" />,
+    },
+    {
+      title: t("solutions.schedulesTitle"),
+      desc: t("solutions.schedulesDesc"),
+      cta: t("solutions.schedulesCta"),
+      href: "/schedules",
+      gradient: "from-cyan-500 to-blue-500",
+      glow: "hover:shadow-cyan-500/20",
+      icon: <CalendarDays className="w-7 h-7" />,
+    },
+    {
+      title: t("solutions.ambientTitle"),
+      desc: t("solutions.ambientDesc"),
+      cta: t("solutions.ambientCta"),
+      href: "/ambient",
+      gradient: "from-emerald-500 to-green-500",
+      glow: "hover:shadow-emerald-500/20",
+      icon: <Mic className="w-7 h-7" />,
+    },
+    {
+      title: t("solutions.burnoutTitle"),
+      desc: t("solutions.burnoutDesc"),
+      cta: t("solutions.burnoutCta"),
+      href: "/burnout",
+      gradient: "from-rose-500 to-orange-500",
+      glow: "hover:shadow-rose-500/20",
+      icon: <Brain className="w-7 h-7" />,
+    },
+    {
+      title: t("solutions.learningTitle"),
+      desc: t("solutions.learningDesc"),
+      cta: t("solutions.learningCta"),
+      href: "/learning",
+      gradient: "from-amber-500 to-yellow-500",
+      glow: "hover:shadow-amber-500/20",
+      icon: <BookOpenText className="w-7 h-7" />,
+    },
+    {
+      title: t("solutions.activitiesTitle"),
+      desc: t("solutions.activitiesDesc"),
+      cta: t("solutions.activitiesCta"),
+      href: "/activities",
+      gradient: "from-slate-600 to-slate-800",
+      glow: "hover:shadow-slate-500/20",
+      icon: <Activity className="w-7 h-7" />,
+    },
+  ];
+
   return (
     <section id="solutions" className="py-24 bg-white">
       <div className="max-w-7xl mx-auto px-8">
@@ -307,175 +397,54 @@ const SolutionsSection = () => {
           className="mb-16"
         >
           <h2 className="text-3xl font-bold text-gray-900 mb-3">
-            Available Tools
+            {t("solutions.headline")}
           </h2>
-          <p className="text-gray-500">
-            Each tool addresses a specific workflow challenge.
-          </p>
+          <p className="text-gray-500">{t("solutions.body")}</p>
         </motion.div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          {/* Schedule Optimizer */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.1 }}
-            viewport={{ once: true }}
-            className="group relative overflow-hidden bg-gradient-to-br from-[#1A5CFF] to-indigo-600 rounded-3xl p-8 text-white cursor-pointer hover:shadow-2xl hover:shadow-blue-500/20 transition-all"
-          >
-            <div className="absolute top-0 right-0 w-40 h-40 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/2" />
-            <div className="absolute bottom-0 left-0 w-32 h-32 bg-white/5 rounded-full translate-y-1/2 -translate-x-1/2" />
-            <div className="relative">
-              <div className="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center mb-6">
-                <svg
-                  className="w-7 h-7"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1.5}
-                    d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
-                  />
-                </svg>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-8">
+          {tools.map((tool, index) => (
+            <motion.div
+              key={tool.href}
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 0.06 * index }}
+              viewport={{ once: true }}
+              className={`group relative overflow-hidden bg-gradient-to-br ${tool.gradient} rounded-3xl p-8 text-white cursor-pointer hover:shadow-2xl ${tool.glow} transition-all`}
+            >
+              <div className="absolute top-0 right-0 w-40 h-40 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/2" />
+              <div className="absolute bottom-0 left-0 w-32 h-32 bg-white/5 rounded-full translate-y-1/2 -translate-x-1/2" />
+              <div className="relative">
+                <div className="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center mb-6">
+                  {tool.icon}
+                </div>
+                <div className="flex items-center gap-2 mb-2">
+                  <h3 className="text-xl font-semibold">{tool.title}</h3>
+                  <span className="px-2 py-0.5 bg-white/20 text-white text-xs font-medium rounded-full">
+                    {t("solutions.live")}
+                  </span>
+                </div>
+                <p className="text-white/80 text-sm mb-6 leading-relaxed">
+                  {tool.desc}
+                </p>
+                <SignedIn>
+                  <a
+                    href={tool.href}
+                    className="flex items-center gap-2 text-sm font-medium group-hover:gap-3 transition-all"
+                  >
+                    {tool.cta} <ChevronRight className="w-4 h-4" />
+                  </a>
+                </SignedIn>
+                <SignedOut>
+                  <SignInButton mode="modal">
+                    <button className="flex items-center gap-2 text-sm font-medium group-hover:gap-3 transition-all">
+                      {tool.cta} <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </SignInButton>
+                </SignedOut>
               </div>
-              <div className="flex items-center gap-2 mb-2">
-                <h3 className="text-xl font-semibold">Schedule Optimizer</h3>
-                <span className="px-2 py-0.5 bg-white/20 text-white text-xs font-medium rounded-full">
-                  Live
-                </span>
-              </div>
-              <p className="text-white/70 text-sm mb-6 leading-relaxed">
-                Upload schedule images, extract shift data automatically, and
-                optimize staff assignments.
-              </p>
-              <SignedIn>
-                <a
-                  href="/scheduler"
-                  className="flex items-center gap-2 text-sm font-medium group-hover:gap-3 transition-all"
-                >
-                  Open tool <ChevronRight className="w-4 h-4" />
-                </a>
-              </SignedIn>
-              <SignedOut>
-                <SignInButton mode="modal">
-                  <button className="flex items-center gap-2 text-sm font-medium group-hover:gap-3 transition-all">
-                    Open tool <ChevronRight className="w-4 h-4" />
-                  </button>
-                </SignInButton>
-              </SignedOut>
-            </div>
-          </motion.div>
-
-          {/* Nurse Management */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.15 }}
-            viewport={{ once: true }}
-            className="group relative overflow-hidden bg-gradient-to-br from-purple-500 to-pink-500 rounded-3xl p-8 text-white cursor-pointer hover:shadow-2xl hover:shadow-purple-500/20 transition-all"
-          >
-            <div className="absolute top-0 right-0 w-40 h-40 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/2" />
-            <div className="absolute bottom-0 left-0 w-32 h-32 bg-white/5 rounded-full translate-y-1/2 -translate-x-1/2" />
-            <div className="relative">
-              <div className="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center mb-6">
-                <svg
-                  className="w-7 h-7"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1.5}
-                    d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
-                  />
-                </svg>
-              </div>
-              <div className="flex items-center gap-2 mb-2">
-                <h3 className="text-xl font-semibold">Nurse Management</h3>
-                <span className="px-2 py-0.5 bg-white/20 text-white text-xs font-medium rounded-full">
-                  Live
-                </span>
-              </div>
-              <p className="text-white/70 text-sm mb-6 leading-relaxed">
-                Manage nursing staff profiles, certifications, and availability
-                preferences.
-              </p>
-              <SignedIn>
-                <a
-                  href="/nurses"
-                  className="flex items-center gap-2 text-sm font-medium group-hover:gap-3 transition-all"
-                >
-                  Manage staff <ChevronRight className="w-4 h-4" />
-                </a>
-              </SignedIn>
-              <SignedOut>
-                <SignInButton mode="modal">
-                  <button className="flex items-center gap-2 text-sm font-medium group-hover:gap-3 transition-all">
-                    Manage staff <ChevronRight className="w-4 h-4" />
-                  </button>
-                </SignInButton>
-              </SignedOut>
-            </div>
-          </motion.div>
-
-          {/* Shift Handover */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            whileInView={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.2 }}
-            viewport={{ once: true }}
-            className="group relative overflow-hidden bg-gradient-to-br from-[#2D7073] to-teal-500 rounded-3xl p-8 text-white cursor-pointer hover:shadow-2xl hover:shadow-teal-500/20 transition-all"
-          >
-            <div className="absolute top-0 right-0 w-40 h-40 bg-white/10 rounded-full -translate-y-1/2 translate-x-1/2" />
-            <div className="absolute bottom-0 left-0 w-32 h-32 bg-white/5 rounded-full translate-y-1/2 -translate-x-1/2" />
-            <div className="relative">
-              <div className="w-14 h-14 bg-white/20 rounded-2xl flex items-center justify-center mb-6">
-                <svg
-                  className="w-7 h-7"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1.5}
-                    d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                  />
-                </svg>
-              </div>
-              <div className="flex items-center gap-2 mb-2">
-                <h3 className="text-xl font-semibold">Shift Handover</h3>
-                <span className="px-2 py-0.5 bg-white/20 text-white text-xs font-medium rounded-full">
-                  Live
-                </span>
-              </div>
-              <p className="text-white/70 text-sm mb-6 leading-relaxed">
-                Create comprehensive shift handover reports with patient details
-                and care instructions.
-              </p>
-              <SignedIn>
-                <a
-                  href="/handover"
-                  className="flex items-center gap-2 text-sm font-medium group-hover:gap-3 transition-all"
-                >
-                  Open hand-off <ChevronRight className="w-4 h-4" />
-                </a>
-              </SignedIn>
-              <SignedOut>
-                <SignInButton mode="modal">
-                  <button className="flex items-center gap-2 text-sm font-medium group-hover:gap-3 transition-all">
-                    Open hand-off <ChevronRight className="w-4 h-4" />
-                  </button>
-                </SignInButton>
-              </SignedOut>
-            </div>
-          </motion.div>
+            </motion.div>
+          ))}
         </div>
       </div>
     </section>
@@ -484,6 +453,7 @@ const SolutionsSection = () => {
 
 // About Section
 const AboutSection = () => {
+  const t = useTranslations("landing");
   return (
     <section id="about" className="py-24 bg-[#F5F7FA]">
       <div className="max-w-7xl mx-auto px-8">
@@ -495,20 +465,11 @@ const AboutSection = () => {
             viewport={{ once: true }}
           >
             <h2 className="text-4xl font-bold text-gray-900 mb-6">
-              Why we're building this
+              {t("about.headline")}
             </h2>
             <div className="space-y-4 text-gray-600 leading-relaxed">
-              <p>
-                Nurses spend significant time on administrative tasks that could
-                be streamlined with better software. Paper-based workflows,
-                redundant data entry, and manual processes take time away from
-                patient care.
-              </p>
-              <p>
-                We're working directly with clinical staff to understand their
-                workflows and build tools that actually fit how they work, not
-                the other way around.
-              </p>
+              <p>{t("about.para1")}</p>
+              <p>{t("about.para2")}</p>
             </div>
           </motion.div>
 
@@ -520,13 +481,13 @@ const AboutSection = () => {
           >
             <GlassCard className="p-8 bg-white/90">
               <h3 className="text-xl font-semibold text-gray-900 mb-6">
-                Partnering for a Better Future
+                {t("about.cardTitle")}
               </h3>
               <div className="space-y-4">
                 {[
-                  "Reduce documentation time by 80%",
-                  "Improve shift handover accuracy",
-                  "Real-time team coordination",
+                  t("about.bullet1"),
+                  t("about.bullet2"),
+                  t("about.bullet3"),
                 ].map((item, i) => (
                   <div key={i} className="flex items-center gap-3">
                     <div className="w-6 h-6 rounded-full bg-[#1A5CFF]/10 flex items-center justify-center flex-shrink-0">
@@ -545,43 +506,56 @@ const AboutSection = () => {
 };
 
 // Footer
-const Footer = () => (
-  <footer className="py-12 bg-white border-t border-gray-200">
-    <div className="max-w-7xl mx-auto px-8">
-      <div className="flex flex-col md:flex-row justify-between items-center gap-6">
-        <div className="flex items-center gap-3">
-          <img src="/logo-placeholder.png" alt="Logo" className="h-14 w-auto" />
-          <span className="text-xl font-bold text-gray-900">Chronofy</span>
-        </div>
-        <div className="text-sm text-gray-500 text-center md:text-right">
-          <p>
-            © {new Date().getFullYear()} Chronofy. Built for healthcare teams.
-          </p>
-          <div className="mt-1 flex items-center justify-center md:justify-end gap-3">
-            <Link href="/about" className="hover:text-gray-700 hover:underline">
-              About
-            </Link>
-            <Link href="/terms" className="hover:text-gray-700 hover:underline">
-              Terms
-            </Link>
-            <Link
-              href="/privacy"
-              className="hover:text-gray-700 hover:underline"
-            >
-              Privacy
-            </Link>
-            <Link
-              href="/cookies"
-              className="hover:text-gray-700 hover:underline"
-            >
-              Cookies
-            </Link>
+const Footer = () => {
+  const t = useTranslations("landing");
+  return (
+    <footer className="py-12 bg-white border-t border-gray-200">
+      <div className="max-w-7xl mx-auto px-8">
+        <div className="flex flex-col md:flex-row justify-between items-center gap-6">
+          <div className="flex items-center gap-3">
+            <img
+              src="/logo-placeholder.png"
+              alt="Logo"
+              className="h-14 w-auto"
+            />
+            <span className="text-xl font-bold text-gray-900">Chronofy</span>
+          </div>
+          <div className="text-sm text-gray-500 text-center md:text-right">
+            <p>
+              © {new Date().getFullYear()} Chronofy. {t("footer.tagline")}
+            </p>
+            <div className="mt-1 flex items-center justify-center md:justify-end gap-3">
+              <Link
+                href="/about"
+                className="hover:text-gray-700 hover:underline"
+              >
+                {t("footer.about")}
+              </Link>
+              <Link
+                href="/terms"
+                className="hover:text-gray-700 hover:underline"
+              >
+                {t("footer.terms")}
+              </Link>
+              <Link
+                href="/privacy"
+                className="hover:text-gray-700 hover:underline"
+              >
+                {t("footer.privacy")}
+              </Link>
+              <Link
+                href="/cookies"
+                className="hover:text-gray-700 hover:underline"
+              >
+                {t("footer.cookies")}
+              </Link>
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  </footer>
-);
+    </footer>
+  );
+};
 
 // Main Page Component
 export default function LandingPage() {

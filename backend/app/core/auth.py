@@ -92,6 +92,7 @@ def verify_clerk_token(token: str) -> dict:
             token,
             signing_key.key,
             algorithms=["RS256"],
+            leeway=60,
             options={"verify_aud": False}  # Clerk doesn't always set audience
         )
         

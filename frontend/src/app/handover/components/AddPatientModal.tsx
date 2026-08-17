@@ -4,8 +4,9 @@ import { useState, useEffect } from "react";
 import { Patient, PatientCreate, createPatientAPI } from "../../lib/api";
 import { PatientFieldConfig } from "../../lib/patientConfig";
 import { loadRooms } from "../../lib/roomsConfig";
-import { loadTeams, DEFAULT_TEAMS } from "../../lib/teamsConfig";
+import { loadTeams } from "../../lib/teamsConfig";
 import { loadDiagnoses, addDiagnosis } from "../../lib/diagnosesConfig";
+import { fetchAndCacheOrganizationConfig } from "../../lib/orgConfig";
 import { useOrganization } from "../../context/OrganizationContext";
 
 interface AddPatientModalProps {
@@ -31,7 +32,8 @@ export default function AddPatientModal({
   onPatientAdded,
   config,
 }: AddPatientModalProps) {
-  const { getAuthHeaders } = useOrganization();
+  const { getAuthHeaders, currentOrganization } = useOrganization();
+  const orgId = currentOrganization?.id;
   const [formData, setFormData] = useState<PatientCreate>({
     mrn: "",
     first_name: "",
@@ -52,38 +54,65 @@ export default function AddPatientModal({
   const [ageValue, setAgeValue] = useState<string>("");
   const [ageUnit, setAgeUnit] = useState<"months" | "years">("years");
   const [selectedTeam, setSelectedTeam] = useState<string>("");
-  const [teamSuggestions, setTeamSuggestions] = useState<string[]>(loadTeams());
-  const [roomSuggestions, setRoomSuggestions] = useState<string[]>(loadRooms());
+  const [teamSuggestions, setTeamSuggestions] = useState<string[]>(
+    loadTeams(orgId, true),
+  );
+  const [roomSuggestions, setRoomSuggestions] = useState<string[]>(
+    loadRooms(orgId, true),
+  );
   const [diagnosisSuggestions, setDiagnosisSuggestions] =
     useState<string[]>(loadDiagnoses());
 
   // Load teams from shared settings and listen for changes
   useEffect(() => {
-    setTeamSuggestions(loadTeams());
+    setTeamSuggestions(loadTeams(orgId, true));
 
     const handleTeamsChange = () => {
-      setTeamSuggestions(loadTeams());
+      setTeamSuggestions(loadTeams(orgId, true));
     };
 
     window.addEventListener("teamsConfigChanged", handleTeamsChange);
     return () => {
       window.removeEventListener("teamsConfigChanged", handleTeamsChange);
     };
-  }, []);
+  }, [orgId]);
 
   // Load rooms from config and listen for changes
   useEffect(() => {
-    setRoomSuggestions(loadRooms());
+    setRoomSuggestions(loadRooms(orgId, true));
 
     const handleRoomsChange = () => {
-      setRoomSuggestions(loadRooms());
+      setRoomSuggestions(loadRooms(orgId, true));
     };
 
     window.addEventListener("roomsConfigChanged", handleRoomsChange);
     return () => {
       window.removeEventListener("roomsConfigChanged", handleRoomsChange);
     };
-  }, []);
+  }, [orgId]);
+
+  useEffect(() => {
+    if (!orgId) return;
+    let cancelled = false;
+
+    async function hydrateOrgConfig() {
+      try {
+        const headers = await getAuthHeaders();
+        const config = await fetchAndCacheOrganizationConfig(orgId, headers);
+        if (!cancelled) {
+          setTeamSuggestions(config.team_options);
+          setRoomSuggestions(config.room_options);
+        }
+      } catch (err) {
+        console.error("Failed to hydrate org config in AddPatientModal:", err);
+      }
+    }
+
+    hydrateOrgConfig();
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId, getAuthHeaders]);
 
   // Load diagnoses from config and listen for changes
   useEffect(() => {
@@ -600,8 +629,12 @@ export default function AddPatientModal({
                 )}
               </label>
               <div className="flex gap-1 flex-wrap">
-                {(teamSuggestions.length ? teamSuggestions : DEFAULT_TEAMS).map(
-                  (team) => (
+                {teamSuggestions.length === 0 ? (
+                  <span className="text-xs text-amber-700">
+                    Team options unavailable. Ask an admin to configure teams.
+                  </span>
+                ) : (
+                  teamSuggestions.map((team) => (
                     <button
                       key={team}
                       type="button"
@@ -616,7 +649,7 @@ export default function AddPatientModal({
                     >
                       {team}
                     </button>
-                  ),
+                  ))
                 )}
               </div>
             </div>

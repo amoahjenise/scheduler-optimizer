@@ -16,3 +16,16 @@ from .schedule_rule import ScheduleRule
 # Quebec Compliance Models
 from .privacy import PrivacyConsent, DataAccessRequest, PrivacyAuditLog, PrivacyBreach, DataRetentionPolicy
 from .analytics import AnalyticsEvent, SchedulingMetrics, HandoverMetrics, UserActivityMetrics, PilotStudyReport
+
+# 2026 Features
+from .ambient_session import AmbientSession, AmbientTemplate
+from .burnout import BurnoutSnapshot, BurnoutAlert, BurnoutConfig
+from .learning import (
+    LearningModule,
+    LearningProgress,
+    LearningPath,
+    LearningAssignment,
+    LearningAssignmentCompletion,
+)
+from .announcement import Announcement
+from .notification import Notification

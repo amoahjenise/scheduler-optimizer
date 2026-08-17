@@ -9,7 +9,7 @@ export default getRequestConfig(async () => {
     | Locale
     | undefined;
 
-  // Priority: 1) Cookie, 2) Accept-Language header, 3) Default locale (fr)
+  // Priority: 1) Cookie, 2) Accept-Language header, 3) Default locale (en)
   let locale: Locale = defaultLocale;
 
   if (localeCookie && locales.includes(localeCookie)) {
@@ -30,7 +30,7 @@ export default getRequestConfig(async () => {
         locale = preferredLocale;
       }
     }
-    // If no valid Accept-Language, locale remains as defaultLocale (fr)
+    // If no valid Accept-Language, locale remains as defaultLocale (en)
   }
 
   // Log for debugging - remove in production

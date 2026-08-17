@@ -97,6 +97,7 @@ class HandoverBase(BaseModel):
     pca_checkbox: Optional[bool] = None
     nca_checkbox: Optional[bool] = None
     pca_nca_bolus: Optional[str] = None
+    pca_description: Optional[str] = None
     pain_notes: Optional[str] = None
     monitoring_cardiac: Optional[bool] = None
     monitoring_o2_sat: Optional[bool] = None
@@ -487,6 +488,7 @@ class HandoverResponse(BaseModel):
     pca_checkbox: Optional[bool] = None
     nca_checkbox: Optional[bool] = None
     pca_nca_bolus: Optional[str] = None
+    pca_description: Optional[str] = None
     pain_notes: Optional[str] = None
     monitoring_cardiac: Optional[bool] = None
     monitoring_o2_sat: Optional[bool] = None

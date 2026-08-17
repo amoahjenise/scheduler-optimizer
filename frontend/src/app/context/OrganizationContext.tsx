@@ -4,14 +4,13 @@ import React, {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
   useCallback,
+  useMemo,
 } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
-
-const API_BASE = (
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000"
-).replace(/\/$/, "");
+import { getApiBase } from "../lib/runtimeApiBase";
 
 // Types
 export interface Organization {
@@ -63,6 +62,8 @@ interface OrganizationContextType {
 
   // Role helpers
   isAdmin: boolean;
+  isManager: boolean;
+  canManage: boolean;
   isPendingApproval: boolean;
 
   // Actions
@@ -75,7 +76,7 @@ interface OrganizationContextType {
   approveMember: (orgId: string, memberId: string) => Promise<void>;
   rejectMember: (orgId: string, memberId: string) => Promise<void>;
   leaveOrganization: (orgId: string) => Promise<void>;
-  refreshOrganizations: () => Promise<void>;
+  refreshOrganizations: (preferredOrgId?: string) => Promise<void>;
   updateOrganizationLogo: (logoUrl: string) => Promise<void>;
   updateOrganizationWeeklyTargets: (
     fullTimeBiWeeklyTarget: number,
@@ -107,6 +108,15 @@ export function OrganizationProvider({
   const { getToken, isLoaded, isSignedIn } = useAuth();
   const { user } = useUser();
 
+  // Keep a ref to the latest getToken so callbacks that use it don't need
+  // to list it as a dep (Clerk re-creates the function on every auth event,
+  // which would otherwise cause refreshOrganizations to change and trigger
+  // the load effect in a loop).
+  const getTokenRef = useRef(getToken);
+  useEffect(() => {
+    getTokenRef.current = getToken;
+  });
+
   const [organizations, setOrganizations] = useState<OrganizationMembership[]>(
     [],
   );
@@ -135,7 +145,7 @@ export function OrganizationProvider({
 
     if (isSignedIn) {
       try {
-        const token = await getToken();
+        const token = await getTokenRef.current();
         if (token) {
           headers["Authorization"] = `Bearer ${token}`;
         }
@@ -149,107 +159,114 @@ export function OrganizationProvider({
     }
 
     return headers;
-  }, [getToken, isSignedIn, currentOrganization]);
+  }, [isSignedIn, currentOrganization]); // getToken accessed via ref — stable across Clerk re-renders
 
   // Fetch user's organizations
-  const refreshOrganizations = useCallback(async () => {
-    if (!isSignedIn) {
-      setOrganizations([]);
-      setCurrentOrgState(null);
-      setCurrentMembership(null);
-      setIsLoading(false);
-      return;
-    }
-
-    try {
-      setIsLoading(true);
-      setError(null);
-
-      console.log("[OrganizationContext] Refreshing organizations...");
-      const token = await getToken();
-      console.log(
-        "[OrganizationContext] Token for refresh:",
-        token ? `${token.substring(0, 20)}...` : "NULL",
-      );
-
-      // If no token, user might still be loading
-      if (!token) {
-        console.log("[OrganizationContext] No auth token available yet");
+  const refreshOrganizations = useCallback(
+    async (preferredOrgId?: string) => {
+      if (!isSignedIn) {
         setOrganizations([]);
         setCurrentOrgState(null);
         setCurrentMembership(null);
+        setIsLoading(false);
         return;
       }
 
-      let res: Response;
       try {
-        res = await fetch(`${API_BASE}/organizations/`, {
-          method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-        });
-      } catch (networkError) {
-        console.warn(
-          "[OrganizationContext] Organizations fetch network failure",
-          networkError,
+        setIsLoading(true);
+        setError(null);
+
+        console.log("[OrganizationContext] Refreshing organizations...");
+        const token = await getTokenRef.current();
+        console.log(
+          "[OrganizationContext] Token for refresh:",
+          token ? `${token.substring(0, 20)}...` : "NULL",
         );
-        setError("Unable to reach backend API");
-        setOrganizations([]);
-        setCurrentOrgState(null);
-        setCurrentMembership(null);
-        return;
-      }
 
-      console.log("[OrganizationContext] Refresh response status:", res.status);
-
-      if (!res.ok) {
-        // For 401/403 errors, treat as no organizations (new user)
-        if (res.status === 401 || res.status === 403) {
-          const errBody = await res.json().catch(() => ({}));
-          console.log("[OrganizationContext] Auth error:", errBody);
-          console.log(
-            "[OrganizationContext] User not authorized yet - treating as new user",
-          );
+        // If no token, user might still be loading
+        if (!token) {
+          console.log("[OrganizationContext] No auth token available yet");
           setOrganizations([]);
           setCurrentOrgState(null);
           setCurrentMembership(null);
           return;
         }
-        throw new Error("Failed to fetch organizations");
+
+        let res: Response;
+        try {
+          res = await fetch(`${getApiBase()}/organizations`, {
+            method: "GET",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+          });
+        } catch (networkError) {
+          console.warn(
+            "[OrganizationContext] Organizations fetch network failure",
+            networkError,
+          );
+          setError("Unable to reach backend API");
+          setOrganizations([]);
+          setCurrentOrgState(null);
+          setCurrentMembership(null);
+          return;
+        }
+
+        console.log(
+          "[OrganizationContext] Refresh response status:",
+          res.status,
+        );
+
+        if (!res.ok) {
+          // For 401/403 errors, treat as no organizations (new user)
+          if (res.status === 401 || res.status === 403) {
+            const errBody = await res.json().catch(() => ({}));
+            console.log("[OrganizationContext] Auth error:", errBody);
+            console.log(
+              "[OrganizationContext] User not authorized yet - treating as new user",
+            );
+            setOrganizations([]);
+            setCurrentOrgState(null);
+            setCurrentMembership(null);
+            return;
+          }
+          throw new Error("Failed to fetch organizations");
+        }
+
+        const orgs: OrganizationMembership[] = await res.json();
+        setOrganizations(orgs);
+
+        // If user has organizations, they've completed onboarding
+        if (orgs.length > 0) {
+          localStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
+          setOnboardingCompleted(true);
+        }
+
+        // Restore last selected org or use first one
+        const savedOrgId =
+          preferredOrgId || localStorage.getItem(ORG_STORAGE_KEY);
+        const savedOrg = orgs.find((m) => m.organization_id === savedOrgId);
+
+        if (savedOrg) {
+          setCurrentOrgState(savedOrg.organization);
+          setCurrentMembership(savedOrg);
+        } else if (orgs.length > 0) {
+          setCurrentOrgState(orgs[0].organization);
+          setCurrentMembership(orgs[0]);
+          localStorage.setItem(ORG_STORAGE_KEY, orgs[0].organization_id);
+        }
+      } catch (e) {
+        console.warn("Failed to fetch organizations:", e);
+        setError(
+          e instanceof Error ? e.message : "Failed to fetch organizations",
+        );
+      } finally {
+        setIsLoading(false);
       }
-
-      const orgs: OrganizationMembership[] = await res.json();
-      setOrganizations(orgs);
-
-      // If user has organizations, they've completed onboarding
-      if (orgs.length > 0) {
-        localStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
-        setOnboardingCompleted(true);
-      }
-
-      // Restore last selected org or use first one
-      const savedOrgId = localStorage.getItem(ORG_STORAGE_KEY);
-      const savedOrg = orgs.find((m) => m.organization_id === savedOrgId);
-
-      if (savedOrg) {
-        setCurrentOrgState(savedOrg.organization);
-        setCurrentMembership(savedOrg);
-      } else if (orgs.length > 0) {
-        setCurrentOrgState(orgs[0].organization);
-        setCurrentMembership(orgs[0]);
-        localStorage.setItem(ORG_STORAGE_KEY, orgs[0].organization_id);
-      }
-    } catch (e) {
-      console.warn("Failed to fetch organizations:", e);
-      setError(
-        e instanceof Error ? e.message : "Failed to fetch organizations",
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  }, [getToken, isSignedIn]);
+    },
+    [isSignedIn],
+  ); // getToken accessed via ref to avoid re-creating this callback on every Clerk render
 
   // Set current organization
   const setCurrentOrganization = useCallback(
@@ -279,7 +296,7 @@ export function OrganizationProvider({
         throw new Error("Not authenticated. Please sign in again.");
       }
 
-      const res = await fetch(`${API_BASE}/organizations/`, {
+      const res = await fetch(`${getApiBase()}/organizations`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -306,11 +323,10 @@ export function OrganizationProvider({
       const org: Organization = await res.json();
       localStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
       setOnboardingCompleted(true);
-      await refreshOrganizations();
-      setCurrentOrganization(org.id);
+      await refreshOrganizations(org.id);
       return org;
     },
-    [getToken, refreshOrganizations, setCurrentOrganization],
+    [getToken, refreshOrganizations],
   );
 
   // Join an organization with invite code
@@ -322,7 +338,7 @@ export function OrganizationProvider({
         throw new Error("Not authenticated. Please sign in again.");
       }
 
-      const res = await fetch(`${API_BASE}/organizations/join`, {
+      const res = await fetch(`${getApiBase()}/organizations/join`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -358,7 +374,7 @@ export function OrganizationProvider({
       }
 
       const res = await fetch(
-        `${API_BASE}/organizations/${currentOrganization.id}`,
+        `${getApiBase()}/organizations/${currentOrganization.id}`,
         {
           method: "PATCH",
           headers: {
@@ -402,7 +418,7 @@ export function OrganizationProvider({
       }
 
       const res = await fetch(
-        `${API_BASE}/organizations/${currentOrganization.id}`,
+        `${getApiBase()}/organizations/${currentOrganization.id}`,
         {
           method: "PATCH",
           headers: {
@@ -446,7 +462,7 @@ export function OrganizationProvider({
       if (!token) throw new Error("Not authenticated");
 
       const res = await fetch(
-        `${API_BASE}/organizations/${orgId}/members/${memberId}/approve`,
+        `${getApiBase()}/organizations/${orgId}/members/${memberId}/approve`,
         {
           method: "POST",
           headers: {
@@ -474,7 +490,7 @@ export function OrganizationProvider({
       if (!token) throw new Error("Not authenticated");
 
       const res = await fetch(
-        `${API_BASE}/organizations/${orgId}/members/${memberId}/reject`,
+        `${getApiBase()}/organizations/${orgId}/members/${memberId}/reject`,
         {
           method: "POST",
           headers: {
@@ -501,7 +517,7 @@ export function OrganizationProvider({
       const token = await getToken();
       if (!token) throw new Error("Not authenticated");
 
-      const res = await fetch(`${API_BASE}/organizations/${orgId}/leave`, {
+      const res = await fetch(`${getApiBase()}/organizations/${orgId}/leave`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -538,39 +554,64 @@ export function OrganizationProvider({
     }
   }, [isLoaded, isSignedIn, refreshOrganizations]);
 
-  // Computed: is user admin in current org?
-  const isAdmin: boolean =
-    currentMembership?.role === "admin" ||
-    currentMembership?.role === "manager" ||
-    false;
+  // Computed role capabilities from current membership
+  const isAdmin: boolean = currentMembership?.role === "admin";
+  const isManager: boolean = currentMembership?.role === "manager";
+  const canManage: boolean = isAdmin || isManager;
 
   // Computed: is current membership pending approval?
   const isPendingApproval: boolean =
     currentMembership?.is_approved === false || false;
 
-  const value: OrganizationContextType = {
-    currentOrganization,
-    currentMembership,
-    organizations,
-    isLoading,
-    error,
-    // Show onboarding modal only if: user is signed in, done loading,
-    // AND has no organizations (organizations.length === 0)
-    // Don't rely on onboardingCompleted flag as it can get out of sync
-    needsOnboarding: !!isSignedIn && !isLoading && organizations.length === 0,
-    isAdmin,
-    isPendingApproval,
-    setCurrentOrganization,
-    createOrganization,
-    joinOrganization,
-    approveMember,
-    rejectMember,
-    leaveOrganization,
-    refreshOrganizations,
-    updateOrganizationLogo,
-    updateOrganizationWeeklyTargets,
-    getAuthHeaders,
-  };
+  const value: OrganizationContextType = useMemo(
+    () => ({
+      currentOrganization,
+      currentMembership,
+      organizations,
+      isLoading,
+      error,
+      // Show onboarding modal only if: user is signed in, done loading,
+      // AND has no organizations (organizations.length === 0)
+      // Don't rely on onboardingCompleted flag as it can get out of sync
+      needsOnboarding: !!isSignedIn && !isLoading && organizations.length === 0,
+      isAdmin,
+      isManager,
+      canManage,
+      isPendingApproval,
+      setCurrentOrganization,
+      createOrganization,
+      joinOrganization,
+      approveMember,
+      rejectMember,
+      leaveOrganization,
+      refreshOrganizations,
+      updateOrganizationLogo,
+      updateOrganizationWeeklyTargets,
+      getAuthHeaders,
+    }),
+    [
+      currentOrganization,
+      currentMembership,
+      organizations,
+      isLoading,
+      error,
+      isSignedIn,
+      isAdmin,
+      isManager,
+      canManage,
+      isPendingApproval,
+      setCurrentOrganization,
+      createOrganization,
+      joinOrganization,
+      approveMember,
+      rejectMember,
+      leaveOrganization,
+      refreshOrganizations,
+      updateOrganizationLogo,
+      updateOrganizationWeeklyTargets,
+      getAuthHeaders,
+    ],
+  );
 
   return (
     <OrganizationContext.Provider value={value}>

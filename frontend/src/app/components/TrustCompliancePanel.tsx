@@ -1,28 +1,27 @@
 "use client";
 
 import { CheckCircle2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 
 export default function TrustCompliancePanel() {
+  const t = useTranslations("landing");
+
   const items = [
     {
-      title: "Signed BAA",
-      detail:
-        "Business Associate Agreement available for healthcare organizations handling PHI.",
+      title: t("trust.item0Title"),
+      detail: t("trust.item0Detail"),
     },
     {
-      title: "AES-256 Encryption",
-      detail:
-        "Data protection at rest with strong encryption standards, plus TLS in transit.",
+      title: t("trust.item1Title"),
+      detail: t("trust.item1Detail"),
     },
     {
-      title: "Audit Logs",
-      detail:
-        "Administrative access logs for who accessed data, what changed, and when.",
+      title: t("trust.item2Title"),
+      detail: t("trust.item2Detail"),
     },
     {
-      title: "Uptime & Support",
-      detail:
-        "Reliability-focused operations and support readiness for clinical workflows.",
+      title: t("trust.item3Title"),
+      detail: t("trust.item3Detail"),
     },
   ];
 
@@ -30,11 +29,9 @@ export default function TrustCompliancePanel() {
     <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
       <div className="mb-5">
         <h2 className="text-base font-semibold text-gray-900">
-          Trust & Compliance (Medical Context)
+          {t("trust.headline")}
         </h2>
-        <p className="text-sm text-gray-600">
-          Controls expected for healthcare-grade scheduling tools.
-        </p>
+        <p className="text-sm text-gray-600">{t("trust.body")}</p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">

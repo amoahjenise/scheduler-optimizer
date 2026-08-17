@@ -1,10 +1,17 @@
 """Organization models for multi-tenant support."""
-from sqlalchemy import Column, String, DateTime, Text, Boolean, Float, ForeignKey, Enum, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, Text, Boolean, Float, Integer, ForeignKey, Enum, UniqueConstraint, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from uuid import uuid4
 import enum
 from app.db.database import Base
+
+
+DEFAULT_TEAMS = ["Heme-Onc", "ENT", "Pink", "Blue", "Psych", "Renal"]
+DEFAULT_ROOMS = [
+    "B7.01", "B7.02", "B7.03", "B7.04", "B7.05", "B7.06", "B7.07", "B7.08",
+    "B7.09", "B7.10", "B7.11", "B7.12", "B7.13", "B7.14", "B7.15", "B7.16",
+]
 
 
 class MemberRole(str, enum.Enum):
@@ -33,6 +40,9 @@ class Organization(Base):
     is_active = Column(Boolean, default=True)
     full_time_weekly_target = Column(Float, nullable=False, default=75.0)
     part_time_weekly_target = Column(Float, nullable=False, default=63.75)
+    handoff_retention_days = Column(Integer, nullable=False, default=30)
+    team_options = Column(JSON, nullable=False, default=lambda: list(DEFAULT_TEAMS))
+    room_options = Column(JSON, nullable=False, default=lambda: list(DEFAULT_ROOMS))
     
     # Branding
     logo_url = Column(Text, nullable=True)  # Base64 data URL or external URL

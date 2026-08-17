@@ -16,6 +16,7 @@ router = APIRouter(prefix="/shift-codes", tags=["Shift Codes"])
 
 
 # Default shift codes (used when organization has none)
+# Hours are PAID hours (clock time minus unpaid breaks)
 DEFAULT_SHIFT_CODES = [
     {"code": "07", "start": "07:00", "end": "15:15", "hours": 7.5, "type": "day", "label": "Day 8hr (07:00-15:15)"},
     {"code": "Z07", "start": "07:00", "end": "19:25", "hours": 11.25, "type": "day", "label": "Day 12hr (07:00-19:25)"},
@@ -23,9 +24,9 @@ DEFAULT_SHIFT_CODES = [
     {"code": "Z11", "start": "11:00", "end": "23:25", "hours": 11.25, "type": "day", "label": "Mid 12hr (11:00-23:25)"},
     {"code": "E15", "start": "15:00", "end": "23:15", "hours": 7.5, "type": "day", "label": "Evening 8hr (15:00-23:15)"},
     {"code": "23", "start": "23:00", "end": "07:15", "hours": 7.5, "type": "night", "label": "Night 8hr (23:00-07:15)"},
-    {"code": "Z19", "start": "19:00", "end": "07:25", "hours": 11.25, "type": "night", "label": "Night 12hr (19:00-07:25)"},
-    {"code": "Z23", "start": "23:00", "end": "07:25", "hours": 7.5, "type": "night", "label": "Night Finish (23:00-07:25)"},
-    {"code": "Z23 B", "start": "23:00", "end": "07:25", "hours": 7.5, "type": "combined", "label": "Night Finish + Back at 19:00"},
+    {"code": "Z19", "start": "19:00", "end": "23:00", "hours": 4.0, "type": "night", "label": "Evening 4hr (19:00-23:00)"},
+    {"code": "Z23", "start": "23:00", "end": "07:25", "hours": 7.25, "type": "night", "label": "Night 8hr (23:00-07:25)"},
+    {"code": "Z23 B", "start": "23:00", "end": "07:25", "hours": 7.25, "type": "combined", "label": "Night 8hr + Back at 19:00"},
 ]
 
 DEFAULT_TIME_SLOTS = [

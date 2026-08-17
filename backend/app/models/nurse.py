@@ -20,6 +20,7 @@ class Nurse(Base):
     name = Column(String, nullable=False, index=True)
     employee_id = Column(String, nullable=True)  # e.g., "47554"
     seniority = Column(String, nullable=True)  # e.g., "3Y-283.95D" (years-days format)
+    team = Column(String, nullable=True, index=True)  # e.g., "Heme-Onc"; used for targeting
     
     # Employment details (FTE contract)
     employment_type = Column(String, nullable=False, default="full-time")  # "full-time" or "part-time"

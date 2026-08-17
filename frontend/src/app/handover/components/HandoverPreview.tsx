@@ -865,6 +865,16 @@ function VSPainSection({ handover }: { handover: Handover }) {
                 </div>
               </div>
             </div>
+            {handover.pca_description && (
+              <div className="pt-1">
+                <span className="text-xs font-medium text-gray-700">
+                  {handover.pca_checkbox ? "PCA" : "NCA"} Description:
+                </span>
+                <div className="mt-0.5 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-800">
+                  {handover.pca_description}
+                </div>
+              </div>
+            )}
             <div className="flex flex-wrap items-center gap-4 border-t border-gray-200 pt-2">
               <span className="text-xs font-medium text-gray-700">
                 Monitoring:

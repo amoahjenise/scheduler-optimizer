@@ -23,7 +23,7 @@ export default async function RootLayout({
 
   return (
     <ClerkProvider appearance={{ baseTheme: dark }}>
-      <html lang={locale}>
+      <html lang={locale} suppressHydrationWarning>
         <head>
           <link rel="preconnect" href="https://fonts.googleapis.com" />
           <link
@@ -36,7 +36,7 @@ export default async function RootLayout({
             rel="stylesheet"
           />
         </head>
-        <body className="font-inter antialiased">
+        <body className="font-inter antialiased" suppressHydrationWarning>
           <PageLoadingIndicator />
           <NextIntlClientProvider locale={locale} messages={messages}>
             <OrganizationProvider>

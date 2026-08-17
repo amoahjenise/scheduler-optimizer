@@ -1,93 +1,78 @@
 // Scheduler utility functions
-import {
-  ShiftEntry,
-  GridRow,
-  OCRWarning,
-  SHIFT_CODES,
-  NIGHT_DEDUP_PAIRS,
-} from "../types";
+import { ShiftEntry, GridRow, OCRWarning, SHIFT_CODES } from "../types";
 
 /**
- * Deduplicate wrap-around night shifts.
+ * Fuzzy name matching using Jaccard similarity on character bigrams.
+ * Returns true if names are at least 85% similar.
  *
- * Hospital schedules show overnight shifts across two calendar-day columns.
- * Only a plain Z23 (without "B") on day N+1 is a ghost/tail:
- *   Day N: Z19 / Z23 / Z23 B  →  Day N+1: Z23 (ghost — zero it out)
- * A Z23 B on day N+1 is always a REAL consecutive overnight shift:
- *   Day N: Z23 B  →  Day N+1: Z23 B (new shift — keep it)
- *
- * Example: Z19, Z23 B, Z23 B, Z23 → 3 real shifts + 1 ghost (last Z23)
- *
- * The shifts array MUST be sorted by date before calling this function.
+ * Examples:
+ *   - "Tiffany Glodoviza" vs "Tiffany Glodovizay" -> 94% -> true
+ *   - "Alexandra Zatylny" vs "Florent Vidal" -> <85% -> false
  */
-export function deduplicateNightShifts(shifts: ShiftEntry[]): ShiftEntry[] {
-  if (shifts.length < 2) return shifts;
+export function fuzzyNameMatch(
+  name1: string,
+  name2: string,
+  threshold: number = 0.85,
+): boolean {
+  const n1 = name1.trim().toLowerCase();
+  const n2 = name2.trim().toLowerCase();
 
-  // Work on a shallow copy so we don't mutate the original
-  const result = shifts.map((s) => ({ ...s }));
+  if (n1 === n2) return true;
 
-  for (let i = 1; i < result.length; i++) {
-    const prev = result[i - 1];
-    const curr = result[i];
-
-    // Skip empty entries
-    if (!prev.shift || !curr.shift) continue;
-
-    const prevCode = prev.shift
-      .replace(/\s*\*\s*$/, "")
-      .trim()
-      .toUpperCase();
-    const currCode = curr.shift
-      .replace(/\s*\*\s*$/, "")
-      .trim()
-      .toUpperCase();
-
-    // Check consecutive dates (day N → day N+1)
-    const prevDate = new Date(prev.date + "T00:00:00");
-    const currDate = new Date(curr.date + "T00:00:00");
-    const diffMs = currDate.getTime() - prevDate.getTime();
-    const isConsecutive = diffMs === 86400000; // exactly 1 day
-
-    if (!isConsecutive) continue;
-
-    // If (prevCode → currCode) is a known night dedup pair,
-    // curr is the wrap-around continuation — zero it out.
-    const validTails = NIGHT_DEDUP_PAIRS[prevCode];
-    if (validTails && validTails.has(currCode)) {
-      // Ensure the start shift carries the full block hours (11.25h)
-      const startShiftDef = SHIFT_CODES.find(
-        (s) => s.code.toUpperCase() === prevCode,
-      );
-      if (startShiftDef) {
-        result[i - 1].hours = startShiftDef.hours; // 11.25
-      }
-
-      // Zero out the tail — it's not a separate shift
-      result[i] = {
-        ...result[i],
-        hours: 0,
-        shiftType: "night",
-        startTime: "",
-        endTime: "",
-        // Keep the original shift text for display (add visual marker)
-        shift: result[i].shift + " ↩",
-      };
+  // Generate character bigrams
+  const bigrams = (s: string): Set<string> => {
+    if (s.length <= 1) return new Set([s]);
+    const b = new Set<string>();
+    for (let i = 0; i < s.length - 1; i++) {
+      b.add(s.slice(i, i + 2));
     }
+    return b;
+  };
+
+  const b1 = bigrams(n1);
+  const b2 = bigrams(n2);
+
+  if (b1.size === 0 || b2.size === 0) return n1 === n2;
+
+  // Intersection size
+  let intersection = 0;
+  for (const bg of b1) {
+    if (b2.has(bg)) intersection++;
   }
 
-  return result;
+  // Union size
+  const union = b1.size + b2.size - intersection;
+  const similarity = union > 0 ? intersection / union : 0;
+
+  return similarity >= threshold;
 }
 
 /**
- * Apply night-shift ghost dedup to every row in a grid.
- * Convenience wrapper so every code path that sets ocrGrid can just call
- * `deduplicateGridGhosts(rows)` instead of manually iterating.
- *
- * Also removes duplicate nurse rows (same nurse name appearing multiple times).
+ * Find a fuzzy-matching key in a Map using fuzzyNameMatch.
+ * Returns the matched key if found, undefined otherwise.
+ */
+export function findFuzzyMatchInMap<T>(
+  name: string,
+  map: Map<string, T>,
+): string | undefined {
+  // Exact match first
+  if (map.has(name)) return name;
+
+  // Fuzzy match
+  for (const existingKey of map.keys()) {
+    if (fuzzyNameMatch(name, existingKey)) {
+      console.log(`[FUZZY MATCH] "${name}" matches existing "${existingKey}"`);
+      return existingKey;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Deduplicate rows by nurse name (case-insensitive).
+ * If two rows have the same nurse name, merge their shifts (prefer non-empty shifts).
  */
 export function deduplicateGridGhosts(rows: GridRow[]): GridRow[] {
-  // First, deduplicate rows by nurse name (case-insensitive)
-  // If two rows have the same nurse name, merge their shifts (prefer non-empty shifts)
   const seenNurses = new Map<string, GridRow>();
 
   for (const row of rows) {
@@ -115,15 +100,7 @@ export function deduplicateGridGhosts(rows: GridRow[]): GridRow[] {
     }
   }
 
-  const uniqueRows = Array.from(seenNurses.values());
-
-  // Then apply night-shift ghost deduplication to each row
-  return uniqueRows.map((row) => ({
-    ...row,
-    shifts: deduplicateNightShifts(
-      [...row.shifts].sort((a, b) => a.date.localeCompare(b.date)),
-    ),
-  }));
+  return Array.from(seenNurses.values());
 }
 
 /**
@@ -1304,4 +1281,50 @@ export function matchNursesWithDatabase(
   }
 
   return { matched, unmatched };
+}
+
+/**
+ * Deduplicate wrap-around night shifts in a date-ordered array.
+ *
+ * Hospital schedules visually split overnight shifts across two calendar days.
+ * A plain "Z23" appearing the day after a night code (Z19, Z23 B, 23) is just
+ * the visual tail — not a separate shift.  "Z23 B" is always a real shift.
+ *
+ * Ghost tails are zeroed out (shift="", hours=0, shiftType="off") so the
+ * array length stays the same and date alignment is preserved.
+ */
+export function deduplicateNightShifts(shifts: ShiftEntry[]): ShiftEntry[] {
+  const result = [...shifts];
+
+  for (let i = 1; i < result.length; i++) {
+    const prev = result[i - 1];
+    const curr = result[i];
+
+    const prevCode = (prev.shift || "").toUpperCase().trim();
+    const currCode = (curr.shift || "").toUpperCase().trim();
+
+    // Only plain "Z23" is a potential ghost — "Z23 B" is always real
+    if (currCode !== "Z23") continue;
+
+    // Previous shift must be an overnight code
+    const isNightPrev =
+      prevCode === "Z19" ||
+      prevCode.startsWith("Z23") ||
+      prevCode === "23" ||
+      prevCode.startsWith("ZN") ||
+      prevCode.startsWith("N");
+
+    if (isNightPrev) {
+      result[i] = {
+        ...curr,
+        shift: "",
+        shiftType: "off",
+        hours: 0,
+        startTime: "",
+        endTime: "",
+      };
+    }
+  }
+
+  return result;
 }

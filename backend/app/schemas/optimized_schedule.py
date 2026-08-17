@@ -83,3 +83,4 @@ class InsightsRequest(BaseModel):
     staffNotes: Optional[Dict[str, List[str]]] = None
     markerComments: Optional[str] = None
     locale: Optional[str] = "en"  # Default to English
+    requiredStaff: Optional[Dict[str, Dict[str, int]]] = None

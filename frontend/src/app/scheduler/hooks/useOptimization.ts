@@ -99,15 +99,16 @@ export function useOptimization({
             shiftCodes: ["Z19", "Z23", "Z23 B", "23"],
           },
         },
+        // PAID HOURS: 12h=11.25h, 8h=7.5h (clock time minus unpaid breaks)
         shiftsInfo: {
           Z07: { type: "day", hours: 11.25 },
           "07": { type: "day", hours: 7.5 },
           Z11: { type: "day", hours: 11.25 },
           "11": { type: "day", hours: 7.5 },
           E15: { type: "day", hours: 7.5 },
-          Z19: { type: "night", hours: 11.25 },
-          Z23: { type: "night", hours: 11.25 },
-          "Z23 B": { type: "night", hours: 11.25 },
+          Z19: { type: "night", hours: 4.0 },
+          Z23: { type: "night", hours: 7.25 },
+          "Z23 B": { type: "night", hours: 7.25 },
           "23": { type: "night", hours: 7.5 },
         },
         nurses,
@@ -373,14 +374,14 @@ export function useOptimization({
             getAuthHeaders ? await getAuthHeaders() : undefined,
           ),
           new Promise((resolve) =>
-            setTimeout(() => resolve({ __timed_out: true }), 45000),
+            setTimeout(() => resolve({ __timed_out: true }), 180000),
           ),
         ]);
 
         // If the request timed out, perform a local fallback and return.
         if (guardedData && (guardedData as any).__timed_out) {
           console.warn(
-            "Optimization request exceeded 45 seconds; using fallback grid.",
+            "Optimization request exceeded 90 seconds; using fallback grid.",
           );
           const fallbackGrid: GridRow[] = ocrGrid.map((row) => ({
             id: row.id,
@@ -457,45 +458,6 @@ export function useOptimization({
     ],
   );
 
-  // Simple math-based optimization (constraint satisfaction)
-  const optimizeWithMath = useCallback((): GridRow[] => {
-    const result: GridRow[] = [];
-
-    for (const row of ocrGrid) {
-      const optimizedShifts: ShiftEntry[] = [];
-      let consecutiveDays = 0;
-
-      for (const shift of row.shifts) {
-        if (shift.shift && shift.shift.trim() !== "" && shift.shift !== "OFF") {
-          if (consecutiveDays >= 5) {
-            optimizedShifts.push({
-              ...shift,
-              shift: "OFF",
-              hours: 0,
-            });
-            consecutiveDays = 0;
-          } else {
-            optimizedShifts.push(shift);
-            consecutiveDays++;
-          }
-        } else {
-          optimizedShifts.push(shift);
-          if (shift.shift === "OFF" || !shift.shift) {
-            consecutiveDays = 0;
-          }
-        }
-      }
-
-      result.push({
-        id: row.id,
-        nurse: row.nurse,
-        shifts: optimizedShifts,
-      });
-    }
-
-    return result;
-  }, [ocrGrid]);
-
   return {
     optimizing,
     loadingConstraints,
@@ -505,6 +467,5 @@ export function useOptimization({
     setShowConstraintsModal,
     previewConstraints,
     optimizeWithConfirmedConstraints,
-    optimizeWithMath,
   };
 }
