@@ -56,3 +56,7 @@ backend/*.sql
 .venv/
 venv/
 *.venv
+
+# generated schedule artifacts in repo root
+/good_output_*.csv
+/schedule_output.csv

@@ -1,9 +1,11 @@
 import csv
 import json
 import re
+from pathlib import Path
 
-input_path = "/Users/graandzenizer/Desktop/Dev/scheduler-optimizer/shared_input_from_chat.csv"
-output_path = "/Users/graandzenizer/Desktop/Dev/scheduler-optimizer/good_output_balanced_minimal.csv"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+input_path = REPO_ROOT / "data" / "schedules" / "shared_input_from_chat.csv"
+output_path = REPO_ROOT / "data" / "schedules" / "good_output_balanced_minimal_v2.csv"
 
 DAY_CODES = {"Z07", "07", "11", "E15"}
 NIGHT_CODES = {"Z19", "Z23", "Z23 B", "23"}

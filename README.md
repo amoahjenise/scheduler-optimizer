@@ -1,111 +1,40 @@
 # Scheduler Optimizer
 
-Healthcare-focused scheduling and handover platform.
+Internal scheduling and handover app for nursing teams.
 
-## Product Scope
+## Repo Layout
 
-This app is designed for clinical teams to:
+- `backend/`: FastAPI API, SQLAlchemy models, Alembic migrations
+- `frontend/`: Next.js app router frontend with Clerk auth
+- `docs/`: project notes, troubleshooting, and ops docs
+- `data/schedules/`: sample CSV fixtures used for schedule cleanup/testing
 
-1. Create and optimize nurse schedules from OCR or manual data.
-2. Manage handoff workflows (day/night) tied to active patients.
-3. Manage nurses, patient records, and organization-level settings.
-4. Provide operational visibility (dashboard, activities, schedule status).
+## Why The Root Was Cleaned
 
-## Core Modules
+The repository root had one-off scripts, generated CSV outputs, and ad-hoc notes mixed with source code.
+That makes onboarding harder and creates noise in reviews.
 
-- Scheduler Optimizer (`/scheduler`)
-	- OCR-assisted schedule capture
-	- Rule-based + AI-assisted optimization
-	- Draft persistence and finalized schedule management
-	- Shift code and staff requirement handling
+Current approach:
 
-- Shift Handover (`/handover`)
-	- Day/night handoff workflow
-	- Patient-level report management
-	- Printable handoff support
+- Keep source code in `backend/` and `frontend/`
+- Keep docs in `docs/`
+- Keep reusable sample data in `data/schedules/`
+- Remove throwaway/generated artifacts that are reproducible or obsolete
 
-- Nurse Management (`/nurses`)
-	- Nurse profile CRUD
-	- Certification and workload fields
+## Local Setup
 
-- Patient Management (`/patients`)
-	- Patient census CRUD
-	- Active/inactive filtering
-
-- Dashboard (`/dashboard`)
-	- Current shift visibility
-	- Recent activity feed
-	- Operational shortcuts
-
-- Schedule Management (`/schedules`, `/admin/schedules`)
-	- Draft/finalized schedule viewing and governance
-
-- Settings (`/settings`)
-	- Organization-level config and branding
-	- Weekly targets and operational options
-
-## Trust & Compliance Surface
-
-Frontpage includes trust controls expected for healthcare-grade tooling:
-
-- Signed BAA
-- AES-256 encryption at rest + TLS in transit
-- Audit logs
-- Reliability-focused uptime/support posture
-
-## Architecture
-
-Monorepo with separate backend and frontend applications:
-
-- `backend/`: FastAPI + SQLAlchemy + Alembic
-- `frontend/`: Next.js (App Router) + TypeScript + Clerk auth
-
-### Backend (FastAPI)
-
-- API routes under `backend/app/api/routes`
-- ORM models under `backend/app/models`
-- DB migrations under `backend/alembic/versions`
-
-### Frontend (Next.js)
-
-- App routes under `frontend/src/app`
-- Shared API client under `frontend/src/app/lib/api.ts`
-- Global layout/style under `frontend/src/app/layout.tsx` and `frontend/src/app/globals.css`
-
-## Requirements
-
-- Python 3.10+
-- Node.js 18+
-- npm 9+
-
-## Local Development
-
-### 1) Backend
-
-From repo root:
+### Backend
 
 ```bash
 cd backend
 python -m venv ../.venv
 source ../.venv/bin/activate
 pip install -r requirements.txt
-```
-
-Run migrations:
-
-```bash
 alembic upgrade head
-```
-
-Start API:
-
-```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 2) Frontend
-
-From repo root:
+### Frontend
 
 ```bash
 cd frontend
@@ -115,30 +44,31 @@ npm run dev
 
 ## Environment Variables
 
-Configure as needed (frontend and backend):
+Frontend:
 
-- Frontend:
-	- `NEXT_PUBLIC_API_BASE_URL`
-	- Clerk public keys/settings
-- Backend:
-	- Database connection settings
-	- Auth-related settings
+- `NEXT_PUBLIC_API_BASE_URL`
+- Clerk public settings
 
-## Build & Validation
+Backend:
 
-Frontend production build:
+- DB connection values
+- Clerk/server auth settings
 
-```bash
-cd frontend
-npm run build
-```
+## Project Docs
 
-## Data & Migration Policy
+- `docs/database-connection.md`
+- `docs/testing-api-endpoints.md`
+- `docs/bugfix-handover-refresh.md`
+- `docs/translation-merge-notes.md`
 
-Alembic revision files are intentionally kept. They are required for reliable schema history, reproducible upgrades, rollback support, and team synchronization across environments.
+## Notes On CSV Fixtures
 
-## Repository Conventions
+CSV files that are still useful for debugging were moved to `data/schedules/`.
+Superseded/generated CSV outputs were removed from root to keep the repo maintainable.
 
-- Keep this README as the single source of project-level specification.
-- Keep migration history in `backend/alembic/versions`.
-- Keep page layout consistency via shared classes in `globals.css`.
+## Best-Practice Guardrails
+
+- No absolute local paths inside committed scripts
+- No generated output files in root
+- Keep docs short, factual, and task-oriented
+- Keep migration history in `backend/alembic/versions`
