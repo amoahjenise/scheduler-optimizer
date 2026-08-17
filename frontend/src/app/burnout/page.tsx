@@ -30,6 +30,7 @@ import {
   type BurnoutAlert,
   type BurnoutSnapshot,
   type BurnoutTopRiskItem,
+  type BurnoutRiskBucketItem,
 } from "../lib/api";
 
 const RISK_COLORS: Record<string, string> = {
@@ -430,6 +431,56 @@ export default function BurnoutPredictorPage() {
                     <span className="w-2 h-2 bg-red-400 rounded-full" />{" "}
                     {t("critical")}
                   </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-5">
+                  {(["low", "moderate", "high", "critical"] as const).map(
+                    (level) => {
+                      const nurses = dashboard.risk_buckets?.[level] ?? [];
+                      return (
+                        <div
+                          key={level}
+                          className="rounded-lg border border-gray-100 p-3"
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`w-2.5 h-2.5 rounded-full ${RISK_BAR_COLORS[level]}`}
+                              />
+                              <span className="text-xs font-semibold uppercase text-gray-500">
+                                {level}
+                              </span>
+                            </div>
+                            <span className="text-xs text-gray-400">
+                              {nurses.length} {t("nurses")}
+                            </span>
+                          </div>
+
+                          {nurses.length === 0 ? (
+                            <p className="text-xs text-gray-400">No nurses</p>
+                          ) : (
+                            <div className="flex flex-wrap gap-2">
+                              {nurses.map((nurse: BurnoutRiskBucketItem) => (
+                                <button
+                                  key={nurse.nurse_id}
+                                  onClick={() => viewNurseDetail(nurse.nurse_id)}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-xs text-gray-700"
+                                  title={`${Math.round(nurse.overall_risk_score * 100)}%`}
+                                >
+                                  <span className="truncate max-w-[12rem]">
+                                    {nurse.nurse_name}
+                                  </span>
+                                  <span className="text-gray-400">
+                                    {Math.round(nurse.overall_risk_score * 100)}%
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    },
+                  )}
                 </div>
               </div>
             )}

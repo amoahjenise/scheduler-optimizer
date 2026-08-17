@@ -68,10 +68,20 @@ class BurnoutTopRiskItem(BaseModel):
         from_attributes = True
 
 
+class BurnoutRiskBucketItem(BaseModel):
+    """Compact nurse entry used for risk distribution buckets."""
+    nurse_id: UUID4
+    nurse_name: str
+    overall_risk_score: float
+    risk_level: str
+    trend: Optional[str]
+
+
 class BurnoutDashboardResponse(BaseModel):
     """Aggregated view for manager dashboard."""
     total_nurses: int
     risk_distribution: Dict[str, int]  # {"low": 10, "moderate": 3, "high": 1, "critical": 0}
+    risk_buckets: Dict[str, List[BurnoutRiskBucketItem]]
     top_risks: List[BurnoutTopRiskItem]
     recent_alerts: List[BurnoutAlertResponse]
     trend_summary: Dict[str, int]  # {"improving": 5, "stable": 7, "worsening": 2}

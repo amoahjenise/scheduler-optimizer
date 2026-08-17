@@ -2273,9 +2273,21 @@ export interface BurnoutTopRiskItem {
   snapshot_date: string;
 }
 
+export interface BurnoutRiskBucketItem {
+  nurse_id: string;
+  nurse_name: string;
+  overall_risk_score: number;
+  risk_level: "low" | "moderate" | "high" | "critical";
+  trend: "improving" | "stable" | "worsening" | null;
+}
+
 export interface BurnoutDashboard {
   total_nurses: number;
   risk_distribution: Record<string, number>;
+  risk_buckets: Record<
+    "low" | "moderate" | "high" | "critical",
+    BurnoutRiskBucketItem[]
+  >;
   top_risks: BurnoutTopRiskItem[];
   recent_alerts: BurnoutAlert[];
   trend_summary: Record<string, number>;
