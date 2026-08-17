@@ -70,6 +70,10 @@ export default function InactivityGuard() {
       }),
       reason: t("autoEndedReason"),
     };
+
+    // Update in-memory state immediately so the modal can render without a refresh.
+    setSignoutInfo(info);
+
     try {
       localStorage.setItem(SIGNOUT_INFO_KEY, JSON.stringify(info));
     } catch {
