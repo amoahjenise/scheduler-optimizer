@@ -69,12 +69,14 @@ class BurnoutTopRiskItem(BaseModel):
 
 
 class BurnoutRiskBucketItem(BaseModel):
-    """Compact nurse entry used for risk distribution buckets."""
+    """Compact nurse risk item for risk bucket popovers."""
     nurse_id: UUID4
     nurse_name: str
     overall_risk_score: float
     risk_level: str
-    trend: Optional[str]
+
+    class Config:
+        from_attributes = True
 
 
 class BurnoutDashboardResponse(BaseModel):

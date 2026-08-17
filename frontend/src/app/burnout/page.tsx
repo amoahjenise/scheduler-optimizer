@@ -29,8 +29,8 @@ import {
   type BurnoutNurseDetail,
   type BurnoutAlert,
   type BurnoutSnapshot,
-  type BurnoutTopRiskItem,
   type BurnoutRiskBucketItem,
+  type BurnoutTopRiskItem,
 } from "../lib/api";
 
 const RISK_COLORS: Record<string, string> = {
@@ -63,6 +63,9 @@ const FACTOR_LABELS: Record<string, string> = {
   tenure_risk: "Tenure Risk",
 };
 
+const RISK_LEVELS = ["low", "moderate", "high", "critical"] as const;
+type RiskLevel = (typeof RISK_LEVELS)[number];
+
 export default function BurnoutPredictorPage() {
   const { getAuthHeaders, canManage } = useOrganization();
   const t = useTranslations("burnout");
@@ -77,6 +80,9 @@ export default function BurnoutPredictorPage() {
   const [error, setError] = useState<string | null>(null);
   const [alertsExpanded, setAlertsExpanded] = useState(true);
   const [tab, setTab] = useState<"overview" | "alerts">("overview");
+  const [activeRiskPopover, setActiveRiskPopover] = useState<RiskLevel | null>(
+    null,
+  );
 
   const loadDashboard = useCallback(async () => {
     try {
@@ -205,6 +211,11 @@ export default function BurnoutPredictorPage() {
         ))}
       </div>
     );
+  };
+
+  const riskBucketNurses = (level: RiskLevel): BurnoutRiskBucketItem[] => {
+    if (!dashboard?.risk_buckets) return [];
+    return dashboard.risk_buckets[level] ?? [];
   };
 
   if (!canManage) {
@@ -381,64 +392,78 @@ export default function BurnoutPredictorPage() {
             {/* Summary Cards */}
             {dashboard && (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                {(["low", "moderate", "high", "critical"] as const).map(
-                  (level) => {
-                    const nurses = dashboard.risk_buckets?.[level] ?? [];
-                    const previewNurses = nurses.slice(0, 10);
-                    const remaining = nurses.length - previewNurses.length;
+                {RISK_LEVELS.map((level) => {
+                  const bucketNurses = riskBucketNurses(level);
+                  const isOpen = activeRiskPopover === level;
 
-                    return (
+                  return (
                     <div
                       key={level}
-                      className="group relative bg-white rounded-xl border border-gray-200 p-4"
+                      className="relative"
+                      onMouseEnter={() => setActiveRiskPopover(level)}
+                      onMouseLeave={() => setActiveRiskPopover((prev) => (prev === level ? null : prev))}
                     >
-                      <div className="flex items-center gap-2 mb-2">
-                        <span
-                          className={`w-3 h-3 rounded-full ${RISK_BAR_COLORS[level]}`}
-                        />
-                        <span className="text-xs font-medium text-gray-500 uppercase">
-                          {level}
-                        </span>
-                      </div>
-                      <p className="text-3xl font-bold text-gray-900">
-                        {dashboard.risk_distribution[level]}
-                      </p>
-                      <p className="text-xs text-gray-400 mt-1">
-                        {t("nurses")}
-                      </p>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setActiveRiskPopover((prev) =>
+                            prev === level ? null : level,
+                          )
+                        }
+                        className="w-full text-left bg-white rounded-xl border border-gray-200 p-4 hover:border-gray-300 transition-colors"
+                        aria-expanded={isOpen}
+                        aria-label={`${level} risk nurses`}
+                      >
+                        <div className="flex items-center gap-2 mb-2">
+                          <span
+                            className={`w-3 h-3 rounded-full ${RISK_BAR_COLORS[level]}`}
+                          />
+                          <span className="text-xs font-medium text-gray-500 uppercase">
+                            {level}
+                          </span>
+                        </div>
+                        <p className="text-3xl font-bold text-gray-900">
+                          {dashboard.risk_distribution[level]}
+                        </p>
+                        <p className="text-xs text-gray-400 mt-1">{t("nurses")}</p>
+                      </button>
 
-                      {nurses.length > 0 && (
-                        <div className="hidden group-hover:block group-focus-within:block absolute z-20 left-2 right-2 top-full mt-2 rounded-lg border border-gray-200 bg-white shadow-lg p-2">
-                          <p className="text-[11px] font-semibold uppercase text-gray-500 mb-1">
-                            {level} {t("nurses")}
-                          </p>
-                          <div className="max-h-48 overflow-y-auto space-y-1">
-                            {previewNurses.map((nurse: BurnoutRiskBucketItem) => (
-                              <button
-                                key={nurse.nurse_id}
-                                onClick={() => viewNurseDetail(nurse.nurse_id)}
-                                className="w-full text-left text-xs px-2 py-1 rounded hover:bg-gray-50"
-                              >
-                                <span className="text-gray-800">
-                                  {nurse.nurse_name}
-                                </span>
-                                <span className="text-gray-400 ml-2">
-                                  {Math.round(nurse.overall_risk_score * 100)}%
-                                </span>
-                              </button>
-                            ))}
-                            {remaining > 0 && (
-                              <p className="text-[11px] text-gray-400 px-2 py-1">
-                                +{remaining} more
-                              </p>
-                            )}
+                      {isOpen && (
+                        <div className="absolute z-30 left-0 top-full mt-2 w-72 bg-white border border-gray-200 rounded-lg shadow-xl p-2">
+                          <div className="px-2 py-1.5 text-xs font-semibold text-gray-500 uppercase">
+                            {level} risk
                           </div>
+                          {bucketNurses.length === 0 ? (
+                            <div className="px-2 py-3 text-sm text-gray-400">
+                              No nurses in this bucket.
+                            </div>
+                          ) : (
+                            <div className="max-h-64 overflow-auto">
+                              {bucketNurses.map((nurse) => (
+                                <button
+                                  key={nurse.nurse_id}
+                                  type="button"
+                                  onClick={() => {
+                                    setActiveRiskPopover(null);
+                                    viewNurseDetail(nurse.nurse_id);
+                                  }}
+                                  className="w-full flex items-center justify-between gap-3 px-2 py-2 rounded-md hover:bg-gray-50 transition-colors text-left"
+                                >
+                                  <span className="text-sm text-gray-900 truncate">
+                                    {nurse.nurse_name}
+                                  </span>
+                                  <span className="text-xs font-semibold text-gray-700">
+                                    {Math.round(nurse.overall_risk_score * 100)}%
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
-                    );
-                  },
-                )}
+                  );
+                })}
               </div>
             )}
 

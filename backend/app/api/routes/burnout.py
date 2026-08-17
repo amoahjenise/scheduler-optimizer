@@ -65,12 +65,6 @@ def burnout_dashboard(
 
     # Compute distribution
     dist = {"low": 0, "moderate": 0, "high": 0, "critical": 0}
-    risk_buckets: Dict[str, List[BurnoutRiskBucketItem]] = {
-        "low": [],
-        "moderate": [],
-        "high": [],
-        "critical": [],
-    }
     trend_summary = {"improving": 0, "stable": 0, "worsening": 0}
     for snap in latest_snapshots:
         dist[snap.risk_level] = dist.get(snap.risk_level, 0) + 1
@@ -84,23 +78,27 @@ def burnout_dashboard(
         for n in db.query(Nurse).filter(Nurse.id.in_(nurse_ids)).all()
     }
 
-    for snap in latest_snapshots:
-        bucket = risk_buckets.setdefault(snap.risk_level, [])
-        bucket.append(
-            BurnoutRiskBucketItem(
-                nurse_id=snap.nurse_id,
-                nurse_name=nurses_by_id.get(snap.nurse_id, "Unknown Nurse"),
-                overall_risk_score=snap.overall_risk_score,
-                risk_level=snap.risk_level,
-                trend=snap.trend,
-            )
-        )
+    # Top risks (high + critical sorted by score desc)
+    risk_buckets: Dict[str, List[BurnoutRiskBucketItem]] = {
+        "low": [],
+        "moderate": [],
+        "high": [],
+        "critical": [],
+    }
 
-    for key in ("low", "moderate", "high", "critical"):
-        risk_buckets[key] = sorted(
-            risk_buckets.get(key, []),
-            key=lambda item: item.overall_risk_score,
-            reverse=True,
+    for s in sorted(
+        latest_snapshots,
+        key=lambda snap: snap.overall_risk_score,
+        reverse=True,
+    ):
+        bucket = s.risk_level if s.risk_level in risk_buckets else "low"
+        risk_buckets[bucket].append(
+            BurnoutRiskBucketItem(
+                nurse_id=s.nurse_id,
+                nurse_name=nurses_by_id.get(s.nurse_id, "Unknown Nurse"),
+                overall_risk_score=s.overall_risk_score,
+                risk_level=s.risk_level,
+            )
         )
 
     # Top risks (high + critical sorted by score desc)
