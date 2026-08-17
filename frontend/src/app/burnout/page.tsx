@@ -382,10 +382,15 @@ export default function BurnoutPredictorPage() {
             {dashboard && (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                 {(["low", "moderate", "high", "critical"] as const).map(
-                  (level) => (
+                  (level) => {
+                    const nurses = dashboard.risk_buckets?.[level] ?? [];
+                    const previewNurses = nurses.slice(0, 10);
+                    const remaining = nurses.length - previewNurses.length;
+
+                    return (
                     <div
                       key={level}
-                      className="bg-white rounded-xl border border-gray-200 p-4"
+                      className="group relative bg-white rounded-xl border border-gray-200 p-4"
                     >
                       <div className="flex items-center gap-2 mb-2">
                         <span
@@ -401,8 +406,38 @@ export default function BurnoutPredictorPage() {
                       <p className="text-xs text-gray-400 mt-1">
                         {t("nurses")}
                       </p>
+
+                      {nurses.length > 0 && (
+                        <div className="hidden group-hover:block group-focus-within:block absolute z-20 left-2 right-2 top-full mt-2 rounded-lg border border-gray-200 bg-white shadow-lg p-2">
+                          <p className="text-[11px] font-semibold uppercase text-gray-500 mb-1">
+                            {level} {t("nurses")}
+                          </p>
+                          <div className="max-h-48 overflow-y-auto space-y-1">
+                            {previewNurses.map((nurse: BurnoutRiskBucketItem) => (
+                              <button
+                                key={nurse.nurse_id}
+                                onClick={() => viewNurseDetail(nurse.nurse_id)}
+                                className="w-full text-left text-xs px-2 py-1 rounded hover:bg-gray-50"
+                              >
+                                <span className="text-gray-800">
+                                  {nurse.nurse_name}
+                                </span>
+                                <span className="text-gray-400 ml-2">
+                                  {Math.round(nurse.overall_risk_score * 100)}%
+                                </span>
+                              </button>
+                            ))}
+                            {remaining > 0 && (
+                              <p className="text-[11px] text-gray-400 px-2 py-1">
+                                +{remaining} more
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  ),
+                    );
+                  },
                 )}
               </div>
             )}
@@ -431,56 +466,6 @@ export default function BurnoutPredictorPage() {
                     <span className="w-2 h-2 bg-red-400 rounded-full" />{" "}
                     {t("critical")}
                   </span>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-5">
-                  {(["low", "moderate", "high", "critical"] as const).map(
-                    (level) => {
-                      const nurses = dashboard.risk_buckets?.[level] ?? [];
-                      return (
-                        <div
-                          key={level}
-                          className="rounded-lg border border-gray-100 p-3"
-                        >
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="flex items-center gap-2">
-                              <span
-                                className={`w-2.5 h-2.5 rounded-full ${RISK_BAR_COLORS[level]}`}
-                              />
-                              <span className="text-xs font-semibold uppercase text-gray-500">
-                                {level}
-                              </span>
-                            </div>
-                            <span className="text-xs text-gray-400">
-                              {nurses.length} {t("nurses")}
-                            </span>
-                          </div>
-
-                          {nurses.length === 0 ? (
-                            <p className="text-xs text-gray-400">No nurses</p>
-                          ) : (
-                            <div className="flex flex-wrap gap-2">
-                              {nurses.map((nurse: BurnoutRiskBucketItem) => (
-                                <button
-                                  key={nurse.nurse_id}
-                                  onClick={() => viewNurseDetail(nurse.nurse_id)}
-                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-gray-200 hover:border-gray-300 hover:bg-gray-50 text-xs text-gray-700"
-                                  title={`${Math.round(nurse.overall_risk_score * 100)}%`}
-                                >
-                                  <span className="truncate max-w-[12rem]">
-                                    {nurse.nurse_name}
-                                  </span>
-                                  <span className="text-gray-400">
-                                    {Math.round(nurse.overall_risk_score * 100)}%
-                                  </span>
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    },
-                  )}
                 </div>
               </div>
             )}
