@@ -47,6 +47,7 @@ def create_announcement(
         organization_id=auth.organization_id,
         title=body.title,
         body=body.body,
+        source_link=body.source_link,
         target_team=body.target_team or None,
         is_pinned=body.is_pinned,
         expires_at=body.expires_at,
@@ -93,7 +94,13 @@ def list_announcements(
                 or_(Announcement.target_team.is_(None), Announcement.target_team == team)
             )
         else:
-            query = query.filter(Announcement.target_team.is_(None))
+            # Fallback: if a member has no mapped nurse/team yet, do not hide
+            # team-targeted org announcements from them.
+            logger.info(
+                "Announcement list fallback: no team mapping for user %s in org %s",
+                auth.user_id,
+                auth.organization_id,
+            )
 
     announcements = query.all()
 

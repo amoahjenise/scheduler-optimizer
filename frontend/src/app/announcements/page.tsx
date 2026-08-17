@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  ExternalLink,
   Megaphone,
+  Pencil,
   Pin,
   PinOff,
   Plus,
@@ -50,6 +52,10 @@ export default function AnnouncementsPage() {
   const [targetTeam, setTargetTeam] = useState<string>(ALL_TEAMS);
   const [isPinned, setIsPinned] = useState(false);
   const [expiresAt, setExpiresAt] = useState("");
+  const [sourceLink, setSourceLink] = useState("");
+  const [editingAnnouncementId, setEditingAnnouncementId] = useState<
+    string | null
+  >(null);
 
   const load = useCallback(async () => {
     if (!orgId) return;
@@ -80,9 +86,11 @@ export default function AnnouncementsPage() {
     setTargetTeam(ALL_TEAMS);
     setIsPinned(false);
     setExpiresAt("");
+    setSourceLink("");
+    setEditingAnnouncementId(null);
   };
 
-  const handleCreate = async () => {
+  const handleSave = async () => {
     if (!title.trim() || !body.trim()) {
       setError("Title and message are required");
       return;
@@ -91,28 +99,50 @@ export default function AnnouncementsPage() {
     setError(null);
     try {
       const headers = await getAuthHeaders();
-      await createAnnouncementAPI(
-        {
-          title: title.trim(),
-          body: body.trim(),
-          target_team: targetTeam === ALL_TEAMS ? null : targetTeam,
-          is_pinned: isPinned,
-          expires_at: expiresAt
-            ? new Date(`${expiresAt}T23:59:59`).toISOString()
-            : null,
-        },
-        headers,
-      );
+      const payload = {
+        title: title.trim(),
+        body: body.trim(),
+        source_link: sourceLink.trim() || null,
+        target_team: targetTeam === ALL_TEAMS ? null : targetTeam,
+        is_pinned: isPinned,
+        expires_at: expiresAt
+          ? new Date(`${expiresAt}T23:59:59`).toISOString()
+          : null,
+      };
+      if (editingAnnouncementId) {
+        await updateAnnouncementAPI(editingAnnouncementId, payload, headers);
+      } else {
+        await createAnnouncementAPI(payload, headers);
+      }
       resetForm();
       setShowForm(false);
       await load();
     } catch (e) {
       setError(
-        e instanceof Error ? e.message : "Failed to create announcement",
+        e instanceof Error
+          ? e.message
+          : editingAnnouncementId
+            ? "Failed to update announcement"
+            : "Failed to create announcement",
       );
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleEdit = (announcement: Announcement) => {
+    setEditingAnnouncementId(announcement.id);
+    setTitle(announcement.title);
+    setBody(announcement.body);
+    setSourceLink(announcement.source_link ?? "");
+    setTargetTeam(announcement.target_team || ALL_TEAMS);
+    setIsPinned(announcement.is_pinned);
+    setExpiresAt(
+      announcement.expires_at
+        ? new Date(announcement.expires_at).toISOString().split("T")[0]
+        : "",
+    );
+    setShowForm(true);
   };
 
   const handleTogglePin = async (announcement: Announcement) => {
@@ -186,6 +216,17 @@ export default function AnnouncementsPage() {
             <p className="mt-1 whitespace-pre-wrap text-sm text-gray-700">
               {announcement.body}
             </p>
+            {announcement.source_link && (
+              <a
+                href={announcement.source_link}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 inline-flex items-center gap-1 text-sm text-blue-600 hover:text-blue-700"
+              >
+                <ExternalLink className="h-4 w-4" />
+                Source link
+              </a>
+            )}
             <p className="mt-3 text-xs text-gray-500">
               {announcement.created_by_name
                 ? `${announcement.created_by_name} · `
@@ -199,6 +240,13 @@ export default function AnnouncementsPage() {
 
           {canManage && (
             <div className="flex shrink-0 items-center gap-2">
+              <button
+                onClick={() => handleEdit(announcement)}
+                title="Edit"
+                className="rounded-lg border border-gray-300 bg-white p-2 text-gray-600 hover:bg-gray-50"
+              >
+                <Pencil className="h-4 w-4" />
+              </button>
               <button
                 onClick={() => handleTogglePin(announcement)}
                 title={announcement.is_pinned ? "Unpin" : "Pin"}
@@ -265,7 +313,7 @@ export default function AnnouncementsPage() {
           {canManage && showForm && (
             <div className="mb-6 rounded-xl border border-gray-200 bg-white p-5">
               <h2 className="mb-4 text-lg font-semibold text-gray-900">
-                New announcement
+                {editingAnnouncementId ? "Edit announcement" : "New announcement"}
               </h2>
               <div className="space-y-4">
                 <div>
@@ -277,6 +325,18 @@ export default function AnnouncementsPage() {
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
                     placeholder="e.g., New isolation protocol starts Monday"
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-gray-700">
+                    Source link (optional)
+                  </label>
+                  <input
+                    type="url"
+                    value={sourceLink}
+                    onChange={(e) => setSourceLink(e.target.value)}
+                    placeholder="https://intranet/policy-update"
                     className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
@@ -333,11 +393,17 @@ export default function AnnouncementsPage() {
                 </label>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={handleCreate}
+                    onClick={handleSave}
                     disabled={saving}
                     className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                   >
-                    {saving ? "Publishing..." : "Publish"}
+                    {saving
+                      ? editingAnnouncementId
+                        ? "Saving..."
+                        : "Publishing..."
+                      : editingAnnouncementId
+                        ? "Save changes"
+                        : "Publish"}
                   </button>
                   <button
                     onClick={() => {

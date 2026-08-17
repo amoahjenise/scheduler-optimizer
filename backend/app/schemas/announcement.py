@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, UUID4
 class AnnouncementCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     body: str = Field(..., min_length=1)
+    source_link: Optional[str] = None
     target_team: Optional[str] = None
     is_pinned: bool = False
     expires_at: Optional[datetime] = None
@@ -15,6 +16,7 @@ class AnnouncementCreate(BaseModel):
 class AnnouncementUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=200)
     body: Optional[str] = Field(None, min_length=1)
+    source_link: Optional[str] = None
     target_team: Optional[str] = None
     is_pinned: Optional[bool] = None
     expires_at: Optional[datetime] = None
@@ -25,6 +27,7 @@ class AnnouncementResponse(BaseModel):
     organization_id: str
     title: str
     body: str
+    source_link: Optional[str] = None
     target_team: Optional[str] = None
     is_pinned: bool
     expires_at: Optional[datetime] = None

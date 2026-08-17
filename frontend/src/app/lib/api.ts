@@ -2593,6 +2593,7 @@ export interface Announcement {
   organization_id: string;
   title: string;
   body: string;
+  source_link?: string | null;
   target_team?: string | null;
   is_pinned: boolean;
   expires_at?: string | null;
@@ -2614,6 +2615,7 @@ export async function createAnnouncementAPI(
   body: {
     title: string;
     body: string;
+    source_link?: string | null;
     target_team?: string | null;
     is_pinned?: boolean;
     expires_at?: string | null;
@@ -2632,6 +2634,7 @@ export async function updateAnnouncementAPI(
   body: Partial<{
     title: string;
     body: string;
+    source_link: string | null;
     target_team: string | null;
     is_pinned: boolean;
     expires_at: string | null;

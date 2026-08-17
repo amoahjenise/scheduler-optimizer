@@ -20,6 +20,7 @@ class Announcement(Base):
 
     title = Column(String(200), nullable=False)
     body = Column(Text, nullable=False)
+    source_link = Column(String, nullable=True)
 
     # Targeting: null = entire organization, otherwise a team name
     target_team = Column(String, nullable=True, index=True)
