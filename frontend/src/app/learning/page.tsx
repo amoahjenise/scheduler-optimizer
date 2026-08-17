@@ -102,16 +102,28 @@ export default function MicroLearningPage() {
   const loadData = useCallback(async () => {
     try {
       const headers = await getAuthHeaders();
-      const [modulesData, progressData] = await Promise.all([
-        fetchLearningModulesAPI({}, headers),
-        fetchMyLearningProgressAPI(headers),
-      ]);
-      setModules(modulesData.modules);
-      setProgress(progressData);
+      const [modulesResult, progressResult, assignmentsResult] =
+        await Promise.allSettled([
+          fetchLearningModulesAPI({}, headers),
+          fetchMyLearningProgressAPI(headers),
+          fetchLearningAssignmentsAPI(headers),
+        ]);
 
-      try {
-        setAssignments(await fetchLearningAssignmentsAPI(headers));
-      } catch {
+      if (modulesResult.status === "fulfilled") {
+        setModules(modulesResult.value.modules);
+      } else {
+        setModules([]);
+      }
+
+      if (progressResult.status === "fulfilled") {
+        setProgress(progressResult.value);
+      } else {
+        setProgress([]);
+      }
+
+      if (assignmentsResult.status === "fulfilled") {
+        setAssignments(assignmentsResult.value);
+      } else {
         setAssignments([]);
       }
 

@@ -488,7 +488,9 @@ def list_assignments(
                 (LearningAssignment.target_team == None) | (LearningAssignment.target_team == team)
             )
         else:
-            query = query.filter(LearningAssignment.target_team == None)
+            # Fallback: if nurse/team mapping isn't ready yet, don't hide
+            # team-targeted assignments for active org members.
+            pass
 
     assignments = query.order_by(LearningAssignment.created_at.desc()).all()
     if not assignments:
