@@ -15,6 +15,10 @@ export default function AboutPage() {
           staffing optimization, team collaboration, and audit-friendly activity
           tracking.
         </p>
+        <p className="text-sm text-gray-600 mb-8">
+          Built by VaultDeposit Technologies Inc. (Registered in Canada and
+          Quebec).
+        </p>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-8 text-sm">
           <Link href="/privacy" className="text-blue-600 hover:underline">

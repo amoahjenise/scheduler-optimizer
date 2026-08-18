@@ -27,7 +27,7 @@ from app.core.auth import get_optional_auth, AuthContext
 from app.models.optimized_schedule import OptimizedSchedule
 from app.models.system_prompt import SystemPrompt
 from app.models.nurse import Nurse
-from app.models.organization import OrganizationMember
+from app.models.organization import Organization, OrganizationMember
 from app.schemas.optimized_schedule import OptimizeRequest, OptimizeResponse, RefineRequest, InsightsRequest
 from app.api.routes.system_prompts import get_system_prompt, DEFAULT_PROMPT_CONTENT, build_default_prompt_content
 from app.services.deletion_activity import record_deletion_activity
@@ -137,6 +137,83 @@ def apply_org_leave_status(
         logger.info(f"LEAVE ENFORCEMENT: {len(on_leave_keys)} nurse(s) excluded from scheduling")
 
     return on_leave_keys
+
+
+def apply_org_staffing_profile(
+    nurses: List[Dict],
+    organization_id: Optional[str],
+    db: Session,
+) -> Dict[str, Any]:
+    """Stamp DB-owned staffing role / weekend team onto the optimization payload.
+
+    The roster is the source of truth for who is an assistant manager and which
+    weekend rotation group a nurse belongs to, so these are re-read here instead
+    of trusting the incoming payload.
+
+    Returns the organization's weekend-rotation setting so callers can pass it
+    through to the optimizer.
+    """
+    profile = {"weekendTeamRotationEnabled": False}
+
+    if not organization_id:
+        return profile
+
+    try:
+        org = (
+            db.query(Organization)
+            .filter(Organization.id == organization_id)
+            .first()
+        )
+        if org is not None:
+            profile["weekendTeamRotationEnabled"] = bool(
+                getattr(org, "weekend_team_rotation_enabled", False)
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"STAFFING PROFILE: unable to read organization settings: {exc}")
+
+    if not nurses:
+        return profile
+
+    try:
+        db_nurses = (
+            db.query(Nurse)
+            .filter(Nurse.organization_id == organization_id)
+            .all()
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"STAFFING PROFILE: unable to read nurse roles: {exc}")
+        return profile
+
+    profile_by_key = {
+        _leave_name_key(db_nurse.name): {
+            "staffingRole": (getattr(db_nurse, "staffing_role", None) or "nurse"),
+            "weekendTeam": getattr(db_nurse, "weekend_team", None),
+        }
+        for db_nurse in db_nurses
+    }
+
+    assistant_managers: List[str] = []
+    for nurse in nurses:
+        db_profile = profile_by_key.get(_leave_name_key(nurse.get("name")))
+        if not db_profile:
+            nurse.setdefault("staffingRole", "nurse")
+            continue
+
+        nurse["staffingRole"] = db_profile["staffingRole"]
+        nurse["weekendTeam"] = db_profile["weekendTeam"]
+
+        if db_profile["staffingRole"] == "assistant_manager":
+            assistant_managers.append(str(nurse.get("name")))
+
+    if assistant_managers:
+        logger.info(
+            "STAFFING PROFILE: %d assistant manager(s) excluded from nurse staffing "
+            "requirements (still scheduled to contract hours): %s",
+            len(assistant_managers),
+            ", ".join(assistant_managers),
+        )
+
+    return profile
 
 
 def enforce_leave_all_off(
@@ -598,7 +675,8 @@ class RobustScheduler:
                  day_shift_codes: List[str], night_shift_codes: List[str],
                  shifts_info: Dict, day_req: int, night_req: int,
                  max_consecutive: int = 3, preferences: Dict = None,
-                 nurse_defaults: Dict[str, Dict] = None):
+                 nurse_defaults: Dict[str, Dict] = None,
+                 weekend_team_rotation_enabled: bool = False):
         # Initialize shift code rotation indices
         self._day_code_index = 0
         self._night_code_index = 0
@@ -808,6 +886,41 @@ class RobustScheduler:
             n["name"]: self._parse_seniority_value(n.get("seniority", 0))
             for n in nurses
         }
+
+        # Assistant managers are rostered to their contract hours but never
+        # count toward nurse staffing requirements.
+        self.assistant_manager_names: Set[str] = {
+            n["name"]
+            for n in nurses
+            if str(n.get("staffingRole", "nurse")).strip().lower() == "assistant_manager"
+        }
+        if self.assistant_manager_names:
+            logger.info(
+                f"  Assistant managers (excluded from staffing counts): "
+                f"{sorted(self.assistant_manager_names)}"
+            )
+
+        # Optional alternating-weekend rotation groups (A/B/C..., 1/2/3...).
+        self.weekend_team_rotation_enabled = bool(weekend_team_rotation_enabled)
+        self.nurse_weekend_team: Dict[str, Optional[str]] = {}
+        for n in nurses:
+            team_value = str(n.get("weekendTeam") or "").strip()
+            self.nurse_weekend_team[n["name"]] = team_value or None
+
+        self.rotation_groups: List[str] = sorted(
+            {
+                group
+                for group in self.nurse_weekend_team.values()
+                if isinstance(group, str) and group.strip()
+            },
+            key=lambda g: g.lower(),
+        )
+
+        if self.weekend_team_rotation_enabled:
+            logger.info(
+                "  Weekend rotation ENABLED (groups: %s)",
+                self.rotation_groups or "none configured",
+            )
         
         # Build ISO week mapping for dates
         from datetime import datetime
@@ -1242,6 +1355,58 @@ class RobustScheduler:
         nurse = self.nurse_by_name.get(nurse_name, {})
         emp_type = str(nurse.get("employmentType", "")).lower()
         return emp_type in ["ft", "full-time", "full_time"]
+
+    def _is_assistant_manager(self, nurse_name: str) -> bool:
+        """Assistant managers work the unit but never count as nurse coverage."""
+        return nurse_name in self.assistant_manager_names
+
+    def _active_weekend_team(self, date: str) -> Optional[str]:
+        """Return the rotation group whose turn it is to work this weekend.
+
+        Weekends cycle across configured groups in sorted order. Example:
+        groups ["A", "B", "C"] => weekend1=A, weekend2=B, weekend3=C, weekend4=A.
+        """
+        if not self.weekend_team_rotation_enabled or not self._is_weekend_date(date):
+            return None
+
+        if not self.rotation_groups:
+            return None
+
+        weekend_index = self._weekend_sequence_index(date)
+        if weekend_index is None:
+            return None
+
+        return self.rotation_groups[weekend_index % len(self.rotation_groups)]
+
+    def _weekend_sequence_index(self, date: str) -> Optional[int]:
+        """Zero-based index of the weekend (Sat/Sun pair) this date belongs to."""
+        if not hasattr(self, "_weekend_index_cache"):
+            self._weekend_index_cache: Dict[str, int] = {}
+            seen_weekends: Dict[str, int] = {}
+            for d in self.date_list:
+                if not self._is_weekend_date(d):
+                    continue
+                dt = datetime.strptime(d, "%Y-%m-%d")
+                # Group Saturday+Sunday of the same weekend under one key.
+                anchor = dt - timedelta(days=(dt.weekday() - 5) % 7)
+                anchor_key = anchor.strftime("%Y-%m-%d")
+                if anchor_key not in seen_weekends:
+                    seen_weekends[anchor_key] = len(seen_weekends)
+                self._weekend_index_cache[d] = seen_weekends[anchor_key]
+
+        return self._weekend_index_cache.get(date)
+
+    def _is_off_rotation_weekend(self, nurse_name: str, date: str) -> bool:
+        """True when weekend rotation is on and it is not this nurse's weekend."""
+        active_team = self._active_weekend_team(date)
+        if not active_team:
+            return False
+
+        nurse_team = self.nurse_weekend_team.get(nurse_name)
+        if not nurse_team:
+            # Nurses without a team assignment are always eligible.
+            return False
+        return nurse_team != active_team
 
     def _has_weekend_in_period(self, nurse_name: str, period_key: str) -> bool:
         for d in self.period_to_dates.get(period_key, []):
@@ -2999,6 +3164,11 @@ class RobustScheduler:
                         # by later passes.
                         self.schedule[nurse_name][day_idx] = self.assign_off(nurse_name, date)
                         nurse_consecutive_count[nurse_name] = 0
+                    elif self._is_off_rotation_weekend(nurse_name, date):
+                        # Team A / Team B alternating weekends: this weekend
+                        # belongs to the other team.
+                        self.schedule[nurse_name][day_idx] = self.assign_off(nurse_name, date)
+                        nurse_consecutive_count[nurse_name] = 0
                     elif self.has_reached_shift_limit(nurse_name, date):
                         # Nurse already at shift limit for this period
                         blocked_by_hours.add(nurse_name)
@@ -3020,7 +3190,9 @@ class RobustScheduler:
                     else:
                         blocked_by_hours.add(nurse_name)
                 elif shift["shiftType"] == "day":
-                    day_count += 1
+                    # Assistant managers work the unit but are not nurse coverage.
+                    if not self._is_assistant_manager(nurse_name):
+                        day_count += 1
                 elif shift["shiftType"] == "night":
                     # Z23 tails (0h) are finishing nurses — NOT fresh night coverage.
                     # Z23 B (bridge, 11.25h) IS active night coverage — nurse returns at 19:00.
@@ -3029,7 +3201,7 @@ class RobustScheduler:
                     shift_hours = float(shift.get("hours", 0) or 0)
                     if shift_hours == 0 or (shift_code == "Z23" and shift_hours == 0):
                         pass  # Z23 tail (0h) — not active night coverage
-                    else:
+                    elif not self._is_assistant_manager(nurse_name):
                         night_count += 1  # Z19, Z23 B, 23 — all active night workers
                 # Don't increment consecutive here - we recalculate at start of each day
             
@@ -3078,7 +3250,8 @@ class RobustScheduler:
                 except ValueError:
                     pass
                 nurses_for_day.append(candidate)
-                day_count += 1
+                if not self._is_assistant_manager(candidate):
+                    day_count += 1
             
             # Fill night shifts (prefer night-only nurses first, then any remaining)
             night_candidates = night_only_nurses + any_shift_nurses
@@ -3091,7 +3264,8 @@ class RobustScheduler:
                 except ValueError:
                     pass
                 nurses_for_night.append(candidate)
-                night_count += 1
+                if not self._is_assistant_manager(candidate):
+                    night_count += 1
             
             # Update available_nurses for OPTIONAL EXTRA COVERAGE below
             available_nurses = [n for n in any_shift_nurses if n not in nurses_for_day and n not in nurses_for_night] + \
@@ -5887,7 +6061,10 @@ class ScheduleOptimizer:
             night_req=night_req,
             max_consecutive=max_consecutive,
             preferences=assignments,  # OCR preferences
-            nurse_defaults=nurse_defaults  # Database config for missing nurses
+            nurse_defaults=nurse_defaults,  # Database config for missing nurses
+            weekend_team_rotation_enabled=bool(
+                constraints.get("weekendTeamRotationEnabled", False)
+            ),
         )
         
         schedule = scheduler.build_schedule()
@@ -8458,6 +8635,17 @@ async def optimize_with_constraints(
             db,
         )
 
+        # Assistant managers and weekend-rotation groups come from the roster,
+        # not the payload.
+        staffing_profile = apply_org_staffing_profile(
+            constraints.get("nurses", []),
+            auth.organization_id,
+            db,
+        )
+        constraints["weekendTeamRotationEnabled"] = staffing_profile[
+            "weekendTeamRotationEnabled"
+        ]
+
         # Build nurse_defaults from database for any nurses missing from the frontend payload
         nurse_defaults = {}
         org_id = auth.organization_id
@@ -8641,6 +8829,17 @@ async def optimize_schedule(
             auth.organization_id,
             db,
         )
+
+        # Assistant managers and weekend-rotation groups come from the roster,
+        # not the payload.
+        staffing_profile = apply_org_staffing_profile(
+            all_nurses,
+            auth.organization_id,
+            db,
+        )
+        constraints["weekendTeamRotationEnabled"] = staffing_profile[
+            "weekendTeamRotationEnabled"
+        ]
         
         # CRITICAL DEBUG: Log offRequests received from frontend
         logger.info("=" * 60)

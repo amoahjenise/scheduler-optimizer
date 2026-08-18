@@ -9,14 +9,21 @@ import {
   fetchTodaysHandoversAPI,
   fetchOptimizedSchedulesAPI,
   fetchDeletionActivitiesAPI,
+  listNursesAPI,
   type Handover,
   type OptimizedSchedule,
   type Patient,
   type DeletionActivity,
+  type Nurse,
 } from "../lib/api";
 import { useOrganization } from "../context/OrganizationContext";
 import { FEATURES } from "../lib/featureFlags";
 import { useTranslations } from "next-intl";
+import {
+  buildNurseNameByUserId,
+  getAccountDisplayName,
+  resolveDisplayName,
+} from "../lib/nameDisplay";
 
 type RecentActivityItem = {
   id: string;
@@ -24,7 +31,45 @@ type RecentActivityItem = {
   title: string;
   subtitle: string;
   timestamp: number;
+  dedupeMode?: "window" | "exactKey";
+  dedupeKey?: string;
 };
+
+const ACTIVITY_DEDUPE_WINDOW_MS = 10 * 60 * 1000;
+
+function dedupeActivities(items: RecentActivityItem[]): RecentActivityItem[] {
+  const exactSeen = new Set<string>();
+  const lastSeenByKey = new Map<string, number>();
+  const unique: RecentActivityItem[] = [];
+
+  for (const item of items) {
+    const normalizedSubtitle = item.subtitle.replace(/\s+/g, " ").trim();
+    const key =
+      item.dedupeKey || `${item.type}|${item.title}|${normalizedSubtitle}`;
+
+    if (item.dedupeMode === "exactKey") {
+      if (exactSeen.has(key)) {
+        continue;
+      }
+      exactSeen.add(key);
+      unique.push(item);
+      continue;
+    }
+
+    const previousTimestamp = lastSeenByKey.get(key);
+    if (
+      previousTimestamp !== undefined &&
+      previousTimestamp - item.timestamp <= ACTIVITY_DEDUPE_WINDOW_MS
+    ) {
+      continue;
+    }
+
+    lastSeenByKey.set(key, item.timestamp);
+    unique.push(item);
+  }
+
+  return unique;
+}
 
 export default function ActivitiesPage() {
   const { user } = useUser();
@@ -48,13 +93,40 @@ export default function ActivitiesPage() {
           nightHandovers,
           schedulesList,
           deletionActivities,
+          nursesResult,
         ] = await Promise.all([
           fetchPatientsAPI({ active_only: true }, authHeaders),
           fetchTodaysHandoversAPI("day", authHeaders),
           fetchTodaysHandoversAPI("night", authHeaders),
           fetchOptimizedSchedulesAPI(authHeaders),
           fetchDeletionActivitiesAPI(authHeaders, 100),
+          listNursesAPI(user.id, 1, 500, undefined, authHeaders),
         ]);
+
+        const nurseNameByUserId = buildNurseNameByUserId(
+          nursesResult.nurses || ([] as Nurse[]),
+        );
+        const accountDisplayName = getAccountDisplayName(user);
+
+        const resolveActorDisplayName = (
+          userId?: string | null,
+          rawName?: string | null,
+          options?: { allowUserIdFallback?: boolean },
+        ) => {
+          const nurseMatch = userId ? nurseNameByUserId.get(userId) : undefined;
+          const accountMatch =
+            userId && user.id && userId === user.id
+              ? accountDisplayName
+              : rawName;
+          return (
+            resolveDisplayName({
+              nurseName: nurseMatch?.name,
+              accountName: accountMatch,
+              userId,
+              allowUserIdFallback: options?.allowUserIdFallback,
+            }) || "?"
+          );
+        };
 
         const activePatientIds = new Set(
           (patientsRes.patients || []).map((p: Patient) => p.id),
@@ -179,26 +251,22 @@ export default function ActivitiesPage() {
                 ? (scheduleData as Record<string, any>)
                 : {};
 
-            const fallbackUserName =
-              user?.fullName ||
-              (user?.firstName
-                ? `${user.firstName.trim().charAt(0).toUpperCase()}${user.firstName.trim().slice(1)}`
-                : undefined) ||
-              user?.primaryEmailAddress?.emailAddress ||
-              "";
-
-            const rawCreatedBy =
+            const createdByName =
               rawSchedule.created_by_name ||
-              rawSchedule.created_by ||
               scheduleDataObj.created_by_name ||
               scheduleDataObj.createdByName ||
+              null;
+            const createdById =
+              rawSchedule.created_by ||
               scheduleDataObj.created_by ||
-              scheduleDataObj.createdBy;
+              scheduleDataObj.createdBy ||
+              null;
 
-            const authorName =
-              rawCreatedBy === user?.id && fallbackUserName
-                ? fallbackUserName
-                : rawCreatedBy || null;
+            const authorName = resolveActorDisplayName(
+              createdById,
+              createdByName,
+              { allowUserIdFallback: true },
+            );
 
             const createdDate = new Date(
               schedule.created_at,
@@ -235,18 +303,27 @@ export default function ActivitiesPage() {
                 ? t("scheduleDeleted", { label: activity.object_label })
                 : t("handoverDeleted", { label: activity.object_label }),
           subtitle:
-            t("deletedByFull", { name: activity.performed_by_name || "?" }) +
-            (activity.details ? ` \u2022 ${activity.details}` : ""),
+            t("deletedByFull", {
+              name: resolveActorDisplayName(
+                activity.performed_by_user_id,
+                activity.performed_by_name,
+                { allowUserIdFallback: true },
+              ),
+            }) + (activity.details ? ` \u2022 ${activity.details}` : ""),
           timestamp: new Date(activity.occurred_at).getTime(),
+          dedupeMode: "exactKey",
+          dedupeKey: `deletion|${(activity.performed_by_name || "?").trim().toLowerCase()}|${(activity.details || "").trim().toLowerCase()}`,
         }));
 
         setActivities(
-          [
-            ...(FEATURES.PATIENT_MANAGEMENT ? patientActivities : []),
-            ...handoverActivities,
-            ...scheduleActivities,
-            ...deletionRecentActivities,
-          ].sort((a, b) => b.timestamp - a.timestamp),
+          dedupeActivities(
+            [
+              ...(FEATURES.PATIENT_MANAGEMENT ? patientActivities : []),
+              ...handoverActivities,
+              ...scheduleActivities,
+              ...deletionRecentActivities,
+            ].sort((a, b) => b.timestamp - a.timestamp),
+          ),
         );
       } catch (err) {
         console.error("Failed to load activities:", err);

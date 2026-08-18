@@ -44,6 +44,13 @@ export default function TermsPage() {
               judgment, medical orders, or regulatory obligations.
             </p>
           </section>
+          <section>
+            <h2 className="font-semibold text-gray-900 mb-1">Company</h2>
+            <p>
+              Chronofy is built by VaultDeposit Technologies Inc. (Registered in
+              Canada and Quebec).
+            </p>
+          </section>
         </div>
 
         <div className="mt-8 flex flex-wrap gap-4 text-sm">

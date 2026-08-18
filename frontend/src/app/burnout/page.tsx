@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import {
@@ -83,6 +83,34 @@ export default function BurnoutPredictorPage() {
   const [activeRiskPopover, setActiveRiskPopover] = useState<RiskLevel | null>(
     null,
   );
+  const riskPopoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
+  const clearRiskPopoverCloseTimer = useCallback(() => {
+    if (riskPopoverCloseTimerRef.current) {
+      clearTimeout(riskPopoverCloseTimerRef.current);
+      riskPopoverCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const openRiskPopover = useCallback(
+    (level: RiskLevel) => {
+      clearRiskPopoverCloseTimer();
+      setActiveRiskPopover(level);
+    },
+    [clearRiskPopoverCloseTimer],
+  );
+
+  const scheduleRiskPopoverClose = useCallback(
+    (level: RiskLevel) => {
+      clearRiskPopoverCloseTimer();
+      riskPopoverCloseTimerRef.current = setTimeout(() => {
+        setActiveRiskPopover((prev) => (prev === level ? null : prev));
+      }, 180);
+    },
+    [clearRiskPopoverCloseTimer],
+  );
 
   const loadDashboard = useCallback(async () => {
     try {
@@ -103,6 +131,13 @@ export default function BurnoutPredictorPage() {
   useEffect(() => {
     loadDashboard();
   }, [loadDashboard]);
+
+  useEffect(
+    () => () => {
+      clearRiskPopoverCloseTimer();
+    },
+    [clearRiskPopoverCloseTimer],
+  );
 
   const runAssessment = async () => {
     setAssessing(true);
@@ -400,8 +435,8 @@ export default function BurnoutPredictorPage() {
                     <div
                       key={level}
                       className="relative"
-                      onMouseEnter={() => setActiveRiskPopover(level)}
-                      onMouseLeave={() => setActiveRiskPopover((prev) => (prev === level ? null : prev))}
+                      onMouseEnter={() => openRiskPopover(level)}
+                      onMouseLeave={() => scheduleRiskPopoverClose(level)}
                     >
                       <button
                         type="button"
@@ -425,11 +460,17 @@ export default function BurnoutPredictorPage() {
                         <p className="text-3xl font-bold text-gray-900">
                           {dashboard.risk_distribution[level]}
                         </p>
-                        <p className="text-xs text-gray-400 mt-1">{t("nurses")}</p>
+                        <p className="text-xs text-gray-400 mt-1">
+                          {t("nurses")}
+                        </p>
                       </button>
 
                       {isOpen && (
-                        <div className="absolute z-30 left-0 top-full mt-2 w-72 bg-white border border-gray-200 rounded-lg shadow-xl p-2">
+                        <div
+                          className="absolute z-30 left-0 top-full mt-2 w-72 bg-white border border-gray-200 rounded-lg shadow-xl p-2"
+                          onMouseEnter={() => openRiskPopover(level)}
+                          onMouseLeave={() => scheduleRiskPopoverClose(level)}
+                        >
                           <div className="px-2 py-1.5 text-xs font-semibold text-gray-500 uppercase">
                             {level} risk
                           </div>
@@ -453,7 +494,8 @@ export default function BurnoutPredictorPage() {
                                     {nurse.nurse_name}
                                   </span>
                                   <span className="text-xs font-semibold text-gray-700">
-                                    {Math.round(nurse.overall_risk_score * 100)}%
+                                    {Math.round(nurse.overall_risk_score * 100)}
+                                    %
                                   </span>
                                 </button>
                               ))}

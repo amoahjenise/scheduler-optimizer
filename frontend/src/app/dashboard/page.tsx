@@ -6,6 +6,7 @@ import { useState, useEffect } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import {
   fetchPatientsAPI,
+  fetchHandoversAPI,
   fetchTodaysHandoversAPI,
   fetchOptimizedSchedulesAPI,
   fetchOptimizedScheduleByIdAPI,
@@ -39,6 +40,12 @@ import { useOrganization } from "../context/OrganizationContext";
 import type { Patient } from "../lib/api";
 import { FEATURES } from "../lib/featureFlags";
 import { printAssignmentSheet } from "./printAssignments";
+import type {
+  PrintLayoutMode,
+  PrintRosterEntry,
+  PrintScheduleDay,
+  PrintShiftSelection,
+} from "./printAssignments";
 import {
   buildNurseNameByUserId,
   getAccountDisplayName,
@@ -145,6 +152,45 @@ function formatShiftTimeRange(shift: any): string {
   return start || rawTime || "";
 }
 
+function resolveShiftCoverage(shift: any): { day: boolean; night: boolean } {
+  const shiftType = String(shift?.shiftType || "").toLowerCase();
+  if (shiftType === "night") return { day: false, night: true };
+  if (shiftType === "day") return { day: true, night: false };
+
+  const rawTime = typeof shift?.time === "string" ? shift.time.trim() : "";
+  const startRaw =
+    (typeof shift?.startTime === "string" ? shift.startTime.trim() : "") ||
+    (rawTime.includes("-") ? rawTime.split(/-|–/)[0]?.trim() : rawTime);
+  const endRaw =
+    (typeof shift?.endTime === "string" ? shift.endTime.trim() : "") ||
+    (rawTime.includes("-") ? rawTime.split(/-|–/)[1]?.trim() : "");
+
+  const startMinutes = startRaw ? parseTimeToMinutes(startRaw) : null;
+  const endMinutes = endRaw ? parseTimeToMinutes(endRaw) : null;
+
+  if (startMinutes !== null && endMinutes !== null) {
+    const dayStart = 7 * 60;
+    const nightStart = 19 * 60;
+    const crossesMidnight = endMinutes <= startMinutes;
+
+    const coversDay =
+      startMinutes < nightStart &&
+      (crossesMidnight || endMinutes > dayStart);
+    const coversNight =
+      crossesMidnight || endMinutes > nightStart || startMinutes >= nightStart;
+
+    return { day: coversDay, night: coversNight };
+  }
+
+  const isNightByHint =
+    rawTime.includes("19:00") ||
+    rawTime.includes("23:00") ||
+    String(shift?.startTime || "").includes("19:00") ||
+    String(shift?.startTime || "").includes("23:00");
+
+  return isNightByHint ? { day: false, night: true } : { day: true, night: false };
+}
+
 export default function Dashboard() {
   const { user } = useUser();
   const {
@@ -184,6 +230,120 @@ export default function Dashboard() {
     day: Handover[];
     night: Handover[];
   }>({ day: [], night: [] });
+  // Roster drives real nurse names and assistant-manager flags on the printout.
+  const [orgRoster, setOrgRoster] = useState<PrintRosterEntry[]>([]);
+  const [printDate, setPrintDate] = useState<string>("");
+  const [printShift, setPrintShift] = useState<PrintShiftSelection>("day");
+  const [preparingPrint, setPreparingPrint] = useState(false);
+
+  useEffect(() => {
+    const sortedDates = Array.from(weekSchedules.keys()).sort();
+    if (!sortedDates.length) {
+      setPrintDate("");
+      return;
+    }
+    if (!printDate || !weekSchedules.has(printDate)) {
+      setPrintDate(sortedDates[0]);
+    }
+  }, [weekSchedules, printDate]);
+
+  async function buildPrintDays(
+    specific?: { date: string; shift: PrintShiftSelection },
+  ): Promise<PrintScheduleDay[]> {
+    const allDates = Array.from(weekSchedules.keys()).sort();
+    const targetDates = specific ? [specific.date] : allDates;
+    if (!targetDates.length) return [];
+
+    const authHeaders = await getAuthHeaders();
+    const tasks = targetDates.flatMap((date) =>
+      (["day", "night"] as const).map((shift) => ({ date, shift })),
+    );
+
+    const results = await Promise.allSettled(
+      tasks.map((task) =>
+        fetchHandoversAPI(
+          {
+            shift_date: task.date,
+            shift_type: task.shift,
+          },
+          authHeaders,
+        ),
+      ),
+    );
+
+    const handoversByKey = new Map<string, Handover[]>();
+    tasks.forEach((task, idx) => {
+      const key = `${task.date}|${task.shift}`;
+      const result = results[idx];
+      handoversByKey.set(
+        key,
+        result.status === "fulfilled" ? result.value.handovers || [] : [],
+      );
+    });
+
+    return targetDates.map((date) => {
+      const schedule = weekSchedules.get(date);
+      return {
+        date,
+        dayStaff: schedule?.dayStaff || [],
+        nightStaff: schedule?.nightStaff || [],
+        dayHandovers: handoversByKey.get(`${date}|day`) || [],
+        nightHandovers: handoversByKey.get(`${date}|night`) || [],
+      };
+    });
+  }
+
+  async function handlePrint(
+    specific?: { date: string; shift?: PrintShiftSelection },
+  ) {
+    try {
+      setPreparingPrint(true);
+      const scheduleDays = await buildPrintDays(specific);
+      if (!scheduleDays.length) return;
+
+      const printLayoutMode: PrintLayoutMode =
+        currentOrganization?.print_shift_layout_mode || "separate";
+
+      printAssignmentSheet({
+        organizationName: currentOrganization?.name || "Chronofy",
+        locale,
+        scheduleDays,
+        roster: orgRoster,
+        specificPage: specific,
+        layoutMode: printLayoutMode,
+        labels: {
+          dayShift: t("dayShift"),
+          nightShift: t("nightShift"),
+          role: t("roleColumn"),
+          nurse: t("nurseColumn"),
+          shift: t("shiftColumn"),
+          patientAssignments: t("patientAssignmentsColumn"),
+          nursesCount: t("nursesCountLabel"),
+          noNursingStaffScheduled: t("noNursingStaffScheduled"),
+          noPatientAssigned: t("noPatientAssigned"),
+          notOnSchedule: t("notOnSchedule"),
+          unassigned: t("unassigned"),
+          unnamedPatient: t("unnamedPatient"),
+          assistantManager: t("assistantManager"),
+          assistantManagers: t("assistantManagers"),
+          assistantManagerNote: t("assistantManagerNote"),
+          derivedFromHandovers: t("derivedFromHandovers"),
+          confidentialFooter: t("confidentialFooter"),
+          printBlockedPopup: t("printBlockedPopup"),
+          pageLabel: t("pageLabel"),
+          pageOfLabel: t("pageOfLabel"),
+          printFullPeriod: t("printFullPeriod"),
+          printSinglePage: t("printSinglePage"),
+          roleNurse: t("nurseRole"),
+          roleAssistantManager: t("assistantManager"),
+        },
+      });
+    } catch (err) {
+      console.error("Failed to prepare print pages:", err);
+    } finally {
+      setPreparingPrint(false);
+    }
+  }
 
   useEffect(() => {
     async function loadStats() {
@@ -227,6 +387,12 @@ export default function Dashboard() {
         if (nursesResult.status === "fulfilled") {
           const orgNurses = nursesResult.value.nurses || [];
           nurseNameByUserId = buildNurseNameByUserId(orgNurses);
+          setOrgRoster(
+            orgNurses.map((nurse) => ({
+              name: nurse.name,
+              staffing_role: nurse.staffing_role ?? "nurse",
+            })),
+          );
           const currentNurse = user?.id ? nurseNameByUserId.get(user.id) : null;
           setCurrentNurseName(currentNurse?.name || null);
           setCurrentNurseTeam(currentNurse?.team || null);
@@ -235,6 +401,7 @@ export default function Dashboard() {
             "Failed to load nurse display mapping:",
             nursesResult.reason,
           );
+          setOrgRoster([]);
           setCurrentNurseName(null);
           setCurrentNurseTeam(null);
         }
@@ -720,19 +887,10 @@ export default function Dashboard() {
                 hours,
               };
 
-              // Determine if day or night shift based on explicit type or time
-              const isNightShift =
-                shift.shiftType === "night" ||
-                shift.time?.includes("19:00") ||
-                shift.time?.includes("23:00") ||
-                shift.startTime?.includes("19:00") ||
-                shift.startTime?.includes("23:00");
-
-              if (isNightShift) {
-                nightStaff.push(shiftInfo);
-              } else {
-                dayStaff.push(shiftInfo);
-              }
+              // Some shifts (ex: 15:00-23:00) contribute to both day and night views.
+              const coverage = resolveShiftCoverage(shift);
+              if (coverage.day) dayStaff.push(shiftInfo);
+              if (coverage.night) nightStaff.push(shiftInfo);
             });
 
             weekMap.set(dateStr, {
@@ -862,23 +1020,56 @@ export default function Dashboard() {
             <div className="flex flex-col items-end gap-1">
               <div className="flex items-center gap-1">
                 <button
-                  onClick={() =>
-                    printAssignmentSheet({
-                      organizationName:
-                        currentOrganization?.name || "Chronofy",
-                      date: new Date(),
-                      locale,
-                      dayStaff: todaySchedule?.dayStaff || [],
-                      nightStaff: todaySchedule?.nightStaff || [],
-                      dayHandovers: todayHandovers.day,
-                      nightHandovers: todayHandovers.night,
-                    })
-                  }
-                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-[#1A5CFF] hover:bg-blue-50 rounded-xl transition-colors"
+                  onClick={() => handlePrint()}
+                  disabled={preparingPrint || weekSchedules.size === 0}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-[#1A5CFF] hover:bg-blue-50 rounded-xl transition-colors disabled:opacity-60"
                   title={t("printAssignmentsHint")}
                 >
                   <Printer className="w-4 h-4" />
-                  {t("printAssignments")}
+                  {preparingPrint ? t("preparingPrint") : t("printFullPeriod")}
+                </button>
+                <select
+                  value={printDate}
+                  onChange={(e) => setPrintDate(e.target.value)}
+                  className="px-2 py-2 text-xs border border-gray-200 rounded-lg bg-white"
+                >
+                  {Array.from(weekSchedules.keys())
+                    .sort()
+                    .map((date) => (
+                      <option key={date} value={date}>
+                        {date}
+                      </option>
+                    ))}
+                </select>
+                {(currentOrganization?.print_shift_layout_mode || "separate") ===
+                  "separate" && (
+                  <select
+                    value={printShift}
+                    onChange={(e) =>
+                      setPrintShift(e.target.value as PrintShiftSelection)
+                    }
+                    className="px-2 py-2 text-xs border border-gray-200 rounded-lg bg-white"
+                  >
+                    <option value="day">{t("dayShift")}</option>
+                    <option value="night">{t("nightShift")}</option>
+                  </select>
+                )}
+                <button
+                  onClick={() =>
+                    printDate &&
+                    handlePrint({
+                      date: printDate,
+                      shift:
+                        (currentOrganization?.print_shift_layout_mode ||
+                          "separate") === "separate"
+                          ? printShift
+                          : undefined,
+                    })
+                  }
+                  disabled={preparingPrint || !printDate}
+                  className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-gray-600 hover:text-[#1A5CFF] hover:bg-blue-50 rounded-xl transition-colors disabled:opacity-60"
+                >
+                  {t("reprintSpecificPage")}
                 </button>
                 <button
                   onClick={() => setRefreshKey((prev) => prev + 1)}

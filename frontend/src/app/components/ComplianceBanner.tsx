@@ -41,6 +41,8 @@ export default function ComplianceBanner() {
             {t("accessAudited")}
             <span className="mx-1.5 text-blue-400">|</span>
             {t("noCopyPhi")}
+            <span className="mx-1.5 text-blue-400">|</span>
+            {t("builtBy")}
           </span>
         </div>
         <button

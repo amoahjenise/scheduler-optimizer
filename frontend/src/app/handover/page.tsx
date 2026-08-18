@@ -15,10 +15,12 @@ import {
   fetchHandoversAPI,
   fetchTodaysHandoversAPI,
   createHandoverAPI,
+  listNursesAPI,
   deletePatientAPI,
   deleteHandoverAPI,
   fetchLatestHandoverForPatientAPI,
   fetchHandoverHistoryForPatientAPI,
+  type Nurse,
 } from "../lib/api";
 import HandoverForm from "./components/HandoverForm";
 import NewHandoffReportModal from "./components/NewHandoffReportModal";
@@ -32,6 +34,11 @@ import {
 } from "../lib/patientConfig";
 import { printHandover } from "./utils/printTemplate";
 import { useOrganization } from "../context/OrganizationContext";
+import {
+  buildNurseNameByUserId,
+  getAccountDisplayName,
+  resolveDisplayName,
+} from "../lib/nameDisplay";
 
 type ViewMode = "list" | "patient";
 
@@ -115,6 +122,9 @@ export default function HandoverPage() {
     loadPatientConfig(),
   );
   const [searchQuery, setSearchQuery] = useState("");
+  const [currentUserDisplayName, setCurrentUserDisplayName] = useState<
+    string | null
+  >(null);
 
   // History modal state
   const [historyPatient, setHistoryPatient] = useState<Patient | null>(null);
@@ -156,6 +166,23 @@ export default function HandoverPage() {
     try {
       setLoading(true);
       const authHeaders = await getAuthHeaders();
+      const nursesResponse = await listNursesAPI(
+        user.id,
+        1,
+        500,
+        undefined,
+        authHeaders,
+      );
+      const nurseNameByUserId = buildNurseNameByUserId(
+        nursesResponse.nurses || ([] as Nurse[]),
+      );
+      const nurseMatch = nurseNameByUserId.get(user.id);
+      const resolvedDisplayName = resolveDisplayName({
+        nurseName: nurseMatch?.name,
+        accountName: getAccountDisplayName(user),
+        allowUserIdFallback: false,
+      });
+      setCurrentUserDisplayName(resolvedDisplayName);
 
       // Debug: Log auth headers to verify X-Organization-ID is present
       console.log("[HandoverPage] Loading data with headers:", authHeaders);
@@ -881,6 +908,7 @@ export default function HandoverPage() {
             key={selectedHandover.id} // Force remount on handover change
             handover={selectedHandover}
             patient={selectedPatient}
+            currentUserDisplayName={currentUserDisplayName || undefined}
             onSave={handleHandoverSave}
             readOnly={isFromPastDate}
             previousHandover={previousHandover}
@@ -1615,13 +1643,7 @@ export default function HandoverPage() {
           }}
           config={patientConfig}
           shiftType={shiftType}
-          outgoingNurse={
-            user?.fullName ||
-            (user?.firstName
-              ? `${user.firstName.trim().charAt(0).toUpperCase()}${user.firstName.trim().slice(1)}`
-              : undefined) ||
-            t("nurseFallback")
-          }
+          outgoingNurse={currentUserDisplayName || t("nurseFallback")}
         />
       )}
 

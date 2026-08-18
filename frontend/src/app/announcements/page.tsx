@@ -20,8 +20,11 @@ import {
   createAnnouncementAPI,
   updateAnnouncementAPI,
   deleteAnnouncementAPI,
+  listNursesAPI,
   type Announcement,
+  type Nurse,
 } from "../lib/api";
+import { buildNurseNameByUserId, resolveDisplayName } from "../lib/nameDisplay";
 
 const ALL_TEAMS = "__all__";
 
@@ -46,6 +49,9 @@ export default function AnnouncementsPage() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [showForm, setShowForm] = useState(false);
+  const [nurseNameByUserId, setNurseNameByUserId] = useState<
+    Map<string, { name: string; team: string | null }>
+  >(new Map());
 
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -69,6 +75,19 @@ export default function AnnouncementsPage() {
       ]);
       setAnnouncements(data);
       setTeams(config?.team_options ?? []);
+
+      try {
+        const nurses = await listNursesAPI("me", 1, 500, undefined, headers);
+        setNurseNameByUserId(
+          buildNurseNameByUserId(nurses.nurses || ([] as Nurse[])),
+        );
+      } catch (nurseError) {
+        console.warn(
+          "Failed to load nurse names for announcements:",
+          nurseError,
+        );
+        setNurseNameByUserId(new Map());
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load announcements");
     } finally {
@@ -183,6 +202,14 @@ export default function AnnouncementsPage() {
 
   const renderCard = (announcement: Announcement) => {
     const expired = isExpired(announcement);
+    const resolvedAuthor =
+      resolveDisplayName({
+        nurseName: announcement.created_by
+          ? nurseNameByUserId.get(announcement.created_by)?.name
+          : null,
+        accountName: announcement.created_by_name,
+        allowUserIdFallback: false,
+      }) || "";
     return (
       <div
         key={announcement.id}
@@ -228,9 +255,7 @@ export default function AnnouncementsPage() {
               </a>
             )}
             <p className="mt-3 text-xs text-gray-500">
-              {announcement.created_by_name
-                ? `${announcement.created_by_name} · `
-                : ""}
+              {resolvedAuthor ? `${resolvedAuthor} · ` : ""}
               {formatDate(announcement.created_at)}
               {announcement.expires_at
                 ? ` · Expires ${formatDate(announcement.expires_at)}`
@@ -313,7 +338,9 @@ export default function AnnouncementsPage() {
           {canManage && showForm && (
             <div className="mb-6 rounded-xl border border-gray-200 bg-white p-5">
               <h2 className="mb-4 text-lg font-semibold text-gray-900">
-                {editingAnnouncementId ? "Edit announcement" : "New announcement"}
+                {editingAnnouncementId
+                  ? "Edit announcement"
+                  : "New announcement"}
               </h2>
               <div className="space-y-4">
                 <div>

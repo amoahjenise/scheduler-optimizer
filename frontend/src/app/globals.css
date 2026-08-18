@@ -195,6 +195,36 @@ body {
   background: var(--gray-400);
 }
 
+/* Subtle horizontal scroller for settings section menu */
+.settings-section-scroller {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.55) transparent;
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    black 16px,
+    black calc(100% - 16px),
+    transparent 100%
+  );
+}
+
+.settings-section-scroller::-webkit-scrollbar {
+  height: 5px;
+}
+
+.settings-section-scroller::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.settings-section-scroller::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.55);
+  border-radius: 999px;
+}
+
+.settings-section-scroller::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.72);
+}
+
 /* ===========================================
    PRINT STYLES - Hand-Off Form
    =========================================== */

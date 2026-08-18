@@ -49,6 +49,8 @@ export default function RolePermissionsSection() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
+  const [updatingMemberId, setUpdatingMemberId] = useState<string | null>(null);
+  const [roleUpdateMessage, setRoleUpdateMessage] = useState<string>("");
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -127,6 +129,19 @@ export default function RolePermissionsSection() {
   const changeRole = async (memberId: string, role: MemberRoleValue) => {
     if (!orgId) return;
     setError("");
+    setRoleUpdateMessage("");
+
+    const current = members.find((member) => member.id === memberId);
+    if (!current || current.role === role) return;
+
+    const previousRole = current.role;
+    setUpdatingMemberId(memberId);
+    setMembers((prev) =>
+      prev.map((member) =>
+        member.id === memberId ? { ...member, role } : member,
+      ),
+    );
+
     try {
       const headers = await getAuthHeaders();
       const res = await fetch(
@@ -141,9 +156,17 @@ export default function RolePermissionsSection() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || "Failed to change role");
       }
-      await load();
+      setRoleUpdateMessage("Role updated");
+      await refreshOrganizations();
     } catch (e) {
+      setMembers((prev) =>
+        prev.map((member) =>
+          member.id === memberId ? { ...member, role: previousRole } : member,
+        ),
+      );
       setError(e instanceof Error ? e.message : "Failed to change role");
+    } finally {
+      setUpdatingMemberId(null);
     }
   };
 
@@ -152,6 +175,9 @@ export default function RolePermissionsSection() {
   const assistantCount = members.filter(
     (m) => m.role === "assistant_manager" && m.is_active,
   ).length;
+  const currentManager = members.find(
+    (m) => m.role === "manager" && m.is_active,
+  );
 
   const renderMatrix = (
     title: string,
@@ -250,6 +276,12 @@ export default function RolePermissionsSection() {
                 Saved {savedAt.toLocaleTimeString()}
               </span>
             )}
+            {updatingMemberId && (
+              <span className="text-xs text-gray-500">Updating role...</span>
+            )}
+            {!updatingMemberId && roleUpdateMessage && (
+              <span className="text-xs text-emerald-600">{roleUpdateMessage}</span>
+            )}
           </div>
 
           <div>
@@ -262,10 +294,18 @@ export default function RolePermissionsSection() {
                   No approved members yet.
                 </p>
               )}
+              <div className="border-b border-gray-100 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+                One manager is allowed per organization. Up to {MAX_ASSISTANT_MANAGERS} assistant managers are allowed.
+                {currentManager ? ` Current manager: ${currentManager.user_name || currentManager.user_email || currentManager.user_id}.` : ""}
+              </div>
               {members
                 .filter((m) => m.is_approved)
                 .map((member) => {
                   const isOwnerAdmin = member.role === "admin";
+                  const isUpdating = updatingMemberId === member.id;
+                  const assistantSlotFull =
+                    assistantCount >= MAX_ASSISTANT_MANAGERS &&
+                    member.role !== "assistant_manager";
                   return (
                     <div
                       key={member.id}
@@ -296,14 +336,25 @@ export default function RolePermissionsSection() {
                               e.target.value as MemberRoleValue,
                             )
                           }
+                          disabled={!!updatingMemberId}
                           className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm"
                         >
                           {ASSIGNABLE_ROLES.map((r) => (
-                            <option key={r.value} value={r.value}>
+                            <option
+                              key={r.value}
+                              value={r.value}
+                              disabled={
+                                r.value === "assistant_manager" &&
+                                assistantSlotFull
+                              }
+                            >
                               {r.label}
                             </option>
                           ))}
                         </select>
+                      )}
+                      {isUpdating && (
+                        <span className="text-xs text-gray-500">Saving...</span>
                       )}
                     </div>
                   );

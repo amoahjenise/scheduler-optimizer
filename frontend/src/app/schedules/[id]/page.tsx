@@ -26,11 +26,17 @@ import {
   createDraftScheduleAPI,
   fetchScheduleVersionsAPI,
   promoteScheduleVersionAPI,
+  listNursesAPI,
   type ScheduleVersion,
+  type Nurse,
 } from "../../lib/api";
 import { useOrganization } from "../../context/OrganizationContext";
 import { useScheduleTemplates } from "../../scheduler/hooks/useScheduleTemplates";
 import { SaveTemplateDialog } from "../../scheduler/components/ScheduleTemplateManager";
+import {
+  buildNurseNameByUserId,
+  resolveDisplayName,
+} from "../../lib/nameDisplay";
 
 type ShiftEntry = {
   date?: string;
@@ -88,6 +94,9 @@ export default function ScheduleDetailsPage() {
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const [showVersionTimeline, setShowVersionTimeline] = useState(false);
+  const [nurseNameByUserId, setNurseNameByUserId] = useState<
+    Map<string, { name: string; team: string | null }>
+  >(new Map());
 
   // Template functionality
   const scheduleTemplates = useScheduleTemplates(
@@ -127,11 +136,30 @@ export default function ScheduleDetailsPage() {
       const data = await fetchScheduleVersionsAPI(scheduleId, authHeaders);
       setVersions(data.versions);
       setActiveVersionId(data.active_id);
+
+      try {
+        const nursesResponse = await listNursesAPI(
+          user?.id || "",
+          1,
+          500,
+          undefined,
+          authHeaders,
+        );
+        setNurseNameByUserId(
+          buildNurseNameByUserId(nursesResponse.nurses || ([] as Nurse[])),
+        );
+      } catch (nurseError) {
+        console.warn(
+          "Failed to load nurse names for version timeline:",
+          nurseError,
+        );
+        setNurseNameByUserId(new Map());
+      }
     } catch (e) {
       console.error("Failed to load schedule versions", e);
       setVersions([]);
     }
-  }, [scheduleId, orgLoading, currentOrganization, getAuthHeaders]);
+  }, [scheduleId, orgLoading, currentOrganization, getAuthHeaders, user?.id]);
 
   useEffect(() => {
     loadVersions();
@@ -566,9 +594,19 @@ export default function ScheduleDetailsPage() {
                               )}
                             </p>
                             <p className="text-xs text-slate-500">
-                              {version.created_by_name
-                                ? `${version.created_by_name} · `
-                                : ""}
+                              {(() => {
+                                const creator =
+                                  resolveDisplayName({
+                                    nurseName: version.created_by
+                                      ? nurseNameByUserId.get(
+                                          version.created_by,
+                                        )?.name
+                                      : null,
+                                    accountName: version.created_by_name,
+                                    allowUserIdFallback: false,
+                                  }) || "";
+                                return creator ? `${creator} · ` : "";
+                              })()}
                               {version.created_at
                                 ? new Date(version.created_at).toLocaleString()
                                 : "Unknown date"}

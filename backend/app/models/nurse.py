@@ -13,7 +13,7 @@ class Nurse(Base):
     __tablename__ = "nurses"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
-    user_id = Column(String, nullable=False, index=True)  # Link to user (Clerk user ID)
+    user_id = Column(String, nullable=True, index=True)  # Optional link to user (Clerk user ID)
     organization_id = Column(String, nullable=True, index=True)  # Multi-tenant org ID
     
     # Basic info
@@ -21,6 +21,14 @@ class Nurse(Base):
     employee_id = Column(String, nullable=True)  # e.g., "47554"
     seniority = Column(String, nullable=True)  # e.g., "3Y-283.95D" (years-days format)
     team = Column(String, nullable=True, index=True)  # e.g., "Heme-Onc"; used for targeting
+
+    # Staffing role on the unit. Assistant managers are rostered (and must meet
+    # their contract hours) but do NOT count toward nurse staffing requirements.
+    staffing_role = Column(String(50), nullable=False, default="nurse")  # "nurse" | "assistant_manager"
+
+    # Optional weekend rotation group ("A" / "B"). Only used when the
+    # organization enables weekend team rotation.
+    weekend_team = Column(String(10), nullable=True)
     
     # Employment details (FTE contract)
     employment_type = Column(String, nullable=False, default="full-time")  # "full-time" or "part-time"

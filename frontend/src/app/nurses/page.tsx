@@ -6,18 +6,27 @@ import { useUser } from "@clerk/nextjs";
 import { useTranslations } from "next-intl";
 import {
   listNursesAPI,
+  listOrganizationMembersAPI,
   createNurseAPI,
   updateNurseAPI,
   deleteNurseAPI,
   type Nurse,
   type NurseCreate,
+  type NurseUpdate,
+  type OrganizationMemberOption,
 } from "../lib/api";
 import { useOrganization } from "../context/OrganizationContext";
+import { fetchAndCacheOrganizationConfig } from "../lib/orgConfig";
+import { loadStaffingTeams } from "../lib/staffingTeamsConfig";
 
 interface FormData {
+  user_id: string;
   name: string;
   employee_id: string;
   seniority: string;
+  team: string;
+  staffing_role: "nurse" | "assistant_manager";
+  weekend_team: string;
   employment_type: "full-time" | "part-time";
   max_weekly_hours: number;
   is_chemo_certified: boolean;
@@ -36,6 +45,7 @@ export default function NursesPage() {
   const {
     currentOrganization,
     getAuthHeaders,
+    canManage,
     isLoading: orgLoading,
   } = useOrganization();
   const t = useTranslations("nurses");
@@ -45,9 +55,13 @@ export default function NursesPage() {
     currentOrganization?.part_time_weekly_target ?? 63.75;
 
   const getDefaultFormData = (): FormData => ({
+    user_id: "",
     name: "",
     employee_id: "",
     seniority: "",
+    team: "",
+    staffing_role: "nurse",
+    weekend_team: "",
     employment_type: "full-time",
     max_weekly_hours: fullTimeBiWeeklyTarget,
     is_chemo_certified: false,
@@ -67,27 +81,103 @@ export default function NursesPage() {
   const [editingNurse, setEditingNurse] = useState<Nurse | null>(null);
   const [formData, setFormData] = useState<FormData>(getDefaultFormData);
   const [saving, setSaving] = useState(false);
+  const [members, setMembers] = useState<OrganizationMemberOption[]>([]);
+  const [staffingTeamOptions, setStaffingTeamOptions] = useState<string[]>(
+    loadStaffingTeams(currentOrganization?.id, true),
+  );
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
 
   useEffect(() => {
     if (user?.id && !orgLoading && currentOrganization) {
       loadNurses();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, orgLoading, currentOrganization, searchTerm]);
+  }, [user?.id, orgLoading, currentOrganization, debouncedSearchTerm]);
+
+  useEffect(() => {
+    if (!user?.id || orgLoading || !currentOrganization) return;
+
+    const loadMembers = async () => {
+      try {
+        const authHeaders = await getAuthHeaders();
+        const membersData = await listOrganizationMembersAPI(
+          currentOrganization.id,
+          authHeaders,
+        );
+        setMembers(membersData.filter((m) => m.is_active && m.is_approved));
+      } catch (memberError) {
+        console.warn("Failed to load organization members:", memberError);
+        setMembers([]);
+      }
+    };
+
+    loadMembers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, orgLoading, currentOrganization?.id]);
+
+  useEffect(() => {
+    if (!currentOrganization?.id) {
+      setStaffingTeamOptions([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    const syncStaffingTeams = () => {
+      if (!cancelled) {
+        setStaffingTeamOptions(loadStaffingTeams(currentOrganization.id, true));
+      }
+    };
+
+    syncStaffingTeams();
+
+    const hydrate = async () => {
+      try {
+        const authHeaders = await getAuthHeaders();
+        const config = await fetchAndCacheOrganizationConfig(
+          currentOrganization.id,
+          authHeaders,
+        );
+        if (!cancelled) {
+          setStaffingTeamOptions(config.staffing_team_options || []);
+        }
+      } catch (error) {
+        console.warn("Failed to load staffing team options:", error);
+      }
+    };
+
+    hydrate();
+    window.addEventListener("staffingTeamsConfigChanged", syncStaffingTeams);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(
+        "staffingTeamsConfigChanged",
+        syncStaffingTeams,
+      );
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentOrganization?.id]);
 
   const loadNurses = async () => {
     if (!user?.id) return;
     setLoading(true);
     try {
       const authHeaders = await getAuthHeaders();
-      const data = await listNursesAPI(
+      const nursesResult = await listNursesAPI(
         user.id,
         1,
         100,
-        searchTerm || undefined,
+        debouncedSearchTerm || undefined,
         authHeaders,
       );
-      setNurses(data.nurses);
+      setNurses(nursesResult.nurses);
     } catch (error) {
       console.error("Failed to load nurses:", error);
       alert("Failed to load nurses");
@@ -105,9 +195,13 @@ export default function NursesPage() {
   const handleEdit = (nurse: Nurse) => {
     setEditingNurse(nurse);
     setFormData({
+      user_id: nurse.user_id ?? "",
       name: nurse.name,
       employee_id: nurse.employee_id || "",
       seniority: nurse.seniority || "",
+      team: nurse.team || "",
+      staffing_role: nurse.staffing_role || "nurse",
+      weekend_team: nurse.weekend_team || "",
       employment_type: nurse.employment_type,
       max_weekly_hours: nurse.max_weekly_hours,
       is_chemo_certified: nurse.is_chemo_certified,
@@ -128,10 +222,13 @@ export default function NursesPage() {
 
     setSaving(true);
     try {
-      const payload: NurseCreate = {
+      const payload: NurseUpdate = {
         name: formData.name,
         employee_id: formData.employee_id || undefined,
         seniority: formData.seniority || undefined,
+        team: formData.team || undefined,
+        staffing_role: formData.staffing_role,
+        weekend_team: formData.weekend_team || undefined,
         employment_type: formData.employment_type,
         max_weekly_hours: formData.max_weekly_hours,
         is_chemo_certified: formData.is_chemo_certified,
@@ -144,26 +241,22 @@ export default function NursesPage() {
         is_on_sabbatical: formData.is_on_sabbatical,
       };
 
+      if (canManage) {
+        payload.user_id = formData.user_id ? formData.user_id : null;
+      } else if (!editingNurse) {
+        payload.user_id = user.id;
+      }
+
       console.log("[Nurse Update] Submitting payload:", payload);
 
       const authHeaders = await getAuthHeaders();
 
       if (editingNurse) {
-        const updated = await updateNurseAPI(
-          editingNurse.id,
-          user.id,
-          payload,
-          authHeaders,
-        );
-        console.log("[Nurse Update] Response:", updated);
-        // Update the nurse in-place without reloading the entire list
-        setNurses((prev) =>
-          prev.map((n) => (n.id === editingNurse.id ? updated : n)),
-        );
+        await updateNurseAPI(editingNurse.id, user.id, payload, authHeaders);
+        await loadNurses();
       } else {
-        await createNurseAPI(user.id, payload, authHeaders);
-        // Only reload for new nurses to add them to the list
-        loadNurses();
+        await createNurseAPI(user.id, payload as NurseCreate, authHeaders);
+        await loadNurses();
       }
       setShowModal(false);
     } catch (error: any) {
@@ -186,6 +279,8 @@ export default function NursesPage() {
       alert(error.message || "Failed to delete nurse");
     }
   };
+
+  const linkedMemberOptions = members;
 
   return (
     <div className="page-frame">
@@ -395,6 +490,29 @@ export default function NursesPage() {
                               {nurse.seniority}
                             </span>
                           )}
+                          {nurse.team && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-teal-100 text-teal-700">
+                              {t("staffingTeamLabel")}: {nurse.team}
+                            </span>
+                          )}
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                              nurse.staffing_role === "assistant_manager"
+                                ? "bg-amber-100 text-amber-700"
+                                : "bg-emerald-100 text-emerald-700"
+                            }`}
+                          >
+                            {nurse.staffing_role === "assistant_manager"
+                              ? t("assistantManager")
+                              : t("nurseRole")}
+                          </span>
+                          {nurse.weekend_team && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
+                              {t("weekendTeamBadge", {
+                                team: nurse.weekend_team,
+                              })}
+                            </span>
+                          )}
                           <span
                             className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
                               nurse.employment_type === "full-time"
@@ -409,6 +527,31 @@ export default function NursesPage() {
                           <span className="text-gray-600">
                             {nurse.max_weekly_hours} {t("hoursPerBiweekly")}
                           </span>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          {nurse.team ? (
+                            <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-100 px-2.5 py-1 text-xs font-semibold text-indigo-700">
+                              <svg
+                                className="h-3.5 w-3.5"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
+                                />
+                              </svg>
+                              {t("staffingTeamAssigned")}: {nurse.team}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-500">
+                              {t("noStaffingTeamAssigned")}
+                            </span>
+                          )}
                         </div>
 
                         {/* Certifications */}
@@ -518,6 +661,42 @@ export default function NursesPage() {
                   onSubmit={handleSubmit}
                   className="p-6 space-y-5"
                 >
+                  {canManage && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                        {t("linkedMemberLabel")}
+                      </label>
+                      <select
+                        value={formData.user_id}
+                        onChange={(e) =>
+                          setFormData({ ...formData, user_id: e.target.value })
+                        }
+                        className="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                      >
+                        <option value="">{t("linkedMemberPlaceholder")}</option>
+                        {formData.user_id &&
+                          !linkedMemberOptions.some(
+                            (member) => member.user_id === formData.user_id,
+                          ) && (
+                            <option value={formData.user_id}>
+                              {formData.user_id}
+                            </option>
+                          )}
+                        {linkedMemberOptions.map((member) => (
+                          <option key={member.id} value={member.user_id}>
+                            {member.user_name && member.user_email
+                              ? `${member.user_name} (${member.user_email})`
+                              : member.user_email && member.user_id
+                                ? `${member.user_email} (${member.user_id})`
+                                : member.user_name ||
+                                  member.user_email ||
+                                  member.user_id}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
                   {/* Name */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1.5">
@@ -536,7 +715,7 @@ export default function NursesPage() {
                   </div>
 
                   {/* Employee ID & Seniority Row */}
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">
                         {t("employeeIdLabel")}
@@ -569,6 +748,71 @@ export default function NursesPage() {
                         }
                         className="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
                         placeholder="e.g., 3Y-283.95D"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                        {t("staffingTeamLabel")}
+                      </label>
+                      <select
+                        value={formData.team}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            team: e.target.value,
+                          })
+                        }
+                        className="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                      >
+                        <option value="">{t("staffingTeamPlaceholder")}</option>
+                        {formData.team &&
+                          !staffingTeamOptions.includes(formData.team) && (
+                            <option value={formData.team}>{formData.team}</option>
+                          )}
+                        {staffingTeamOptions.map((team) => (
+                          <option key={team} value={team}>
+                            {team}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                        {t("staffingRole")}
+                      </label>
+                      <select
+                        value={formData.staffing_role}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            staffing_role: e.target.value as
+                              | "nurse"
+                              | "assistant_manager",
+                          })
+                        }
+                        className="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                      >
+                        <option value="nurse">{t("nurseRole")}</option>
+                        <option value="assistant_manager">
+                          {t("assistantManager")}
+                        </option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                        {t("weekendTeam")}
+                      </label>
+                      <input
+                        type="text"
+                        value={formData.weekend_team}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            weekend_team: e.target.value,
+                          })
+                        }
+                        className="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                        placeholder={t("weekendTeamPlaceholder")}
                       />
                     </div>
                   </div>

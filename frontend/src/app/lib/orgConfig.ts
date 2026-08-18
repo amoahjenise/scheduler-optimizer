@@ -13,6 +13,8 @@ export const DEFAULT_TEAMS = [
   "Renal",
 ];
 
+export const DEFAULT_STAFFING_TEAMS = ["Team A", "Team B"];
+
 export const DEFAULT_ROOMS = [
   "B7.01",
   "B7.02",
@@ -33,6 +35,7 @@ export const DEFAULT_ROOMS = [
 ];
 
 const TEAMS_CACHE_PREFIX = "org_team_options";
+const STAFFING_TEAMS_CACHE_PREFIX = "org_staffing_team_options";
 const ROOMS_CACHE_PREFIX = "org_room_options";
 
 type CacheReadOptions = {
@@ -60,12 +63,32 @@ function normalizedUnique(values: unknown, defaults: string[]): string[] {
   return deduped;
 }
 
+function normalizedTeamMap(values: unknown): Record<string, string> {
+  if (!values || typeof values !== "object" || Array.isArray(values)) {
+    return {};
+  }
+
+  const normalized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values as Record<string, unknown>)) {
+    if (typeof key !== "string" || typeof value !== "string") continue;
+    const cleanedKey = key.trim();
+    const cleanedValue = value.trim();
+    if (!cleanedKey || !cleanedValue) continue;
+    normalized[cleanedKey] = cleanedValue;
+  }
+  return normalized;
+}
+
 function teamsCacheKey(orgId?: string | null): string {
   return `${TEAMS_CACHE_PREFIX}:${orgId || "global"}`;
 }
 
 function roomsCacheKey(orgId?: string | null): string {
   return `${ROOMS_CACHE_PREFIX}:${orgId || "global"}`;
+}
+
+function staffingTeamsCacheKey(orgId?: string | null): string {
+  return `${STAFFING_TEAMS_CACHE_PREFIX}:${orgId || "global"}`;
 }
 
 function readCachedList(
@@ -99,11 +122,14 @@ function broadcastConfigUpdates(
       detail: {
         organizationId: orgId,
         teamOptions: config.team_options,
+        staffingTeamOptions: config.staffing_team_options,
+        assistantManagerTeamMap: config.assistant_manager_team_map,
         roomOptions: config.room_options,
       },
     }),
   );
   window.dispatchEvent(new CustomEvent("teamsConfigChanged"));
+  window.dispatchEvent(new CustomEvent("staffingTeamsConfigChanged"));
   window.dispatchEvent(new CustomEvent("roomsConfigChanged"));
 }
 
@@ -129,6 +155,18 @@ export function loadCachedRooms(
   return readCachedList(roomsCacheKey(orgId), DEFAULT_ROOMS, failClosed);
 }
 
+export function loadCachedStaffingTeams(
+  orgId?: string | null,
+  options: CacheReadOptions = {},
+): string[] {
+  const failClosed = Boolean(orgId) && options.strictWhenOrg === true;
+  return readCachedList(
+    staffingTeamsCacheKey(orgId),
+    DEFAULT_STAFFING_TEAMS,
+    failClosed,
+  );
+}
+
 export async function fetchAndCacheOrganizationConfig(
   orgId: string,
   headers?: Record<string, string>,
@@ -145,19 +183,36 @@ export async function fetchAndCacheOrganizationConfig(
     // org config options yet.
     const fallback: OrganizationConfigOptions = {
       team_options: loadCachedTeams(orgId),
+      staffing_team_options: loadCachedStaffingTeams(orgId),
+      assistant_manager_team_map: {},
       room_options: loadCachedRooms(orgId),
     };
     writeCachedList(teamsCacheKey(orgId), fallback.team_options);
+    writeCachedList(
+      staffingTeamsCacheKey(orgId),
+      fallback.staffing_team_options,
+    );
     writeCachedList(roomsCacheKey(orgId), fallback.room_options);
     return fallback;
   }
 
   const normalized: OrganizationConfigOptions = {
     team_options: normalizedUnique(data.team_options, DEFAULT_TEAMS),
+    staffing_team_options: normalizedUnique(
+      data.staffing_team_options,
+      DEFAULT_STAFFING_TEAMS,
+    ),
+    assistant_manager_team_map: normalizedTeamMap(
+      data.assistant_manager_team_map,
+    ),
     room_options: normalizedUnique(data.room_options, DEFAULT_ROOMS),
   };
 
   writeCachedList(teamsCacheKey(orgId), normalized.team_options);
+  writeCachedList(
+    staffingTeamsCacheKey(orgId),
+    normalized.staffing_team_options,
+  );
   writeCachedList(roomsCacheKey(orgId), normalized.room_options);
   broadcastConfigUpdates(orgId, normalized);
 
@@ -174,6 +229,17 @@ export async function updateAndCacheOrganizationConfig(
     nextPayload.team_options = normalizedUnique(
       payload.team_options,
       DEFAULT_TEAMS,
+    );
+  }
+  if (payload.staffing_team_options) {
+    nextPayload.staffing_team_options = normalizedUnique(
+      payload.staffing_team_options,
+      DEFAULT_STAFFING_TEAMS,
+    );
+  }
+  if (payload.assistant_manager_team_map) {
+    nextPayload.assistant_manager_team_map = normalizedTeamMap(
+      payload.assistant_manager_team_map,
     );
   }
   if (payload.room_options) {
@@ -202,10 +268,21 @@ export async function updateAndCacheOrganizationConfig(
 
   const normalized: OrganizationConfigOptions = {
     team_options: normalizedUnique(data.team_options, DEFAULT_TEAMS),
+    staffing_team_options: normalizedUnique(
+      data.staffing_team_options,
+      DEFAULT_STAFFING_TEAMS,
+    ),
+    assistant_manager_team_map: normalizedTeamMap(
+      data.assistant_manager_team_map,
+    ),
     room_options: normalizedUnique(data.room_options, DEFAULT_ROOMS),
   };
 
   writeCachedList(teamsCacheKey(orgId), normalized.team_options);
+  writeCachedList(
+    staffingTeamsCacheKey(orgId),
+    normalized.staffing_team_options,
+  );
   writeCachedList(roomsCacheKey(orgId), normalized.room_options);
   broadcastConfigUpdates(orgId, normalized);
 

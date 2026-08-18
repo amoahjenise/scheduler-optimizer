@@ -49,7 +49,7 @@ export const PATIENT_CONFIG_DEFAULTS: PatientFieldConfig = {
   team: {
     show: true,
     required: true,
-    label: "Team",
+    label: "Service",
     infoTip: "Epic: Care Team tab",
   },
   bed: {

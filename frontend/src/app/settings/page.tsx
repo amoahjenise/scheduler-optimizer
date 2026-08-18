@@ -18,10 +18,11 @@ import {
 } from "lucide-react";
 import { useOrganization } from "../context/OrganizationContext";
 import RolePermissionsSection from "./RolePermissionsSection";
-import { cleanupOldHandoversAPI } from "../lib/api";
+import { cleanupOldHandoversAPI, listNursesAPI, type Nurse } from "../lib/api";
 import { getApiBase } from "../lib/runtimeApiBase";
 import { DEFAULT_ROOMS } from "../lib/roomsConfig";
 import { DEFAULT_TEAMS } from "../lib/teamsConfig";
+import { DEFAULT_STAFFING_TEAMS } from "../lib/staffingTeamsConfig";
 import {
   fetchAndCacheOrganizationConfig,
   updateAndCacheOrganizationConfig,
@@ -45,8 +46,22 @@ const getSettingsSections = (t: SettingsTranslator, isAdmin: boolean) =>
   [
     ...(isAdmin ? [{ id: "logo-settings", label: t("logo") }] : []),
     { id: "organization-settings", label: t("organization") },
+    ...(isAdmin
+      ? [{ id: "assignment-print-layout-settings", label: t("printLayoutMenu") }]
+      : []),
     ...(isAdmin ? [{ id: "staffing-defaults", label: t("staffing") }] : []),
-    ...(isAdmin ? [{ id: "teams-settings", label: t("teams") }] : []),
+    ...(isAdmin
+      ? [{ id: "staffing-teams-settings", label: t("staffingTeams") }]
+      : []),
+    ...(isAdmin
+      ? [
+          {
+            id: "assistant-manager-mapping-settings",
+            label: t("assistantManagerTeamMapping"),
+          },
+        ]
+      : []),
+    ...(isAdmin ? [{ id: "services-settings", label: t("services") }] : []),
     ...(isAdmin ? [{ id: "rooms-settings", label: t("rooms") }] : []),
     ...(isAdmin ? [{ id: "role-permissions", label: t("rolesPermissions") }] : []),
     ...(isAdmin ? [{ id: "data-management", label: t("data") }] : []),
@@ -65,11 +80,14 @@ export default function SettingsPage() {
     organizations,
     updateOrganizationLogo,
     updateOrganizationWeeklyTargets,
+    updateWeekendTeamRotationEnabled,
+    updatePrintShiftLayoutMode,
     approveMember,
     rejectMember,
     leaveOrganization,
     refreshOrganizations,
     getAuthHeaders,
+    isLoading: orgLoading,
   } = useOrganization();
   const orgId = currentOrganization?.id;
   const [logoUrl, setLogoUrl] = useState(DEFAULT_LOGO);
@@ -87,6 +105,23 @@ export default function SettingsPage() {
     "success" | "error" | null
   >(null);
   const [teamsLoading, setTeamsLoading] = useState(false);
+  const [staffingTeams, setStaffingTeams] = useState<string[]>([]);
+  const [newStaffingTeam, setNewStaffingTeam] = useState("");
+  const [staffingTeamsMessage, setStaffingTeamsMessage] = useState("");
+  const [staffingTeamsMessageType, setStaffingTeamsMessageType] = useState<
+    "success" | "error" | null
+  >(null);
+  const [staffingTeamsLoading, setStaffingTeamsLoading] = useState(false);
+  const [assistantManagers, setAssistantManagers] = useState<Nurse[]>([]);
+  const [assistantManagerTeamMap, setAssistantManagerTeamMap] = useState<
+    Record<string, string>
+  >({});
+  const [assistantManagerMapSaving, setAssistantManagerMapSaving] =
+    useState(false);
+  const [assistantManagerMapMessage, setAssistantManagerMapMessage] =
+    useState("");
+  const [assistantManagerMapMessageType, setAssistantManagerMapMessageType] =
+    useState<"success" | "error" | null>(null);
   const [rooms, setRooms] = useState<string[]>([]);
   const [newRoom, setNewRoom] = useState("");
   const [roomsMessage, setRoomsMessage] = useState("");
@@ -112,6 +147,12 @@ export default function SettingsPage() {
   const [savingWeeklyTargets, setSavingWeeklyTargets] = useState(false);
   const [weeklyTargetsMessage, setWeeklyTargetsMessage] = useState("");
   const [weeklyTargetsMessageType, setWeeklyTargetsMessageType] = useState<
+    "success" | "error" | null
+  >(null);
+  const [savingWeekendRotation, setSavingWeekendRotation] = useState(false);
+  const [savingPrintLayoutMode, setSavingPrintLayoutMode] = useState(false);
+  const [printLayoutMessage, setPrintLayoutMessage] = useState("");
+  const [printLayoutMessageType, setPrintLayoutMessageType] = useState<
     "success" | "error" | null
   >(null);
   const orgFullTimeWeeklyTarget = currentOrganization?.full_time_weekly_target;
@@ -318,27 +359,34 @@ export default function SettingsPage() {
 
     async function loadOrgConfig() {
       setTeamsLoading(true);
+      setStaffingTeamsLoading(true);
       setRoomsLoading(true);
       try {
         const headers = await getAuthHeaders();
         const config = await fetchAndCacheOrganizationConfig(orgId, headers);
         if (!cancelled) {
           setTeams(config.team_options);
+          setStaffingTeams(config.staffing_team_options);
+          setAssistantManagerTeamMap(config.assistant_manager_team_map || {});
           setRooms(config.room_options);
         }
       } catch (err) {
         console.error("Failed to load org config options:", err);
         if (!cancelled) {
           setTeams([]);
+          setStaffingTeams([]);
           setRooms([]);
           setTeamsMessage("Unable to load team settings from server");
           setTeamsMessageType("error");
+          setStaffingTeamsMessage("Unable to load staffing team settings from server");
+          setStaffingTeamsMessageType("error");
           setRoomsMessage("Unable to load room settings from server");
           setRoomsMessageType("error");
         }
       } finally {
         if (!cancelled) {
           setTeamsLoading(false);
+          setStaffingTeamsLoading(false);
           setRoomsLoading(false);
         }
       }
@@ -363,6 +411,40 @@ export default function SettingsPage() {
       setTeams(config.team_options);
     } finally {
       setTeamsLoading(false);
+    }
+  };
+
+  const persistStaffingTeams = async (nextStaffingTeams: string[]) => {
+    if (!orgId) return;
+    setStaffingTeamsLoading(true);
+    try {
+      const headers = await getAuthHeaders();
+      const config = await updateAndCacheOrganizationConfig(
+        orgId,
+        { staffing_team_options: nextStaffingTeams },
+        headers,
+      );
+      setStaffingTeams(config.staffing_team_options);
+    } finally {
+      setStaffingTeamsLoading(false);
+    }
+  };
+
+  const persistAssistantManagerTeamMap = async (
+    nextMap: Record<string, string>,
+  ) => {
+    if (!orgId) return;
+    setAssistantManagerMapSaving(true);
+    try {
+      const headers = await getAuthHeaders();
+      const config = await updateAndCacheOrganizationConfig(
+        orgId,
+        { assistant_manager_team_map: nextMap },
+        headers,
+      );
+      setAssistantManagerTeamMap(config.assistant_manager_team_map || {});
+    } finally {
+      setAssistantManagerMapSaving(false);
     }
   };
 
@@ -437,6 +519,136 @@ export default function SettingsPage() {
       setTimeout(() => setTeamsMessage(""), 3000);
     }
   };
+
+  const handleAddStaffingTeam = async () => {
+    const trimmed = newStaffingTeam.trim();
+    if (!trimmed) return;
+
+    if (staffingTeams.includes(trimmed)) {
+      setStaffingTeamsMessage(t("staffingTeamExists"));
+      setStaffingTeamsMessageType("error");
+      setTimeout(() => setStaffingTeamsMessage(""), 3000);
+      return;
+    }
+
+    try {
+      await persistStaffingTeams([...staffingTeams, trimmed]);
+      setNewStaffingTeam("");
+      setStaffingTeamsMessage(t("staffingTeamAdded"));
+      setStaffingTeamsMessageType("success");
+      setTimeout(() => setStaffingTeamsMessage(""), 3000);
+    } catch (err) {
+      setStaffingTeamsMessage(
+        err instanceof Error
+          ? err.message
+          : "Failed to save staffing team settings",
+      );
+      setStaffingTeamsMessageType("error");
+      setTimeout(() => setStaffingTeamsMessage(""), 3000);
+    }
+  };
+
+  const handleRemoveStaffingTeam = async (teamToRemove: string) => {
+    try {
+      await persistStaffingTeams(
+        staffingTeams.filter((team) => team !== teamToRemove),
+      );
+      setStaffingTeamsMessage(t("staffingTeamRemoved"));
+      setStaffingTeamsMessageType("success");
+      setTimeout(() => setStaffingTeamsMessage(""), 3000);
+    } catch (err) {
+      setStaffingTeamsMessage(
+        err instanceof Error
+          ? err.message
+          : "Failed to save staffing team settings",
+      );
+      setStaffingTeamsMessageType("error");
+      setTimeout(() => setStaffingTeamsMessage(""), 3000);
+    }
+  };
+
+  const handleResetStaffingTeams = async () => {
+    try {
+      await persistStaffingTeams(DEFAULT_STAFFING_TEAMS);
+      setStaffingTeamsMessage(t("staffingTeamsReset"));
+      setStaffingTeamsMessageType("success");
+      setTimeout(() => setStaffingTeamsMessage(""), 3000);
+    } catch (err) {
+      setStaffingTeamsMessage(
+        err instanceof Error
+          ? err.message
+          : "Failed to save staffing team settings",
+      );
+      setStaffingTeamsMessageType("error");
+      setTimeout(() => setStaffingTeamsMessage(""), 3000);
+    }
+  };
+
+  const handleAssistantManagerTeamChange = async (
+    assistantManagerNurseId: string,
+    staffingTeam: string,
+  ) => {
+    try {
+      const nextMap = { ...assistantManagerTeamMap };
+      if (staffingTeam) {
+        nextMap[assistantManagerNurseId] = staffingTeam;
+      } else {
+        delete nextMap[assistantManagerNurseId];
+      }
+      await persistAssistantManagerTeamMap(nextMap);
+      setAssistantManagerMapMessage(t("assistantManagerMappingSaved"));
+      setAssistantManagerMapMessageType("success");
+      setTimeout(() => setAssistantManagerMapMessage(""), 3000);
+    } catch (err) {
+      setAssistantManagerMapMessage(
+        err instanceof Error
+          ? err.message
+          : t("assistantManagerMappingSaveFailed"),
+      );
+      setAssistantManagerMapMessageType("error");
+      setTimeout(() => setAssistantManagerMapMessage(""), 3000);
+    }
+  };
+
+  useEffect(() => {
+    if (!user?.id || orgLoading || !currentOrganization || !isAdmin) {
+      setAssistantManagers([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadAssistantManagers() {
+      try {
+        const authHeaders = await getAuthHeaders();
+        const nursesResult = await listNursesAPI(
+          user.id,
+          1,
+          500,
+          undefined,
+          authHeaders,
+        );
+        if (!cancelled) {
+          setAssistantManagers(
+            (nursesResult.nurses || []).filter(
+              (nurse) => nurse.staffing_role === "assistant_manager",
+            ),
+          );
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setAssistantManagers([]);
+        }
+      }
+    }
+
+    loadAssistantManagers();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, orgLoading, currentOrganization?.id, isAdmin]);
 
   const handleAddRoom = async () => {
     const trimmed = newRoom.trim();
@@ -702,6 +914,37 @@ export default function SettingsPage() {
     }
   };
 
+  const handleToggleWeekendRotation = async (enabled: boolean) => {
+    try {
+      setSavingWeekendRotation(true);
+      await updateWeekendTeamRotationEnabled(enabled);
+      setWeeklyTargetsMessage(t("weekendRotationUpdated"));
+      setWeeklyTargetsMessageType("success");
+    } catch (error: any) {
+      setWeeklyTargetsMessage(
+        error?.message || t("failedUpdateWeekendRotation"),
+      );
+      setWeeklyTargetsMessageType("error");
+    } finally {
+      setSavingWeekendRotation(false);
+    }
+  };
+
+  const handleChangePrintLayoutMode = async (mode: "separate" | "stacked") => {
+    try {
+      setSavingPrintLayoutMode(true);
+      await updatePrintShiftLayoutMode(mode);
+      setPrintLayoutMessage(t("printLayoutUpdated"));
+      setPrintLayoutMessageType("success");
+    } catch (error: any) {
+      setPrintLayoutMessage(error?.message || t("failedUpdatePrintLayout"));
+      setPrintLayoutMessageType("error");
+    } finally {
+      setSavingPrintLayoutMode(false);
+      setTimeout(() => setPrintLayoutMessage(""), 4000);
+    }
+  };
+
   const scrollToSettingsSection = (sectionId: string) => {
     const target = document.getElementById(sectionId);
     if (!target) return;
@@ -741,7 +984,7 @@ export default function SettingsPage() {
           </div>
 
           <div className="sticky top-20 z-20 mb-6 rounded-lg border border-gray-200 bg-white/90 px-3 py-2 shadow-sm backdrop-blur-sm">
-            <div className="flex items-center gap-3 overflow-x-auto scrollbar-hide">
+            <div className="settings-section-scroller flex items-center gap-3 overflow-x-auto pb-1">
               {SETTINGS_SECTIONS.map((section) => (
                 <button
                   key={section.id}
@@ -950,6 +1193,40 @@ export default function SettingsPage() {
                         {weeklyTargetsMessage}
                       </div>
                     )}
+
+                    <div className="mt-4 rounded-lg border border-gray-200 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">
+                            {t("weekendRotationTitle")}
+                          </p>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            {t("weekendRotationDesc")}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleToggleWeekendRotation(
+                              !currentOrganization.weekend_team_rotation_enabled,
+                            )
+                          }
+                          disabled={savingWeekendRotation}
+                          className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-colors disabled:opacity-60 ${
+                            currentOrganization.weekend_team_rotation_enabled
+                              ? "bg-green-100 text-green-700 hover:bg-green-200"
+                              : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                          }`}
+                        >
+                          {savingWeekendRotation
+                            ? t("saving")
+                            : currentOrganization.weekend_team_rotation_enabled
+                              ? t("enabled")
+                              : t("disabled")}
+                        </button>
+                      </div>
+                    </div>
+
                   </div>
                 )}
 
@@ -1308,6 +1585,72 @@ export default function SettingsPage() {
             </div>
           )}
 
+          {/* Assignment Print Layout Card (Admin Only) */}
+          {isAdmin && currentOrganization && (
+            <div
+              id="assignment-print-layout-settings"
+              className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
+            >
+              <h2 className="text-xl font-semibold text-gray-900 mb-2">
+                {t("printLayoutCardTitle")}
+              </h2>
+              <p className="text-sm text-gray-600 mb-4">{t("printLayoutCardDesc")}</p>
+
+              <div className="rounded-lg border border-gray-200 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-medium text-gray-700">
+                      {t("printLayoutTitle")}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {t("printLayoutDesc")}
+                    </p>
+                  </div>
+                  <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => handleChangePrintLayoutMode("separate")}
+                      disabled={savingPrintLayoutMode}
+                      className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+                        (currentOrganization.print_shift_layout_mode || "separate") ===
+                        "separate"
+                          ? "bg-blue-600 text-white"
+                          : "bg-white text-gray-700 hover:bg-gray-50"
+                      }`}
+                    >
+                      {t("printLayoutSeparate")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleChangePrintLayoutMode("stacked")}
+                      disabled={savingPrintLayoutMode}
+                      className={`px-3 py-1.5 text-xs font-semibold transition-colors border-l border-gray-200 ${
+                        (currentOrganization.print_shift_layout_mode || "separate") ===
+                        "stacked"
+                          ? "bg-blue-600 text-white"
+                          : "bg-white text-gray-700 hover:bg-gray-50"
+                      }`}
+                    >
+                      {t("printLayoutStacked")}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {printLayoutMessage && (
+                <div
+                  className={`mt-3 p-2 rounded-lg text-sm ${
+                    printLayoutMessageType === "success"
+                      ? "bg-green-50 text-green-800 border border-green-200"
+                      : "bg-red-50 text-red-800 border border-red-200"
+                  }`}
+                >
+                  {printLayoutMessage}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Staffing Defaults Card (Admin Only) */}
           {isAdmin && (
             <div
@@ -1377,37 +1720,217 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {/* Teams Management Card */}
+          {/* Staffing Teams Management Card */}
           {isAdmin && (
             <div
-              id="teams-settings"
+              id="staffing-teams-settings"
               className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
             >
               <div className="flex items-center gap-3 mb-4">
-                <Users className="w-6 h-6 text-blue-600" />
+                <Users className="w-6 h-6 text-indigo-600" />
                 <h2 className="text-xl font-semibold text-gray-900">
-                  {t("teamsTitle")}
+                  {t("staffingTeamsTitle")}
                 </h2>
                 <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
                   {t("admin")}
                 </span>
               </div>
-              <p className="text-sm text-gray-600 mb-4">{t("manageTeams")}</p>
-              <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
-                <p className="text-xs text-blue-800">{t("manageTeamsStaffHint")}</p>
-                <button
-                  type="button"
-                  onClick={() => router.push("/nurses")}
-                  className="mt-2 text-xs font-semibold text-blue-700 hover:text-blue-900 underline underline-offset-2"
+              <p className="text-sm text-gray-600 mb-4">
+                {t("manageStaffingTeams")}
+              </p>
+
+              {/* Current Staffing Teams */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {t("currentStaffingTeams")}
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {staffingTeams.map((team) => (
+                    <div
+                      key={team}
+                      className="flex items-center gap-2 px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg border border-indigo-200"
+                    >
+                      <span className="text-sm font-medium">{team}</span>
+                      <button
+                        onClick={() => handleRemoveStaffingTeam(team)}
+                        className="text-indigo-600 hover:text-red-600 transition-colors"
+                        title={t("removeTeam")}
+                      >
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M6 18L18 6M6 6l12 12"
+                          />
+                        </svg>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Add Staffing Team */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  {t("addNewStaffingTeam")}
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newStaffingTeam}
+                    onChange={(e) => setNewStaffingTeam(e.target.value)}
+                    disabled={staffingTeamsLoading}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleAddStaffingTeam();
+                      }
+                    }}
+                    placeholder={t("enterStaffingTeamName")}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                  />
+                  <button
+                    onClick={handleAddStaffingTeam}
+                    disabled={staffingTeamsLoading}
+                    className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium"
+                  >
+                    {tCommon("add")}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                onClick={handleResetStaffingTeams}
+                disabled={staffingTeamsLoading}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+              >
+                <RefreshCw className="w-4 h-4" />
+                {t("resetToDefaultStaffingTeams")}
+              </button>
+
+              {staffingTeamsMessage && (
+                <div
+                  className={`mt-4 p-3 rounded-lg text-sm ${
+                    staffingTeamsMessageType === "success"
+                      ? "bg-green-50 text-green-800 border border-green-200"
+                      : "bg-red-50 text-red-800 border border-red-200"
+                  }`}
                 >
-                  {t("goToStaffManagement")}
-                </button>
+                  {staffingTeamsMessage}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Assistant Manager -> Staffing Team Mapping Card */}
+          {isAdmin && (
+            <div
+              id="assistant-manager-mapping-settings"
+              className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <Users className="w-6 h-6 text-amber-600" />
+                <h2 className="text-xl font-semibold text-gray-900">
+                  {t("assistantManagerTeamMappingTitle")}
+                </h2>
+                <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
+                  {t("admin")}
+                </span>
+              </div>
+              <p className="text-sm text-gray-600 mb-4">
+                {t("assistantManagerTeamMappingDesc")}
+              </p>
+
+              {assistantManagers.length === 0 ? (
+                <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
+                  {t("noAssistantManagersFound")}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {assistantManagers.map((assistantManager) => (
+                    <div
+                      key={assistantManager.id}
+                      className="rounded-lg border border-gray-200 p-3"
+                    >
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <p className="text-sm font-semibold text-gray-900">
+                            {assistantManager.name}
+                          </p>
+                          <p className="text-xs text-gray-500">
+                            {assistantManager.employee_id
+                              ? `${t("employeeIdLabel")}: ${assistantManager.employee_id}`
+                              : t("assistantManagerNoEmployeeId")}
+                          </p>
+                        </div>
+                        <select
+                          value={assistantManagerTeamMap[assistantManager.id] || ""}
+                          onChange={(e) =>
+                            handleAssistantManagerTeamChange(
+                              assistantManager.id,
+                              e.target.value,
+                            )
+                          }
+                          disabled={assistantManagerMapSaving}
+                          className="min-w-56 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-sm"
+                        >
+                          <option value="">{t("selectStaffingTeam")}</option>
+                          {staffingTeams.map((team) => (
+                            <option key={team} value={team}>
+                              {team}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {assistantManagerMapMessage && (
+                <div
+                  className={`mt-4 p-3 rounded-lg text-sm ${
+                    assistantManagerMapMessageType === "success"
+                      ? "bg-green-50 text-green-800 border border-green-200"
+                      : "bg-red-50 text-red-800 border border-red-200"
+                  }`}
+                >
+                  {assistantManagerMapMessage}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Services Management Card */}
+          {isAdmin && (
+            <div
+              id="services-settings"
+              className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <Users className="w-6 h-6 text-blue-600" />
+                <h2 className="text-xl font-semibold text-gray-900">
+                  {t("servicesTitle")}
+                </h2>
+                <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
+                  {t("admin")}
+                </span>
+              </div>
+              <p className="text-sm text-gray-600 mb-4">{t("manageServices")}</p>
+              <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
+                <p className="text-xs text-blue-800">{t("servicesStaffingHint")}</p>
               </div>
 
               {/* Current Teams */}
               <div className="mb-4">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  {t("currentTeams")}
+                  {t("currentServices")}
                 </label>
                 <div className="flex flex-wrap gap-2">
                   {teams.map((team) => (
@@ -1443,7 +1966,7 @@ export default function SettingsPage() {
               {/* Add New Team */}
               <div className="mb-4">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  {t("addNewTeam")}
+                  {t("addNewService")}
                 </label>
                 <div className="flex gap-2">
                   <input
@@ -1457,7 +1980,7 @@ export default function SettingsPage() {
                         handleAddTeam();
                       }
                     }}
-                    placeholder={t("enterTeamName")}
+                    placeholder={t("enterServiceName")}
                     className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
                   <button
@@ -1477,7 +2000,7 @@ export default function SettingsPage() {
                 className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
               >
                 <RefreshCw className="w-4 h-4" />
-                {t("resetToDefaultTeams")}
+                {t("resetToDefaultServices")}
               </button>
 
               {/* Teams Message */}

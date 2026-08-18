@@ -1,6 +1,6 @@
 """Pydantic schemas for Organization models."""
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 from enum import Enum
 
@@ -9,6 +9,7 @@ class MemberRole(str, Enum):
     """Roles for organization members."""
     ADMIN = "admin"
     MANAGER = "manager"
+    ASSISTANT_MANAGER = "assistant_manager"
     NURSE = "nurse"
 
 
@@ -22,7 +23,11 @@ class OrganizationBase(BaseModel):
     full_time_weekly_target: float = Field(75.0, ge=0, le=336)
     part_time_weekly_target: float = Field(63.75, ge=0, le=336)
     handoff_retention_days: int = Field(30, ge=1, le=365)
+    weekend_team_rotation_enabled: bool = False
+    print_shift_layout_mode: Literal["separate", "stacked"] = "separate"
     team_options: List[str] = Field(default_factory=lambda: ["Heme-Onc", "ENT", "Pink", "Blue", "Psych", "Renal"])
+    staffing_team_options: List[str] = Field(default_factory=lambda: ["Team A", "Team B"])
+    assistant_manager_team_map: dict[str, str] = Field(default_factory=dict)
     room_options: List[str] = Field(default_factory=lambda: [
         "B7.01", "B7.02", "B7.03", "B7.04", "B7.05", "B7.06", "B7.07", "B7.08",
         "B7.09", "B7.10", "B7.11", "B7.12", "B7.13", "B7.14", "B7.15", "B7.16",
@@ -43,7 +48,11 @@ class OrganizationUpdate(BaseModel):
     full_time_weekly_target: Optional[float] = Field(None, ge=0, le=336)
     part_time_weekly_target: Optional[float] = Field(None, ge=0, le=336)
     handoff_retention_days: Optional[int] = Field(None, ge=1, le=365)
+    weekend_team_rotation_enabled: Optional[bool] = None
+    print_shift_layout_mode: Optional[Literal["separate", "stacked"]] = None
     team_options: Optional[List[str]] = None
+    staffing_team_options: Optional[List[str]] = None
+    assistant_manager_team_map: Optional[dict[str, str]] = None
     room_options: Optional[List[str]] = None
 
 
@@ -146,12 +155,16 @@ class CurrentUserContext(BaseModel):
 class OrganizationConfigOptions(BaseModel):
     """Shared org-scoped options used by handover and patient workflows."""
     team_options: List[str]
+    staffing_team_options: List[str]
+    assistant_manager_team_map: dict[str, str]
     room_options: List[str]
 
 
 class OrganizationConfigOptionsUpdate(BaseModel):
     """Admin updates to shared org-scoped options."""
     team_options: Optional[List[str]] = None
+    staffing_team_options: Optional[List[str]] = None
+    assistant_manager_team_map: Optional[dict[str, str]] = None
     room_options: Optional[List[str]] = None
 
 

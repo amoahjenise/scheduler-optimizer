@@ -27,6 +27,7 @@ import { fetchAndCacheOrganizationConfig } from "../../lib/orgConfig";
 interface HandoverFormProps {
   handover: Handover;
   patient: Patient;
+  currentUserDisplayName?: string;
   onSave: (handover: Handover) => void;
   onPreview: (handover: Handover, patient: Patient) => void;
   onPatientUpdate?: (patient: Patient) => void;
@@ -581,6 +582,7 @@ function QuickSelect({
 export default function HandoverForm({
   handover,
   patient,
+  currentUserDisplayName,
   onSave,
   onPreview,
   onPatientUpdate,
@@ -1094,6 +1096,7 @@ export default function HandoverForm({
     const incomingNurse = (formData.incoming_nurse || "").trim();
     const resolvedIncomingNurse =
       incomingNurse ||
+      currentUserDisplayName ||
       user?.fullName ||
       (user?.firstName
         ? `${user.firstName.trim().charAt(0).toUpperCase()}${user.firstName.trim().slice(1)}`
@@ -1209,7 +1212,7 @@ export default function HandoverForm({
       )}
       {/* Sticky Section Navigation */}
       <div className="sticky top-[140px] z-30 bg-gray-50/95 backdrop-blur-sm border-b border-gray-200 -mx-4 px-4 py-2 mb-4 print-hide">
-        <div className="flex items-center gap-1 overflow-x-auto scrollbar-hide">
+        <div className="settings-section-scroller flex items-center gap-1 overflow-x-auto pb-1">
           {FORM_SECTIONS.map((section) => (
             <button
               key={section.id}
@@ -1417,7 +1420,7 @@ export default function HandoverForm({
                       }
                       className="font-semibold text-sm border-0 p-0 focus:ring-0 bg-transparent"
                     >
-                      <option value="">Select team...</option>
+                      <option value="">Select service...</option>
                       {teamOptions.map((team) => (
                         <option key={team} value={team}>
                           {team}

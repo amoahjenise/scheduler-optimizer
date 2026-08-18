@@ -48,6 +48,7 @@ export default function ShiftCodesPopover({
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"codes" | "slots">("codes");
   const ref = useRef<HTMLDivElement>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showingSlots = mode === "slots" && timeSlots.length > 0;
 
@@ -63,14 +64,44 @@ export default function ShiftCodesPopover({
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open]);
 
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current) {
+        clearTimeout(closeTimerRef.current);
+      }
+    };
+  }, []);
+
+  const clearCloseTimer = () => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  };
+
+  const openPopover = () => {
+    clearCloseTimer();
+    setOpen(true);
+  };
+
+  const queueClosePopover = () => {
+    clearCloseTimer();
+    closeTimerRef.current = setTimeout(() => setOpen(false), 180);
+  };
+
   const iconSize = size === "sm" ? "w-4 h-4" : "w-5 h-5";
 
   return (
-    <div ref={ref} className={`relative inline-flex items-center ${className}`}>
+    <div
+      ref={ref}
+      className={`relative inline-flex items-center ${className}`}
+      onMouseEnter={openPopover}
+      onMouseLeave={queueClosePopover}
+    >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        onMouseEnter={() => setOpen(true)}
+        onMouseEnter={openPopover}
         className="inline-flex items-center gap-1 text-gray-400 hover:text-blue-600 transition-colors focus:outline-none"
         aria-label={t("shiftCodesReference")}
       >
@@ -94,7 +125,8 @@ export default function ShiftCodesPopover({
 
       {open && (
         <div
-          onMouseLeave={() => setOpen(false)}
+          onMouseEnter={openPopover}
+          onMouseLeave={queueClosePopover}
           className="absolute z-50 top-full mt-2 right-0 w-[420px] bg-white rounded-xl shadow-xl border border-gray-200 p-4 animate-in fade-in slide-in-from-top-1 duration-150"
         >
           {/* Header */}

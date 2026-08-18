@@ -19,6 +19,7 @@ class LearningModuleCreate(BaseModel):
     target_roles: Optional[List[str]] = None
     required_for_onboarding: bool = False
     is_mandatory: bool = False
+    is_published: bool = True
     passing_score: float = Field(default=0.8, ge=0.0, le=1.0)
     sort_order: int = 0
 

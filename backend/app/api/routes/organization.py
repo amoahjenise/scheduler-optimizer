@@ -34,6 +34,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 DEFAULT_TEAMS = ["Heme-Onc", "ENT", "Pink", "Blue", "Psych", "Renal"]
+DEFAULT_STAFFING_TEAMS = ["Team A", "Team B"]
 DEFAULT_ROOMS = [
     "B7.01", "B7.02", "B7.03", "B7.04", "B7.05", "B7.06", "B7.07", "B7.08",
     "B7.09", "B7.10", "B7.11", "B7.12", "B7.13", "B7.14", "B7.15", "B7.16",
@@ -88,9 +89,32 @@ def _normalize_option_list(values, default_values):
     return cleaned or list(default_values)
 
 
+def _normalize_team_map(values):
+    if not isinstance(values, dict):
+        return {}
+
+    normalized: Dict[str, str] = {}
+    for raw_key, raw_value in values.items():
+        if not isinstance(raw_key, str) or not isinstance(raw_value, str):
+            continue
+        key = raw_key.strip()
+        value = raw_value.strip()
+        if not key or not value:
+            continue
+        normalized[key] = value
+    return normalized
+
+
 def _current_org_config(org: Organization) -> OrganizationConfigOptions:
     return OrganizationConfigOptions(
         team_options=_normalize_option_list(org.team_options, DEFAULT_TEAMS),
+        staffing_team_options=_normalize_option_list(
+            org.staffing_team_options,
+            DEFAULT_STAFFING_TEAMS,
+        ),
+        assistant_manager_team_map=_normalize_team_map(
+            org.assistant_manager_team_map,
+        ),
         room_options=_normalize_option_list(org.room_options, DEFAULT_ROOMS),
     )
 
@@ -125,6 +149,13 @@ def create_organization(
             part_time_weekly_target=org_in.part_time_weekly_target,
             handoff_retention_days=org_in.handoff_retention_days,
             team_options=_normalize_option_list(org_in.team_options, DEFAULT_TEAMS),
+            staffing_team_options=_normalize_option_list(
+                org_in.staffing_team_options,
+                DEFAULT_STAFFING_TEAMS,
+            ),
+            assistant_manager_team_map=_normalize_team_map(
+                org_in.assistant_manager_team_map,
+            ),
             room_options=_normalize_option_list(org_in.room_options, DEFAULT_ROOMS),
             invite_code=generate_invite_code()
         )
@@ -277,8 +308,21 @@ def update_organization(
         org.part_time_weekly_target = org_in.part_time_weekly_target
     if org_in.handoff_retention_days is not None:
         org.handoff_retention_days = org_in.handoff_retention_days
+    if org_in.weekend_team_rotation_enabled is not None:
+        org.weekend_team_rotation_enabled = org_in.weekend_team_rotation_enabled
+    if org_in.print_shift_layout_mode is not None:
+        org.print_shift_layout_mode = org_in.print_shift_layout_mode
     if org_in.team_options is not None:
         org.team_options = _normalize_option_list(org_in.team_options, DEFAULT_TEAMS)
+    if org_in.staffing_team_options is not None:
+        org.staffing_team_options = _normalize_option_list(
+            org_in.staffing_team_options,
+            DEFAULT_STAFFING_TEAMS,
+        )
+    if org_in.assistant_manager_team_map is not None:
+        org.assistant_manager_team_map = _normalize_team_map(
+            org_in.assistant_manager_team_map,
+        )
     if org_in.room_options is not None:
         org.room_options = _normalize_option_list(org_in.room_options, DEFAULT_ROOMS)
     
@@ -382,6 +426,15 @@ def update_organization_config_options(
 
     if config_in.team_options is not None:
         org.team_options = _normalize_option_list(config_in.team_options, DEFAULT_TEAMS)
+    if config_in.staffing_team_options is not None:
+        org.staffing_team_options = _normalize_option_list(
+            config_in.staffing_team_options,
+            DEFAULT_STAFFING_TEAMS,
+        )
+    if config_in.assistant_manager_team_map is not None:
+        org.assistant_manager_team_map = _normalize_team_map(
+            config_in.assistant_manager_team_map,
+        )
     if config_in.room_options is not None:
         org.room_options = _normalize_option_list(config_in.room_options, DEFAULT_ROOMS)
 

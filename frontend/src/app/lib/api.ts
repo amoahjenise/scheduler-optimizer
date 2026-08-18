@@ -144,6 +144,8 @@ export interface DeletionActivity {
 
 export interface OrganizationConfigOptions {
   team_options: string[];
+  staffing_team_options: string[];
+  assistant_manager_team_map: Record<string, string>;
   room_options: string[];
 }
 
@@ -1126,7 +1128,7 @@ export async function fetchHandoversAPI(
   if (params?.outgoing_nurse)
     searchParams.set("outgoing_nurse", params.outgoing_nurse);
 
-  const res = await fetch(`${API_BASE}/handovers/?${searchParams}`, {
+  const res = await fetch(`${API_BASE}/handovers?${searchParams}`, {
     headers,
   });
   if (!res.ok) {
@@ -1164,7 +1166,7 @@ export async function fetchYesterdaysHandoversAPI(
   searchParams.set("shift_date", dateStr);
   if (shift_type) searchParams.set("shift_type", shift_type);
 
-  const res = await fetch(`${API_BASE}/handovers/?${searchParams}`);
+  const res = await fetch(`${API_BASE}/handovers?${searchParams}`);
   if (!res.ok) {
     const err = await res.json().catch(() => null);
     throw new Error(err?.detail || "Failed to fetch yesterday's handovers");
@@ -1185,7 +1187,7 @@ export async function createHandoverAPI(
   data: HandoverCreate,
   headers?: Record<string, string>,
 ): Promise<Handover> {
-  const res = await fetch(`${API_BASE}/handovers/`, {
+  const res = await fetch(`${API_BASE}/handovers`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(headers || {}) },
     body: JSON.stringify(data),
@@ -1432,12 +1434,20 @@ export async function analyzeScheduleInsightsAPI(payload: {
 // NURSE MANAGEMENT API
 // ============================================
 
+export type StaffingRole = "nurse" | "assistant_manager";
+
+/** Optional Team A / Team B alternating-weekend rotation group. */
+export type WeekendTeam = string | null;
+
 export interface Nurse {
   id: string;
-  user_id: string;
+  user_id: string | null;
   name: string;
   employee_id?: string;
   seniority?: string;
+  team?: string;
+  staffing_role?: StaffingRole;
+  weekend_team?: WeekendTeam;
   employment_type: "full-time" | "part-time";
   max_weekly_hours: number;
   bi_weekly_target_hours: number;
@@ -1457,9 +1467,13 @@ export interface Nurse {
 }
 
 export interface NurseCreate {
+  user_id?: string | null;
   name: string;
   employee_id?: string;
   seniority?: string;
+  team?: string;
+  staffing_role?: StaffingRole;
+  weekend_team?: WeekendTeam;
   employment_type: "full-time" | "part-time";
   max_weekly_hours: number;
   target_weekly_hours?: number;
@@ -1476,9 +1490,13 @@ export interface NurseCreate {
 }
 
 export interface NurseUpdate {
+  user_id?: string | null;
   name?: string;
   employee_id?: string;
   seniority?: string;
+  team?: string;
+  staffing_role?: StaffingRole;
+  weekend_team?: WeekendTeam;
   employment_type?: "full-time" | "part-time";
   max_weekly_hours?: number;
   bi_weekly_target_hours?: number;
@@ -1570,6 +1588,30 @@ export async function deleteNurseAPI(
     method: "DELETE",
     headers,
   });
+}
+
+export interface OrganizationMemberOption {
+  id: string;
+  user_id: string;
+  user_email?: string | null;
+  user_name?: string | null;
+  role: "admin" | "manager" | "nurse";
+  is_active: boolean;
+  is_approved: boolean;
+}
+
+export async function listOrganizationMembersAPI(
+  orgId: string,
+  headers?: Record<string, string>,
+): Promise<OrganizationMemberOption[]> {
+  return apiRequest<OrganizationMemberOption[]>(
+    `/organizations/${orgId}/members`,
+    {
+      headers,
+      timeoutMs: 15000,
+      retryCount: 1,
+    },
+  );
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2454,6 +2496,28 @@ export async function createLearningModuleAPI(
   });
 }
 
+export async function updateLearningModuleAPI(
+  id: string,
+  body: Partial<LearningModule>,
+  headers?: Record<string, string>,
+): Promise<LearningModule> {
+  return apiRequest(`/learning/modules/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteLearningModuleAPI(
+  id: string,
+  headers?: Record<string, string>,
+): Promise<void> {
+  await apiRequest(`/learning/modules/${id}`, {
+    method: "DELETE",
+    headers,
+  });
+}
+
 export async function startLearningModuleAPI(
   moduleId: string,
   headers?: Record<string, string>,
@@ -2562,6 +2626,25 @@ export async function deleteLearningAssignmentAPI(
   await apiRequest(`/learning/assignments/${assignmentId}`, {
     method: "DELETE",
     headers,
+  });
+}
+
+export async function updateLearningAssignmentAPI(
+  assignmentId: string,
+  body: {
+    title?: string;
+    description?: string;
+    target_team?: string | null;
+    due_date?: string | null;
+    is_mandatory?: boolean;
+    url?: string;
+  },
+  headers?: Record<string, string>,
+): Promise<LearningAssignment> {
+  return apiRequest(`/learning/assignments/${assignmentId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
   });
 }
 

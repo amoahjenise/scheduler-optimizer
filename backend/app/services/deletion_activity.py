@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import AuthContext
 from app.models.deletion_activity import DeletionActivity
+from app.models.nurse import Nurse
 from app.models.organization import OrganizationMember
 
 
@@ -16,6 +17,21 @@ def get_actor_display_name(
 ) -> str:
     if not auth or not auth.is_authenticated:
         return "Anonymous"
+
+    resolved_org_id = organization_id or auth.organization_id
+
+    # Priority 1: linked nurse profile name (best human-facing identity)
+    if resolved_org_id and auth.user_id:
+        linked_nurse = (
+            db.query(Nurse)
+            .filter(
+                Nurse.organization_id == resolved_org_id,
+                Nurse.user_id == auth.user_id,
+            )
+            .first()
+        )
+        if linked_nurse and linked_nurse.name:
+            return linked_nurse.name
 
     membership_name = auth.membership.user_name if auth.membership else None
     membership_email = auth.membership.user_email if auth.membership else None
@@ -29,7 +45,6 @@ def get_actor_display_name(
     if direct_name:
         return direct_name
 
-    resolved_org_id = organization_id or auth.organization_id
     if resolved_org_id and auth.user_id:
         org_member = (
             db.query(OrganizationMember)

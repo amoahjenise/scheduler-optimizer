@@ -49,6 +49,16 @@ function rewriteRedirectLocation(location: string): string {
   }
 }
 
+function backendUnavailableResponse(targetUrl: string): NextResponse {
+  return NextResponse.json(
+    {
+      detail: "Backend service is unavailable. Please retry in a moment.",
+      target: targetUrl,
+    },
+    { status: 503 },
+  );
+}
+
 async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
   const targetUrl = buildTargetUrl(req, path);
 
@@ -59,15 +69,39 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
 
   // Only forward a body when one actually exists. Passing an empty stream for
   // body-less POSTs (e.g. action endpoints) makes the upstream fetch hang.
+  const methodCanHaveBody = req.method !== "GET" && req.method !== "HEAD";
+  const contentLengthHeader = req.headers.get("content-length");
+  const parsedContentLength = contentLengthHeader
+    ? Number.parseInt(contentLengthHeader, 10)
+    : NaN;
   const hasBody =
-    req.method !== "GET" && req.method !== "HEAD" && req.body !== null;
-  let upstream = await fetch(targetUrl, {
-    method: req.method,
-    headers,
-    body: hasBody ? req.body : undefined,
-    redirect: "manual",
-    ...(hasBody ? ({ duplex: "half" } as const) : {}),
-  });
+    methodCanHaveBody &&
+    ((Number.isFinite(parsedContentLength) && parsedContentLength > 0) ||
+      req.body !== null);
+
+  const contentType = req.headers.get("content-type") || "";
+  const canReplayBody = hasBody && !contentType.includes("multipart/form-data");
+
+  let replayableBody: ArrayBuffer | undefined;
+  if (canReplayBody) {
+    const bufferedBody = await req.arrayBuffer();
+    if (bufferedBody.byteLength > 0) {
+      replayableBody = bufferedBody;
+    }
+  }
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(targetUrl, {
+      method: req.method,
+      headers,
+      body: canReplayBody ? replayableBody : hasBody ? req.body : undefined,
+      redirect: "manual",
+      ...(!canReplayBody && hasBody ? ({ duplex: "half" } as const) : {}),
+    });
+  } catch {
+    return backendUnavailableResponse(targetUrl);
+  }
 
   if (
     [301, 302, 303, 307, 308].includes(upstream.status) &&
@@ -76,14 +110,19 @@ async function proxy(req: NextRequest, path: string[]): Promise<NextResponse> {
     const rawLocation = upstream.headers.get("location")!;
     const resolvedLocation = new URL(rawLocation, targetUrl).toString();
 
-    // Follow backend canonical redirects for body-less requests to avoid
-    // client-side 500s when the browser receives rewritten relative redirects.
-    if (!hasBody) {
-      upstream = await fetch(resolvedLocation, {
-        method: req.method,
-        headers,
-        redirect: "manual",
-      });
+    // Follow backend canonical redirects inside the proxy whenever we can.
+    // This avoids redirect loops surfaced in browsers as "Failed to fetch".
+    if (!hasBody || canReplayBody) {
+      try {
+        upstream = await fetch(resolvedLocation, {
+          method: req.method,
+          headers,
+          body: canReplayBody ? replayableBody : undefined,
+          redirect: "manual",
+        });
+      } catch {
+        return backendUnavailableResponse(resolvedLocation);
+      }
     } else {
       const location = rewriteRedirectLocation(rawLocation);
       return NextResponse.redirect(new URL(location, req.url), upstream.status);

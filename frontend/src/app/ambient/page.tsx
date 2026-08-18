@@ -94,6 +94,119 @@ const STATUS_ICONS: Record<string, React.ReactNode> = {
   discarded: <XCircle className="w-3.5 h-3.5" />,
 };
 
+const MEDICAL_TERMS = [
+  "blood pressure",
+  "heart rate",
+  "respiratory rate",
+  "oxygen",
+  "spo2",
+  "temperature",
+  "pain",
+  "allergy",
+  "medication",
+  "dose",
+  "diagnosis",
+  "symptom",
+  "assessment",
+  "plan",
+  "labs",
+  "x-ray",
+  "ct",
+  "mri",
+  "iv",
+  "antibiotic",
+  "insulin",
+  "bp",
+  "hr",
+  "rr",
+];
+
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const MEDICAL_TERM_REGEX = new RegExp(
+  `\\b(${MEDICAL_TERMS.map(escapeRegex).join("|")})\\b`,
+  "gi",
+);
+
+type TranscriptBlock = {
+  speaker: "Nurse" | "Patient" | "Doctor" | "Family" | "Clinical note";
+  text: string;
+};
+
+function detectSpeaker(text: string): TranscriptBlock["speaker"] {
+  const normalized = text.trim().toLowerCase();
+
+  if (/^(nurse|rn)\s*[:\-]/i.test(text)) return "Nurse";
+  if (/^(patient|pt)\s*[:\-]/i.test(text)) return "Patient";
+  if (/^(doctor|dr|physician)\s*[:\-]/i.test(text)) return "Doctor";
+  if (/^(family|mother|father|parent|caregiver)\s*[:\-]/i.test(text)) {
+    return "Family";
+  }
+
+  if (/\b(patient|pt)\s+(reports|states|says|complains|denies)\b/.test(normalized)) {
+    return "Patient";
+  }
+  if (/\b(nurse|rn)\s+(notes|states|reports|observes)\b/.test(normalized)) {
+    return "Nurse";
+  }
+  if (/\b(doctor|dr|physician)\s+(states|recommends|orders)\b/.test(normalized)) {
+    return "Doctor";
+  }
+
+  return "Clinical note";
+}
+
+function normalizeSentenceChunk(chunk: string): string {
+  return chunk
+    .replace(/\s+/g, " ")
+    .replace(/\s+([.,!?;:])/g, "$1")
+    .trim();
+}
+
+function buildTranscriptBlocks(rawTranscript: string): TranscriptBlock[] {
+  const normalized = rawTranscript.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+
+  const sentences = normalized
+    .split(/\n+|(?<=[.!?])\s+/)
+    .map(normalizeSentenceChunk)
+    .filter(Boolean);
+
+  const blocks: TranscriptBlock[] = [];
+  for (const sentence of sentences) {
+    const speaker = detectSpeaker(sentence);
+    if (blocks.length === 0 || blocks[blocks.length - 1].speaker !== speaker) {
+      blocks.push({ speaker, text: sentence });
+      continue;
+    }
+    blocks[blocks.length - 1].text = `${blocks[blocks.length - 1].text} ${sentence}`;
+  }
+
+  return blocks;
+}
+
+function highlightMedicalTerms(text: string): React.ReactNode[] {
+  const pieces = text.split(MEDICAL_TERM_REGEX);
+  return pieces.map((piece, index) => {
+    const isMedicalTerm = MEDICAL_TERMS.some(
+      (term) => term.toLowerCase() === piece.toLowerCase(),
+    );
+    if (!isMedicalTerm) {
+      return <span key={`text-${index}`}>{piece}</span>;
+    }
+    return (
+      <mark
+        key={`term-${index}`}
+        className="rounded bg-amber-100 px-1 py-0.5 text-amber-900"
+      >
+        {piece}
+      </mark>
+    );
+  });
+}
+
 function mapSpeechLocale(locale: string): string {
   const normalized = locale.toLowerCase();
   if (normalized.startsWith("fr")) return "fr-CA";
@@ -348,6 +461,8 @@ export default function AmbientDocumentationPage() {
       );
       setActiveSession(updated);
       setSelectedSession(updated);
+      setTranscript("");
+      setInterimTranscript("");
       loadSessions();
     } catch (err: unknown) {
       setError(
@@ -793,10 +908,22 @@ export default function AmbientDocumentationPage() {
               </button>
             </div>
             <div className="p-4 overflow-y-auto flex-1">
-              <div className="prose prose-sm max-w-none">
-                <p className="whitespace-pre-wrap text-gray-700 leading-relaxed">
-                  {selectedSession.transcript}
-                </p>
+              <div className="space-y-3">
+                {buildTranscriptBlocks(selectedSession.transcript).map(
+                  (block, index) => (
+                    <div
+                      key={`block-${index}`}
+                      className="rounded-lg border border-gray-200 bg-gray-50 p-3"
+                    >
+                      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                        {block.speaker}
+                      </div>
+                      <p className="text-sm leading-relaxed text-gray-700">
+                        {highlightMedicalTerms(block.text)}
+                      </p>
+                    </div>
+                  ),
+                )}
               </div>
             </div>
             <div className="p-4 border-t border-gray-200 flex justify-end">

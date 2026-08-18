@@ -379,7 +379,7 @@ const SolutionsSection = () => {
       title: t("solutions.activitiesTitle"),
       desc: t("solutions.activitiesDesc"),
       cta: t("solutions.activitiesCta"),
-      href: "/activities",
+      href: "/announcements",
       gradient: "from-slate-600 to-slate-800",
       glow: "hover:shadow-slate-500/20",
       icon: <Activity className="w-7 h-7" />,

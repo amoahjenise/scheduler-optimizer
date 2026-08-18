@@ -50,7 +50,7 @@ const FIELD_META: {
     canHide: true,
     canRequire: true,
   },
-  { key: "team", description: "Team", canHide: true, canRequire: true },
+  { key: "team", description: "Service", canHide: true, canRequire: true },
   {
     key: "bed",
     description: "Bed (within room)",

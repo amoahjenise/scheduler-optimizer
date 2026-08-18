@@ -9,6 +9,9 @@ class NurseBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     employee_id: Optional[str] = Field(None, max_length=100)
     seniority: Optional[str] = Field(None, max_length=50)  # e.g., "3Y-283.95D"
+    team: Optional[str] = Field(None, max_length=100)
+    staffing_role: str = Field("nurse", pattern="^(nurse|assistant_manager)$")
+    weekend_team: Optional[str] = Field(None, min_length=1, max_length=20)
     employment_type: str = Field("full-time", pattern="^(full-time|part-time)$")
     max_weekly_hours: float = Field(37.5, ge=0, le=168)
     target_weekly_hours: Optional[float] = Field(None, ge=0, le=168)
@@ -26,14 +29,18 @@ class NurseBase(BaseModel):
 
 class NurseCreate(NurseBase):
     """Schema for creating a nurse"""
-    pass
+    user_id: Optional[str] = None
 
 
 class NurseUpdate(BaseModel):
     """Schema for updating a nurse (all fields optional)"""
+    user_id: Optional[str] = None
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     employee_id: Optional[str] = Field(None, max_length=100)
     seniority: Optional[str] = Field(None, max_length=50)
+    team: Optional[str] = Field(None, max_length=100)
+    staffing_role: Optional[str] = Field(None, pattern="^(nurse|assistant_manager)$")
+    weekend_team: Optional[str] = Field(None, min_length=1, max_length=20)
     employment_type: Optional[str] = Field(None, pattern="^(full-time|part-time)$")
     max_weekly_hours: Optional[float] = Field(None, ge=0, le=168)
     target_weekly_hours: Optional[float] = Field(None, ge=0, le=168)
@@ -52,7 +59,7 @@ class NurseUpdate(BaseModel):
 class NurseResponse(NurseBase):
     """Schema for nurse responses"""
     id: UUID4
-    user_id: str
+    user_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

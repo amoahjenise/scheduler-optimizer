@@ -8,6 +8,7 @@ from app.db.database import Base
 
 
 DEFAULT_TEAMS = ["Heme-Onc", "ENT", "Pink", "Blue", "Psych", "Renal"]
+DEFAULT_STAFFING_TEAMS = ["Team A", "Team B"]
 DEFAULT_ROOMS = [
     "B7.01", "B7.02", "B7.03", "B7.04", "B7.05", "B7.06", "B7.07", "B7.08",
     "B7.09", "B7.10", "B7.11", "B7.12", "B7.13", "B7.14", "B7.15", "B7.16",
@@ -68,7 +69,18 @@ class Organization(Base):
     part_time_weekly_target = Column(Float, nullable=False, default=63.75)
     handoff_retention_days = Column(Integer, nullable=False, default=30)
     team_options = Column(JSON, nullable=False, default=lambda: list(DEFAULT_TEAMS))
+    staffing_team_options = Column(JSON, nullable=False, default=lambda: list(DEFAULT_STAFFING_TEAMS))
+    assistant_manager_team_map = Column(JSON, nullable=False, default=dict)
     room_options = Column(JSON, nullable=False, default=lambda: list(DEFAULT_ROOMS))
+
+    # Optional Team A / Team B alternating-weekend rotation. Off by default
+    # because not every unit schedules weekends this way.
+    weekend_team_rotation_enabled = Column(Boolean, nullable=False, default=False)
+
+    # Print layout for assignment sheets:
+    # - separate: one sheet per shift (day and night split)
+    # - stacked: day and night sections on the same page
+    print_shift_layout_mode = Column(String(32), nullable=False, default="separate")
 
     # Which delegatable actions each non-admin leadership role may perform.
     manager_permissions = Column(

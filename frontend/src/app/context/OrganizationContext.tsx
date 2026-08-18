@@ -47,6 +47,8 @@ export interface Organization {
   timezone: string;
   full_time_weekly_target?: number; // bi-weekly hours (default 75)
   part_time_weekly_target?: number; // bi-weekly hours (default 63.75)
+  weekend_team_rotation_enabled?: boolean;
+  print_shift_layout_mode?: "separate" | "stacked";
   is_active: boolean;
   invite_code?: string;
   logo_url?: string;
@@ -114,6 +116,8 @@ interface OrganizationContextType {
     fullTimeBiWeeklyTarget: number,
     partTimeBiWeeklyTarget: number,
   ) => Promise<void>;
+  updateWeekendTeamRotationEnabled: (enabled: boolean) => Promise<void>;
+  updatePrintShiftLayoutMode: (mode: "separate" | "stacked") => Promise<void>;
 
   // Helper to get auth headers for API calls
   getAuthHeaders: () => Promise<Record<string, string>>;
@@ -490,6 +494,87 @@ export function OrganizationProvider({
     [currentOrganization, getToken, refreshOrganizations],
   );
 
+  // Toggle optional Team A / Team B alternating-weekend rotation.
+  const updateWeekendTeamRotationEnabled = useCallback(
+    async (enabled: boolean): Promise<void> => {
+      if (!currentOrganization) {
+        throw new Error("No organization selected");
+      }
+
+      const token = await getToken();
+      if (!token) {
+        throw new Error("Not authenticated. Please sign in again.");
+      }
+
+      const res = await fetch(
+        `${getApiBase()}/organizations/${currentOrganization.id}`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "X-Organization-ID": currentOrganization.id,
+          },
+          body: JSON.stringify({
+            weekend_team_rotation_enabled: enabled,
+          }),
+        },
+      );
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to update weekend rotation");
+      }
+
+      setCurrentOrgState((prev) =>
+        prev ? { ...prev, weekend_team_rotation_enabled: enabled } : null,
+      );
+
+      await refreshOrganizations();
+    },
+    [currentOrganization, getToken, refreshOrganizations],
+  );
+
+  const updatePrintShiftLayoutMode = useCallback(
+    async (mode: "separate" | "stacked"): Promise<void> => {
+      if (!currentOrganization) {
+        throw new Error("No organization selected");
+      }
+
+      const token = await getToken();
+      if (!token) {
+        throw new Error("Not authenticated. Please sign in again.");
+      }
+
+      const res = await fetch(
+        `${getApiBase()}/organizations/${currentOrganization.id}`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "X-Organization-ID": currentOrganization.id,
+          },
+          body: JSON.stringify({
+            print_shift_layout_mode: mode,
+          }),
+        },
+      );
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to update print layout mode");
+      }
+
+      setCurrentOrgState((prev) =>
+        prev ? { ...prev, print_shift_layout_mode: mode } : null,
+      );
+
+      await refreshOrganizations();
+    },
+    [currentOrganization, getToken, refreshOrganizations],
+  );
+
   // Approve a pending member (admin only)
   const approveMember = useCallback(
     async (orgId: string, memberId: string): Promise<void> => {
@@ -646,6 +731,8 @@ export function OrganizationProvider({
       refreshOrganizations,
       updateOrganizationLogo,
       updateOrganizationWeeklyTargets,
+      updateWeekendTeamRotationEnabled,
+      updatePrintShiftLayoutMode,
       getAuthHeaders,
     }),
     [
@@ -671,6 +758,8 @@ export function OrganizationProvider({
       refreshOrganizations,
       updateOrganizationLogo,
       updateOrganizationWeeklyTargets,
+      updateWeekendTeamRotationEnabled,
+      updatePrintShiftLayoutMode,
       getAuthHeaders,
     ],
   );

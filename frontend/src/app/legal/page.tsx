@@ -15,6 +15,10 @@ export default function LegalPage() {
         <p className="text-gray-700 mb-6">
           Access Chronofy legal and policy pages from one place.
         </p>
+        <p className="text-sm text-gray-600 mb-6">
+          Built by VaultDeposit Technologies Inc. (Registered in Canada and
+          Quebec).
+        </p>
         <ul className="space-y-2 mb-8">
           {links.map((item) => (
             <li key={item.href}>

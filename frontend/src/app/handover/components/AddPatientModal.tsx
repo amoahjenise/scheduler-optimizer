@@ -619,7 +619,7 @@ export default function AddPatientModal({
             </div>
           )}
 
-          {/* Team selection */}
+          {/* Service selection */}
           {config.team.show && (
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">
@@ -631,7 +631,7 @@ export default function AddPatientModal({
               <div className="flex gap-1 flex-wrap">
                 {teamSuggestions.length === 0 ? (
                   <span className="text-xs text-amber-700">
-                    Team options unavailable. Ask an admin to configure teams.
+                    Service options unavailable. Ask an admin to configure services.
                   </span>
                 ) : (
                   teamSuggestions.map((team) => (

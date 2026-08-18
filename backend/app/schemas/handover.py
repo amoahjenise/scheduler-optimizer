@@ -246,6 +246,7 @@ class HandoverCreate(HandoverBase):
 
 class HandoverUpdate(BaseModel):
     """Schema for updating a handover (all fields optional)."""
+    outgoing_nurse: Optional[str] = Field(None, max_length=100)
     incoming_nurse: Optional[str] = Field(None, max_length=100)
     
     # Embedded patient demographics (editable on the handover)
