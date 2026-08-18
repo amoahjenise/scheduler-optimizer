@@ -531,10 +531,14 @@ export default function ScheduleDetailsPage() {
 
           <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-2 text-xs text-slate-600 flex flex-wrap items-center gap-4">
             <span>
-              Revision ID: <span className="font-mono text-slate-800">{schedule.id}</span>
+              Revision ID:{" "}
+              <span className="font-mono text-slate-800">{schedule.id}</span>
             </span>
             <span>
-              Family Root: <span className="font-mono text-slate-800">{versionRootId || schedule.id}</span>
+              Family Root:{" "}
+              <span className="font-mono text-slate-800">
+                {versionRootId || schedule.id}
+              </span>
             </span>
           </div>
 

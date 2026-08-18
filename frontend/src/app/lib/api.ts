@@ -1167,7 +1167,10 @@ export async function fetchTodaysHandoversByShiftAPI(
     throw new Error(err?.detail || "Failed to fetch today's handovers");
   }
 
-  const payload = (await res.json()) as { handovers?: Handover[]; total?: number };
+  const payload = (await res.json()) as {
+    handovers?: Handover[];
+    total?: number;
+  };
   const all = payload.handovers || [];
   return {
     day: all.filter((handover) => handover.shift_type === "day"),

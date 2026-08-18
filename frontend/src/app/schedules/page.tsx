@@ -359,10 +359,14 @@ export default function SchedulesPage() {
                           }
                           className="px-2 py-1 rounded border border-gray-200 text-gray-600 hover:bg-gray-50"
                         >
-                          {version.id.slice(0, 8)} · {new Date(version.created_at).toLocaleDateString(locale, {
-                            month: "short",
-                            day: "numeric",
-                          })}
+                          {version.id.slice(0, 8)} ·{" "}
+                          {new Date(version.created_at).toLocaleDateString(
+                            locale,
+                            {
+                              month: "short",
+                              day: "numeric",
+                            },
+                          )}
                           {version.is_finalized ? " (final)" : " (draft)"}
                         </Link>
                       ))}

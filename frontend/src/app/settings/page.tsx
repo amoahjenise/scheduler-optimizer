@@ -76,7 +76,12 @@ const getSettingsSections = (t: SettingsTranslator, isAdmin: boolean) =>
     ...(isAdmin ? [{ id: "logo-settings", label: t("logo") }] : []),
     { id: "organization-settings", label: t("organization") },
     ...(isAdmin
-      ? [{ id: "assignment-print-layout-settings", label: t("printLayoutMenu") }]
+      ? [
+          {
+            id: "assignment-print-layout-settings",
+            label: t("printLayoutMenu"),
+          },
+        ]
       : []),
     ...(isAdmin ? [{ id: "staffing-defaults", label: t("staffing") }] : []),
     ...(isAdmin
@@ -95,7 +100,9 @@ const getSettingsSections = (t: SettingsTranslator, isAdmin: boolean) =>
       : []),
     ...(isAdmin ? [{ id: "services-settings", label: t("services") }] : []),
     ...(isAdmin ? [{ id: "rooms-settings", label: t("rooms") }] : []),
-    ...(isAdmin ? [{ id: "role-permissions", label: t("rolesPermissions") }] : []),
+    ...(isAdmin
+      ? [{ id: "role-permissions", label: t("rolesPermissions") }]
+      : []),
     ...(isAdmin ? [{ id: "data-management", label: t("data") }] : []),
     { id: "account-info", label: t("account") },
   ] as const;
@@ -438,7 +445,9 @@ export default function SettingsPage() {
           setRooms([]);
           setTeamsMessage("Unable to load team settings from server");
           setTeamsMessageType("error");
-          setStaffingTeamsMessage("Unable to load staffing team settings from server");
+          setStaffingTeamsMessage(
+            "Unable to load staffing team settings from server",
+          );
           setStaffingTeamsMessageType("error");
           setRoomsMessage("Unable to load room settings from server");
           setRoomsMessageType("error");
@@ -711,10 +720,7 @@ export default function SettingsPage() {
     }
   };
 
-  const showShiftCodeMessage = (
-    text: string,
-    type: "success" | "error",
-  ) => {
+  const showShiftCodeMessage = (text: string, type: "success" | "error") => {
     setShiftCodesMessage(text);
     setShiftCodesMessageType(type);
     setTimeout(() => setShiftCodesMessage(""), 3000);
@@ -910,8 +916,8 @@ export default function SettingsPage() {
             }
           }
 
-          const options: AssistantManagerMappingOption[] = roleBasedManagers.map(
-            (member) => {
+          const options: AssistantManagerMappingOption[] =
+            roleBasedManagers.map((member) => {
               const linkedNurse = nursesByUserId.get(member.user_id);
               return {
                 user_id: member.user_id,
@@ -925,8 +931,7 @@ export default function SettingsPage() {
                 employee_id: linkedNurse?.employee_id || undefined,
                 nurse_id: linkedNurse?.id,
               };
-            },
-          );
+            });
 
           setAssistantManagers(options);
         }
@@ -954,13 +959,7 @@ export default function SettingsPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    user?.id,
-    orgLoading,
-    currentOrganization?.id,
-    isAdmin,
-    approvedMembers,
-  ]);
+  }, [user?.id, orgLoading, currentOrganization?.id, isAdmin, approvedMembers]);
 
   const handleAddRoom = async () => {
     const trimmed = newRoom.trim();
@@ -1538,7 +1537,6 @@ export default function SettingsPage() {
                         </button>
                       </div>
                     </div>
-
                   </div>
                 )}
 
@@ -1906,7 +1904,9 @@ export default function SettingsPage() {
               <h2 className="text-xl font-semibold text-gray-900 mb-2">
                 {t("printLayoutCardTitle")}
               </h2>
-              <p className="text-sm text-gray-600 mb-4">{t("printLayoutCardDesc")}</p>
+              <p className="text-sm text-gray-600 mb-4">
+                {t("printLayoutCardDesc")}
+              </p>
 
               <div className="rounded-lg border border-gray-200 p-3">
                 <div className="flex items-center justify-between gap-3">
@@ -1924,8 +1924,8 @@ export default function SettingsPage() {
                       onClick={() => handleChangePrintLayoutMode("separate")}
                       disabled={savingPrintLayoutMode}
                       className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
-                        (currentOrganization.print_shift_layout_mode || "separate") ===
-                        "separate"
+                        (currentOrganization.print_shift_layout_mode ||
+                          "separate") === "separate"
                           ? "bg-blue-600 text-white"
                           : "bg-white text-gray-700 hover:bg-gray-50"
                       }`}
@@ -1937,8 +1937,8 @@ export default function SettingsPage() {
                       onClick={() => handleChangePrintLayoutMode("stacked")}
                       disabled={savingPrintLayoutMode}
                       className={`px-3 py-1.5 text-xs font-semibold transition-colors border-l border-gray-200 ${
-                        (currentOrganization.print_shift_layout_mode || "separate") ===
-                        "stacked"
+                        (currentOrganization.print_shift_layout_mode ||
+                          "separate") === "stacked"
                           ? "bg-blue-600 text-white"
                           : "bg-white text-gray-700 hover:bg-gray-50"
                       }`}
@@ -2139,8 +2139,12 @@ export default function SettingsPage() {
                               className="px-2 py-1.5 text-sm border border-gray-300 rounded"
                             >
                               <option value="day">{t("shiftTypeDay")}</option>
-                              <option value="night">{t("shiftTypeNight")}</option>
-                              <option value="combined">{t("shiftTypeCombined")}</option>
+                              <option value="night">
+                                {t("shiftTypeNight")}
+                              </option>
+                              <option value="combined">
+                                {t("shiftTypeCombined")}
+                              </option>
                             </select>
                             <div className="sm:col-span-6 flex gap-2 justify-end">
                               <button
@@ -2166,7 +2170,8 @@ export default function SettingsPage() {
                                 {item.code} - {item.label}
                               </p>
                               <p className="text-xs text-gray-600">
-                                {item.start_time} - {item.end_time} | {item.hours}h | {item.shift_type}
+                                {item.start_time} - {item.end_time} |{" "}
+                                {item.hours}h | {item.shift_type}
                               </p>
                             </div>
                             <div className="flex gap-2">
@@ -2458,7 +2463,9 @@ export default function SettingsPage() {
                           value={
                             assistantManagerTeamMap[assistantManager.user_id] ||
                             (assistantManager.nurse_id
-                              ? assistantManagerTeamMap[assistantManager.nurse_id] || ""
+                              ? assistantManagerTeamMap[
+                                  assistantManager.nurse_id
+                                ] || ""
                               : "")
                           }
                           onChange={(e) =>
@@ -2513,9 +2520,13 @@ export default function SettingsPage() {
                   {t("admin")}
                 </span>
               </div>
-              <p className="text-sm text-gray-600 mb-4">{t("manageServices")}</p>
+              <p className="text-sm text-gray-600 mb-4">
+                {t("manageServices")}
+              </p>
               <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
-                <p className="text-xs text-blue-800">{t("servicesStaffingHint")}</p>
+                <p className="text-xs text-blue-800">
+                  {t("servicesStaffingHint")}
+                </p>
               </div>
 
               {/* Current Teams */}
@@ -2909,7 +2920,7 @@ export default function SettingsPage() {
           {/* User Info Card */}
           <div
             id="account-info"
-            className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6"
+            className="scroll-mt-36 mt-8 bg-white rounded-xl shadow-sm border border-gray-200 p-6"
           >
             <h2 className="text-xl font-semibold text-gray-900 mb-4">
               {t("accountInformation")}
