@@ -17,6 +17,7 @@ import {
   DoorOpen,
 } from "lucide-react";
 import { useOrganization } from "../context/OrganizationContext";
+import RolePermissionsSection from "./RolePermissionsSection";
 import { cleanupOldHandoversAPI } from "../lib/api";
 import { getApiBase } from "../lib/runtimeApiBase";
 import { DEFAULT_ROOMS } from "../lib/roomsConfig";
@@ -42,11 +43,12 @@ type SettingsTranslator = (
 
 const getSettingsSections = (t: SettingsTranslator, isAdmin: boolean) =>
   [
-    { id: "logo-settings", label: t("logo") },
+    ...(isAdmin ? [{ id: "logo-settings", label: t("logo") }] : []),
     { id: "organization-settings", label: t("organization") },
-    { id: "staffing-defaults", label: t("staffing") },
+    ...(isAdmin ? [{ id: "staffing-defaults", label: t("staffing") }] : []),
     ...(isAdmin ? [{ id: "teams-settings", label: t("teams") }] : []),
     ...(isAdmin ? [{ id: "rooms-settings", label: t("rooms") }] : []),
+    ...(isAdmin ? [{ id: "role-permissions", label: t("rolesPermissions") }] : []),
     ...(isAdmin ? [{ id: "data-management", label: t("data") }] : []),
     { id: "account-info", label: t("account") },
   ] as const;
@@ -753,88 +755,90 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Logo Settings Card */}
-          <div
-            id="logo-settings"
-            className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
-          >
-            <h2 className="text-xl font-semibold text-gray-900 mb-4">
-              {t("logoSettings")}
-            </h2>
+          {/* Logo Settings Card (Admin Only) */}
+          {isAdmin && (
+            <div
+              id="logo-settings"
+              className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
+            >
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">
+                {t("logoSettings")}
+              </h2>
 
-            {/* Current Logo Preview */}
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 mb-3">
-                {t("currentLogo")}
-              </label>
-              <div className="flex items-center gap-4">
-                <div className="w-32 h-32 border-2 border-gray-200 rounded-lg flex items-center justify-center bg-gray-50 p-4">
-                  <img
-                    src={logoUrl}
-                    alt={t("currentLogo")}
-                    className="max-w-full max-h-full object-contain"
-                    onError={(e) => {
-                      e.currentTarget.src = "/MCH Logo.png";
-                    }}
-                  />
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-600 mb-2">
-                    {t("uploadCustomLogo")}
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    {t("logoRecommendations")}
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            {/* Upload Section */}
-            <div className="space-y-4">
-              <div>
-                <label
-                  htmlFor="logo-upload"
-                  className="flex items-center justify-center w-full px-6 py-4 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors group"
-                >
-                  <div className="flex items-center gap-3">
-                    <Upload className="w-5 h-5 text-gray-400 group-hover:text-blue-500" />
-                    <span className="text-sm font-medium text-gray-600 group-hover:text-blue-600">
-                      {uploading ? t("uploading") : t("clickToUpload")}
-                    </span>
-                  </div>
-                  <input
-                    id="logo-upload"
-                    type="file"
-                    accept="image/*"
-                    onChange={handleFileUpload}
-                    disabled={uploading}
-                    className="hidden"
-                  />
+              {/* Current Logo Preview */}
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-gray-700 mb-3">
+                  {t("currentLogo")}
                 </label>
+                <div className="flex items-center gap-4">
+                  <div className="w-32 h-32 border-2 border-gray-200 rounded-lg flex items-center justify-center bg-gray-50 p-4">
+                    <img
+                      src={logoUrl}
+                      alt={t("currentLogo")}
+                      className="max-w-full max-h-full object-contain"
+                      onError={(e) => {
+                        e.currentTarget.src = "/MCH Logo.png";
+                      }}
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm text-gray-600 mb-2">
+                      {t("uploadCustomLogo")}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      {t("logoRecommendations")}
+                    </p>
+                  </div>
+                </div>
               </div>
 
-              <button
-                onClick={handleReset}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
-              >
-                <RefreshCw className="w-4 h-4" />
-                {t("resetToDefault")}
-              </button>
+              {/* Upload Section */}
+              <div className="space-y-4">
+                <div>
+                  <label
+                    htmlFor="logo-upload"
+                    className="flex items-center justify-center w-full px-6 py-4 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Upload className="w-5 h-5 text-gray-400 group-hover:text-blue-500" />
+                      <span className="text-sm font-medium text-gray-600 group-hover:text-blue-600">
+                        {uploading ? t("uploading") : t("clickToUpload")}
+                      </span>
+                    </div>
+                    <input
+                      id="logo-upload"
+                      type="file"
+                      accept="image/*"
+                      onChange={handleFileUpload}
+                      disabled={uploading}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+
+                <button
+                  onClick={handleReset}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                  {t("resetToDefault")}
+                </button>
+              </div>
+
+              {/* Message Display */}
+              {message && (
+                <div
+                  className={`mt-4 p-3 rounded-lg text-sm ${
+                    messageType === "success"
+                      ? "bg-green-50 text-green-800 border border-green-200"
+                      : "bg-red-50 text-red-800 border border-red-200"
+                  }`}
+                >
+                  {message}
+                </div>
+              )}
             </div>
-
-            {/* Message Display */}
-            {message && (
-              <div
-                className={`mt-4 p-3 rounded-lg text-sm ${
-                  messageType === "success"
-                    ? "bg-green-50 text-green-800 border border-green-200"
-                    : "bg-red-50 text-red-800 border border-red-200"
-                }`}
-              >
-                {message}
-              </div>
-            )}
-          </div>
+          )}
 
           {/* Organization Settings Card - Only show if user has an organization */}
           {currentOrganization && (
@@ -1067,7 +1071,7 @@ export default function SettingsPage() {
                       </div>
                     )}
 
-                    <div className="space-y-2">
+                    <div className="max-h-64 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50/40 p-2 pr-1 space-y-2">
                       {approvedMembers
                         .filter((m) => m.id !== currentMembership?.id)
                         .map((member) => {
@@ -1082,7 +1086,7 @@ export default function SettingsPage() {
                           return (
                             <div
                               key={member.id}
-                              className="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3"
+                              className="rounded-lg border border-gray-200 bg-white px-4 py-3"
                             >
                               <div className="flex items-center justify-between gap-3">
                                 <div className="min-w-0">
@@ -1192,45 +1196,49 @@ export default function SettingsPage() {
                   </div>
                 )}
 
-                {/* Leave Organization */}
-                <div className="pt-4 border-t border-gray-200">
-                  <label className="block text-sm font-medium text-red-600 mb-1">
-                    <DoorOpen className="w-4 h-4 inline mr-1" />
-                    {t("leaveOrganizationTitle")}
-                  </label>
-                  <p className="text-xs text-gray-500 mb-3">
-                    {t("leaveOrganizationDescription")}{" "}
-                    <span className="font-medium">
-                      {currentOrganization.name}
-                    </span>
-                    . {t("leaveOrganizationNote")}
-                    {isAdmin && " " + t("leaveOrganizationAdminNote")}
-                  </p>
-                  <button
-                    onClick={async () => {
-                      if (
-                        !confirm(
-                          t("confirmLeave", { name: currentOrganization.name }),
+                {/* Leave Organization (Admin Only) */}
+                {isAdmin && (
+                  <div className="pt-4 border-t border-gray-200">
+                    <label className="block text-sm font-medium text-red-600 mb-1">
+                      <DoorOpen className="w-4 h-4 inline mr-1" />
+                      {t("leaveOrganizationTitle")}
+                    </label>
+                    <p className="text-xs text-gray-500 mb-3">
+                      {t("leaveOrganizationDescription")}{" "}
+                      <span className="font-medium">
+                        {currentOrganization.name}
+                      </span>
+                      . {t("leaveOrganizationNote")}
+                      {isAdmin && " " + t("leaveOrganizationAdminNote")}
+                    </p>
+                    <button
+                      onClick={async () => {
+                        if (
+                          !confirm(
+                            t("confirmLeave", {
+                              name: currentOrganization.name,
+                            }),
+                          )
                         )
-                      )
-                        return;
-                      try {
-                        await leaveOrganization(currentOrganization.id);
-                        router.push("/dashboard");
-                      } catch (err) {
-                        alert(
-                          err instanceof Error
-                            ? err.message
-                            : t("failedToLeave"),
-                        );
-                      }
-                    }}
-                    className="px-4 py-2 text-sm font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors"
-                  >
-                    <DoorOpen className="w-4 h-4 inline mr-1" />
-                    {t("leaveOrganizationTitle")}
-                  </button>
-                </div>
+                          return;
+                        try {
+                          await leaveOrganization(currentOrganization.id);
+                          router.push("/dashboard");
+                        } catch (err) {
+                          alert(
+                            err instanceof Error
+                              ? err.message
+                              : t("failedToLeave"),
+                          );
+                        }
+                      }}
+                      className="px-4 py-2 text-sm font-medium text-white bg-red-600 border border-red-700 rounded-lg hover:bg-red-700 transition-colors"
+                    >
+                      <DoorOpen className="w-4 h-4 inline mr-1" />
+                      {t("leaveOrganizationActionButton")}
+                    </button>
+                  </div>
+                )}
 
                 {/* Delete Organization - Admin only */}
                 {isAdmin && (
@@ -1300,72 +1308,74 @@ export default function SettingsPage() {
             </div>
           )}
 
-          {/* Staffing Defaults Card */}
-          <div
-            id="staffing-defaults"
-            className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
-          >
-            <div className="flex items-center gap-3 mb-4">
-              <Users className="w-6 h-6 text-emerald-600" />
-              <h2 className="text-xl font-semibold text-gray-900">
-                {t("staffingRequirementsDefaultsTitle")}
-              </h2>
-            </div>
-            <p className="text-sm text-gray-600 mb-4">
-              {t("staffingRequirementsDefaultsDesc")}
-            </p>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
-              {DEFAULT_SHIFT_TYPES.map((shift) => (
-                <div key={shift}>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">
-                    {shift}
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={50}
-                    step={1}
-                    value={staffingDefaults[shift] ?? 0}
-                    onChange={(e) =>
-                      setStaffingDefaults((prev) => ({
-                        ...prev,
-                        [shift]: parseInt(e.target.value) || 0,
-                      }))
-                    }
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
-                  />
-                </div>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => {
-                  saveStaffingDefaults(staffingDefaults);
-                  setStaffingMessage(t("staffingDefaultsSaved"));
-                  setTimeout(() => setStaffingMessage(""), 3000);
-                }}
-                className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors"
-              >
-                {t("saveDefaults")}
-              </button>
-              <button
-                onClick={() => {
-                  setStaffingDefaults({ ...DEFAULT_STAFF_REQUIREMENTS });
-                  saveStaffingDefaults(DEFAULT_STAFF_REQUIREMENTS);
-                  setStaffingMessage(t("resetToFactory"));
-                  setTimeout(() => setStaffingMessage(""), 3000);
-                }}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
-              >
-                {t("reset")}
-              </button>
-            </div>
-            {staffingMessage && (
-              <div className="mt-3 p-2 rounded-lg text-sm bg-green-50 text-green-800 border border-green-200">
-                {staffingMessage}
+          {/* Staffing Defaults Card (Admin Only) */}
+          {isAdmin && (
+            <div
+              id="staffing-defaults"
+              className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <Users className="w-6 h-6 text-emerald-600" />
+                <h2 className="text-xl font-semibold text-gray-900">
+                  {t("staffingRequirementsDefaultsTitle")}
+                </h2>
               </div>
-            )}
-          </div>
+              <p className="text-sm text-gray-600 mb-4">
+                {t("staffingRequirementsDefaultsDesc")}
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+                {DEFAULT_SHIFT_TYPES.map((shift) => (
+                  <div key={shift}>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">
+                      {shift}
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={50}
+                      step={1}
+                      value={staffingDefaults[shift] ?? 0}
+                      onChange={(e) =>
+                        setStaffingDefaults((prev) => ({
+                          ...prev,
+                          [shift]: parseInt(e.target.value) || 0,
+                        }))
+                      }
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => {
+                    saveStaffingDefaults(staffingDefaults);
+                    setStaffingMessage(t("staffingDefaultsSaved"));
+                    setTimeout(() => setStaffingMessage(""), 3000);
+                  }}
+                  className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors"
+                >
+                  {t("saveDefaults")}
+                </button>
+                <button
+                  onClick={() => {
+                    setStaffingDefaults({ ...DEFAULT_STAFF_REQUIREMENTS });
+                    saveStaffingDefaults(DEFAULT_STAFF_REQUIREMENTS);
+                    setStaffingMessage(t("resetToFactory"));
+                    setTimeout(() => setStaffingMessage(""), 3000);
+                  }}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                >
+                  {t("reset")}
+                </button>
+              </div>
+              {staffingMessage && (
+                <div className="mt-3 p-2 rounded-lg text-sm bg-green-50 text-green-800 border border-green-200">
+                  {staffingMessage}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Teams Management Card */}
           {isAdmin && (
@@ -1383,6 +1393,16 @@ export default function SettingsPage() {
                 </span>
               </div>
               <p className="text-sm text-gray-600 mb-4">{t("manageTeams")}</p>
+              <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
+                <p className="text-xs text-blue-800">{t("manageTeamsStaffHint")}</p>
+                <button
+                  type="button"
+                  onClick={() => router.push("/nurses")}
+                  className="mt-2 text-xs font-semibold text-blue-700 hover:text-blue-900 underline underline-offset-2"
+                >
+                  {t("goToStaffManagement")}
+                </button>
+              </div>
 
               {/* Current Teams */}
               <div className="mb-4">
@@ -1766,6 +1786,11 @@ export default function SettingsPage() {
               )}
             </div>
           )}
+
+          {/* Roles & Permissions (admin only) */}
+          <div className="scroll-mt-36">
+            <RolePermissionsSection />
+          </div>
 
           {/* User Info Card */}
           <div

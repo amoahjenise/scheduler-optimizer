@@ -26,7 +26,7 @@ from app.schemas.burnout import (
     BurnoutConfigResponse,
 )
 from app.services.burnout_service import run_burnout_assessment, _get_config
-from app.core.auth import RequiredAuth, ManagerAuth
+from app.core.auth import RequiredAuth, BurnoutViewAuth as ManagerAuth
 
 router = APIRouter()
 

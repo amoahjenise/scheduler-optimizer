@@ -12,6 +12,32 @@ import React, {
 import { useAuth, useUser } from "@clerk/nextjs";
 import { getApiBase } from "../lib/runtimeApiBase";
 
+/**
+ * Actions an admin can delegate to managers / assistant managers.
+ * Mirrors DELEGATABLE_PERMISSIONS in backend/app/models/organization.py.
+ * Assigning a nurse to a hand-off is intentionally absent: every member,
+ * including nurses, is allowed to do that.
+ */
+export const ALL_PERMISSIONS = [
+  "manage_nurses",
+  "manage_schedules",
+  "manage_patients",
+  "manage_handovers",
+  "manage_announcements",
+  "manage_learning",
+  "view_burnout",
+  "manage_members",
+  "manage_org_settings",
+];
+
+export const MAX_ASSISTANT_MANAGERS = 2;
+
+export type MemberRoleValue =
+  | "admin"
+  | "manager"
+  | "assistant_manager"
+  | "nurse";
+
 // Types
 export interface Organization {
   id: string;
@@ -24,6 +50,8 @@ export interface Organization {
   is_active: boolean;
   invite_code?: string;
   logo_url?: string;
+  manager_permissions?: string[];
+  assistant_manager_permissions?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -34,7 +62,7 @@ export interface OrganizationMembership {
   user_id: string;
   user_email?: string;
   user_name?: string;
-  role: "admin" | "manager" | "nurse";
+  role: MemberRoleValue;
   is_active: boolean;
   is_approved: boolean;
   joined_at: string;
@@ -63,8 +91,12 @@ interface OrganizationContextType {
   // Role helpers
   isAdmin: boolean;
   isManager: boolean;
+  isAssistantManager: boolean;
   canManage: boolean;
   isPendingApproval: boolean;
+  /** Delegatable actions the current user may perform. */
+  permissions: string[];
+  hasPermission: (permission: string) => boolean;
 
   // Actions
   setCurrentOrganization: (orgId: string) => void;
@@ -145,7 +177,15 @@ export function OrganizationProvider({
 
     if (isSignedIn) {
       try {
-        const token = await getTokenRef.current();
+        let token = await getTokenRef.current();
+        // Clerk token can be transiently unavailable right after page load.
+        // Retry briefly so strict org/auth endpoints don't fail with 401.
+        if (!token) {
+          for (let attempt = 0; attempt < 3 && !token; attempt++) {
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            token = await getTokenRef.current();
+          }
+        }
         if (token) {
           headers["Authorization"] = `Bearer ${token}`;
         }
@@ -186,9 +226,7 @@ export function OrganizationProvider({
         // If no token, user might still be loading
         if (!token) {
           console.log("[OrganizationContext] No auth token available yet");
-          setOrganizations([]);
-          setCurrentOrgState(null);
-          setCurrentMembership(null);
+          setError("Authentication token not ready yet");
           return;
         }
 
@@ -207,9 +245,6 @@ export function OrganizationProvider({
             networkError,
           );
           setError("Unable to reach backend API");
-          setOrganizations([]);
-          setCurrentOrgState(null);
-          setCurrentMembership(null);
           return;
         }
 
@@ -557,7 +592,30 @@ export function OrganizationProvider({
   // Computed role capabilities from current membership
   const isAdmin: boolean = currentMembership?.role === "admin";
   const isManager: boolean = currentMembership?.role === "manager";
-  const canManage: boolean = isAdmin || isManager;
+  const isAssistantManager: boolean =
+    currentMembership?.role === "assistant_manager";
+
+  // What a manager / assistant manager may actually do is configured per
+  // organization by the admin. Admins implicitly hold everything.
+  const permissions: string[] = useMemo(() => {
+    if (isAdmin) return ALL_PERMISSIONS;
+    if (!currentOrganization) return [];
+    const granted = isManager
+      ? currentOrganization.manager_permissions
+      : isAssistantManager
+        ? currentOrganization.assistant_manager_permissions
+        : [];
+    return (granted || []).filter((p) => ALL_PERMISSIONS.includes(p));
+  }, [isAdmin, isManager, isAssistantManager, currentOrganization]);
+
+  const hasPermission = useCallback(
+    (permission: string) => permissions.includes(permission),
+    [permissions],
+  );
+
+  // Kept for existing call sites: true when the member holds any leadership
+  // permission, so narrowing a manager's rights doesn't remove all access.
+  const canManage: boolean = isAdmin || permissions.length > 0;
 
   // Computed: is current membership pending approval?
   const isPendingApproval: boolean =
@@ -573,7 +631,8 @@ export function OrganizationProvider({
       // Show onboarding modal only if: user is signed in, done loading,
       // AND has no organizations (organizations.length === 0)
       // Don't rely on onboardingCompleted flag as it can get out of sync
-      needsOnboarding: !!isSignedIn && !isLoading && organizations.length === 0,
+      needsOnboarding:
+        !!isSignedIn && !isLoading && !error && organizations.length === 0,
       isAdmin,
       isManager,
       canManage,
@@ -598,7 +657,10 @@ export function OrganizationProvider({
       isSignedIn,
       isAdmin,
       isManager,
+      isAssistantManager,
       canManage,
+      permissions,
+      hasPermission,
       isPendingApproval,
       setCurrentOrganization,
       createOrganization,

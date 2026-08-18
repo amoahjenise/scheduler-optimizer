@@ -9,7 +9,12 @@ from jwt import PyJWKClient
 from functools import lru_cache
 
 from app.db.deps import get_db
-from app.models.organization import Organization, OrganizationMember, MemberRole
+from app.models.organization import (
+    Organization,
+    OrganizationMember,
+    MemberRole,
+    DELEGATABLE_PERMISSIONS,
+)
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -50,10 +55,52 @@ class AuthContext:
     @property
     def is_admin(self) -> bool:
         return self.membership and self.membership.role == MemberRole.ADMIN
-    
+
+    @property
+    def is_manager(self) -> bool:
+        return self.membership and self.membership.role == MemberRole.MANAGER
+
+    @property
+    def is_assistant_manager(self) -> bool:
+        return self.membership and self.membership.role == MemberRole.ASSISTANT_MANAGER
+
+    @property
+    def permissions(self) -> list:
+        """Effective delegatable permissions for this member.
+
+        Admins always hold every permission. Managers and assistant managers
+        hold whatever the organization's admin has granted their role. Nurses
+        hold none of the delegatable permissions (they can still do everything
+        that isn't gated, such as assigning a nurse to a hand-off).
+        """
+        if not self.membership:
+            return []
+        if self.membership.role == MemberRole.ADMIN:
+            return list(DELEGATABLE_PERMISSIONS)
+        if not self.organization:
+            return []
+        if self.membership.role == MemberRole.MANAGER:
+            granted = self.organization.manager_permissions
+        elif self.membership.role == MemberRole.ASSISTANT_MANAGER:
+            granted = self.organization.assistant_manager_permissions
+        else:
+            return []
+        return [p for p in (granted or []) if p in DELEGATABLE_PERMISSIONS]
+
+    def has_permission(self, permission: str) -> bool:
+        return permission in self.permissions
+
     @property
     def can_manage(self) -> bool:
-        return self.membership and self.membership.role in [MemberRole.ADMIN, MemberRole.MANAGER]
+        """Backwards-compatible catch-all used by existing endpoints.
+
+        True when the member holds any leadership permission, so a manager whose
+        privileges the admin has narrowed still keeps access to what they were
+        granted rather than losing everything at once.
+        """
+        if self.is_admin:
+            return True
+        return bool(self.permissions)
     
     def __repr__(self):
         return f"<AuthContext user={self.user_id} org={self.organization_id} role={self.role}>"
@@ -211,6 +258,24 @@ def get_admin_auth(
     return auth
 
 
+def require_permission(permission: str):
+    """Build a dependency that requires one delegatable permission.
+
+    Admins always pass. Managers / assistant managers pass only when the
+    organization's admin has granted their role that action.
+    """
+
+    def _dependency(auth: AuthContext = Depends(get_org_required_auth)) -> AuthContext:
+        if not auth.has_permission(permission):
+            raise HTTPException(
+                status_code=403,
+                detail=f"You do not have permission to {permission.replace('_', ' ')}",
+            )
+        return auth
+
+    return _dependency
+
+
 def _build_auth_context(
     authorization: str,
     organization_id: Optional[str],
@@ -268,3 +333,15 @@ RequiredAuth = Annotated[AuthContext, Depends(get_required_auth)]
 OrgAuth = Annotated[AuthContext, Depends(get_org_required_auth)]
 ManagerAuth = Annotated[AuthContext, Depends(get_manager_auth)]
 AdminAuth = Annotated[AuthContext, Depends(get_admin_auth)]
+
+# Permission-scoped dependencies. Each one allows admins plus any role the
+# organization's admin has granted that specific action.
+NurseManageAuth = Annotated[AuthContext, Depends(require_permission("manage_nurses"))]
+ScheduleManageAuth = Annotated[AuthContext, Depends(require_permission("manage_schedules"))]
+PatientManageAuth = Annotated[AuthContext, Depends(require_permission("manage_patients"))]
+HandoverManageAuth = Annotated[AuthContext, Depends(require_permission("manage_handovers"))]
+AnnouncementManageAuth = Annotated[AuthContext, Depends(require_permission("manage_announcements"))]
+LearningManageAuth = Annotated[AuthContext, Depends(require_permission("manage_learning"))]
+BurnoutViewAuth = Annotated[AuthContext, Depends(require_permission("view_burnout"))]
+MemberManageAuth = Annotated[AuthContext, Depends(require_permission("manage_members"))]
+OrgSettingsAuth = Annotated[AuthContext, Depends(require_permission("manage_org_settings"))]

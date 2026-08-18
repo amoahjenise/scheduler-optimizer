@@ -2,14 +2,20 @@
 import logging
 import secrets
 import re
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Any, Dict, List
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from clerk_backend_api import Clerk
 
 from app.db.deps import get_db
-from app.models.organization import Organization, OrganizationMember, MemberRole
+from app.models.organization import (
+    Organization,
+    OrganizationMember,
+    MemberRole,
+    DELEGATABLE_PERMISSIONS,
+    MAX_ASSISTANT_MANAGERS,
+)
 from app.schemas.organization import (
     OrganizationCreate, OrganizationUpdate, Organization as OrganizationSchema,
     OrganizationWithMembers, OrganizationMember as MemberSchema,
@@ -19,7 +25,7 @@ from app.schemas.organization import (
 )
 from app.core.auth import (
     RequiredAuth, OrgAuth, AdminAuth, AuthContext,
-    get_required_auth, get_org_required_auth, get_admin_auth
+    get_required_auth, get_org_required_auth, get_admin_auth, require_permission
 )
 from app.api.routes.notification import create_notification
 from app.core.config import settings
@@ -282,6 +288,72 @@ def update_organization(
     return org
 
 
+@router.get("/{org_id}/role-permissions")
+def get_role_permissions(
+    org_id: str,
+    auth: AuthContext = Depends(get_org_required_auth),
+    db: Session = Depends(get_db),
+):
+    """Which delegatable actions each role may perform in this organization.
+
+    Readable by any member so the UI can hide controls the caller can't use.
+    """
+    if auth.organization_id != org_id:
+        raise HTTPException(status_code=403, detail="Cannot view a different organization")
+
+    org = auth.organization
+    return {
+        "available_permissions": DELEGATABLE_PERMISSIONS,
+        "manager_permissions": list(org.manager_permissions or []),
+        "assistant_manager_permissions": list(org.assistant_manager_permissions or []),
+        "max_assistant_managers": MAX_ASSISTANT_MANAGERS,
+        # Effective permissions for the caller, so the frontend doesn't have to
+        # re-derive the role rules.
+        "my_permissions": auth.permissions,
+        "my_role": auth.membership.role.value if auth.membership else None,
+    }
+
+
+@router.patch("/{org_id}/role-permissions")
+def update_role_permissions(
+    org_id: str,
+    payload: Dict[str, Any] = Body(...),
+    auth: AuthContext = Depends(get_admin_auth),
+    db: Session = Depends(get_db),
+):
+    """Admin-only: choose what managers and assistant managers can do."""
+    if auth.organization_id != org_id:
+        raise HTTPException(status_code=403, detail="Cannot manage a different organization")
+
+    org = auth.organization
+
+    def clean(values) -> List[str]:
+        if not isinstance(values, list):
+            raise HTTPException(status_code=400, detail="Permissions must be a list")
+        unknown = [v for v in values if v not in DELEGATABLE_PERMISSIONS]
+        if unknown:
+            raise HTTPException(
+                status_code=400, detail=f"Unknown permission(s): {', '.join(map(str, unknown))}"
+            )
+        # Preserve catalog order so the stored value is stable.
+        return [p for p in DELEGATABLE_PERMISSIONS if p in values]
+
+    if "manager_permissions" in payload:
+        org.manager_permissions = clean(payload["manager_permissions"])
+    if "assistant_manager_permissions" in payload:
+        org.assistant_manager_permissions = clean(payload["assistant_manager_permissions"])
+
+    db.commit()
+    db.refresh(org)
+
+    return {
+        "available_permissions": DELEGATABLE_PERMISSIONS,
+        "manager_permissions": list(org.manager_permissions or []),
+        "assistant_manager_permissions": list(org.assistant_manager_permissions or []),
+        "max_assistant_managers": MAX_ASSISTANT_MANAGERS,
+    }
+
+
 @router.get("/{org_id}/config-options", response_model=OrganizationConfigOptions)
 def get_organization_config_options(
     org_id: str,
@@ -432,8 +504,13 @@ def list_members(
         OrganizationMember.is_active == True
     ).all()
     
-    # Enrich members with Clerk user data
-    for member in members:
+    # Enrich only members missing cached identity data. Calling Clerk for every
+    # member on every request adds a network round-trip per member and makes
+    # member-backed pages noticeably slow.
+    stale_members = [m for m in members if not m.user_email or not m.user_name]
+    enriched = False
+
+    for member in stale_members:
         try:
             clerk_user = clerk_client.users.get(user_id=member.user_id)
             # Build full name from first and last name
@@ -454,12 +531,18 @@ def list_members(
                 # Fallback to first email if primary not found
                 if not member.user_email and clerk_user.email_addresses:
                     member.user_email = clerk_user.email_addresses[0].email_address
-                    
+
+            enriched = True
+
         except Exception as e:
             logger.warning(f"Failed to fetch Clerk user data for {member.user_id}: {e}")
             # Keep existing data if Clerk fetch fails
             pass
-    
+
+    # Persist so subsequent requests skip the Clerk round-trips entirely.
+    if enriched:
+        db.commit()
+
     return members
 
 
@@ -467,11 +550,11 @@ def list_members(
 def approve_member(
     org_id: str,
     member_id: str,
-    auth: AuthContext = Depends(get_admin_auth),
+    auth: AuthContext = Depends(require_permission("manage_members")),
     db: Session = Depends(get_db)
 ):
     """
-    Approve a pending member. Admin only.
+    Approve a pending member. Requires the manage_members permission.
     """
     if auth.organization_id != org_id:
         raise HTTPException(status_code=403, detail="Cannot manage members of a different organization")
@@ -500,11 +583,11 @@ def approve_member(
 def reject_member(
     org_id: str,
     member_id: str,
-    auth: AuthContext = Depends(get_admin_auth),
+    auth: AuthContext = Depends(require_permission("manage_members")),
     db: Session = Depends(get_db)
 ):
     """
-    Reject (remove) a pending member. Admin only.
+    Reject (remove) a pending member. Requires the manage_members permission.
     """
     if auth.organization_id != org_id:
         raise HTTPException(status_code=403, detail="Cannot manage members of a different organization")
@@ -560,7 +643,40 @@ def update_member(
             ).count()
             if admin_count <= 1:
                 raise HTTPException(status_code=400, detail="Cannot remove the last admin")
-    
+
+    # An organization runs with one manager and at most two assistant managers.
+    if member_in.role == MemberRole.MANAGER and member.role != MemberRole.MANAGER:
+        existing_manager = db.query(OrganizationMember).filter(
+            OrganizationMember.organization_id == org_id,
+            OrganizationMember.role == MemberRole.MANAGER,
+            OrganizationMember.is_active == True,
+            OrganizationMember.id != member_id,
+        ).first()
+        if existing_manager:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{existing_manager.user_name or 'Another member'} is already the manager. "
+                    "Change their role first."
+                ),
+            )
+
+    if (
+        member_in.role == MemberRole.ASSISTANT_MANAGER
+        and member.role != MemberRole.ASSISTANT_MANAGER
+    ):
+        assistant_count = db.query(OrganizationMember).filter(
+            OrganizationMember.organization_id == org_id,
+            OrganizationMember.role == MemberRole.ASSISTANT_MANAGER,
+            OrganizationMember.is_active == True,
+            OrganizationMember.id != member_id,
+        ).count()
+        if assistant_count >= MAX_ASSISTANT_MANAGERS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only {MAX_ASSISTANT_MANAGERS} assistant managers are allowed",
+            )
+
     if member_in.role is not None:
         member.role = member_in.role
     if member_in.is_active is not None:
@@ -705,19 +821,25 @@ def leave_organization(
     """
     if auth.organization_id != org_id:
         raise HTTPException(status_code=403, detail="Cannot leave a different organization")
+
+    # Only admins can self-remove. Nurses/managers must be removed by an admin.
+    if auth.membership.role != MemberRole.ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail="Only admins can remove members from this organization.",
+        )
     
     # Prevent leaving if you're the last admin
-    if auth.membership.role == MemberRole.ADMIN:
-        admin_count = db.query(OrganizationMember).filter(
-            OrganizationMember.organization_id == org_id,
-            OrganizationMember.role == MemberRole.ADMIN,
-            OrganizationMember.is_active == True
-        ).count()
-        if admin_count <= 1:
-            raise HTTPException(
-                status_code=400, 
-                detail="Cannot leave: you are the last admin. Transfer admin role first or delete the organization."
-            )
+    admin_count = db.query(OrganizationMember).filter(
+        OrganizationMember.organization_id == org_id,
+        OrganizationMember.role == MemberRole.ADMIN,
+        OrganizationMember.is_active == True
+    ).count()
+    if admin_count <= 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot leave: you are the last admin. Transfer admin role first or delete the organization."
+        )
     
     auth.membership.is_active = False
     db.commit()

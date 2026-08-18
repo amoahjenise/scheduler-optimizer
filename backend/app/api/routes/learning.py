@@ -20,6 +20,7 @@ from app.models.learning import (
     LearningAssignmentCompletion,
 )
 from app.models.nurse import Nurse
+from app.models.organization import OrganizationMember
 from app.schemas.learning import (
     LearningModuleCreate,
     LearningModuleUpdate,
@@ -36,7 +37,7 @@ from app.schemas.learning import (
     LearningAssignmentResponse,
     AssignmentCompletionResponse,
 )
-from app.core.auth import RequiredAuth, ManagerAuth, OrgAuth
+from app.core.auth import RequiredAuth, LearningManageAuth as ManagerAuth, OrgAuth
 
 router = APIRouter()
 
@@ -434,6 +435,46 @@ def _decorate_assignment(
     return payload
 
 
+def _resolve_user_display_name(
+    db: Session,
+    organization_id: str,
+    user_id: str,
+    preferred_name: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve user display name: nurse profile -> account/org member -> user id."""
+    nurse = (
+        db.query(Nurse)
+        .filter(
+            Nurse.organization_id == organization_id,
+            Nurse.user_id == user_id,
+        )
+        .first()
+    )
+    if nurse and nurse.name:
+        return nurse.name
+
+    if preferred_name and preferred_name != user_id:
+        return preferred_name
+
+    member = (
+        db.query(OrganizationMember)
+        .filter(
+            OrganizationMember.organization_id == organization_id,
+            OrganizationMember.user_id == user_id,
+        )
+        .first()
+    )
+    if member and (member.user_name or member.user_email):
+        return member.user_name or member.user_email
+
+    return user_id or preferred_name
+
+
+def _resolve_completion_user_name(db: Session, organization_id: str, user_id: str) -> Optional[str]:
+    """Best-effort human display name for assignment completion logs."""
+    return _resolve_user_display_name(db, organization_id, user_id)
+
+
 @router.post("/assignments", response_model=LearningAssignmentResponse, status_code=201)
 def create_assignment(
     body: LearningAssignmentCreate,
@@ -446,6 +487,13 @@ def create_assignment(
     if body.assignment_type in ("link", "reading") and not body.url:
         raise HTTPException(status_code=400, detail="url is required for link and reading assignments")
 
+    creator_name = _resolve_user_display_name(
+        db,
+        auth.organization_id,
+        auth.user_id,
+        auth.user_name or auth.user_email,
+    )
+
     assignment = LearningAssignment(
         organization_id=auth.organization_id,
         title=body.title,
@@ -457,7 +505,7 @@ def create_assignment(
         due_date=body.due_date,
         is_mandatory=body.is_mandatory,
         created_by=auth.user_id,
-        created_by_name=auth.user_name,
+        created_by_name=creator_name,
     )
     db.add(assignment)
     db.commit()
@@ -481,7 +529,7 @@ def list_assignments(
         LearningAssignment.organization_id == auth.organization_id
     )
 
-    if not auth.can_manage:
+    if not auth.has_permission("manage_learning"):
         team = _viewer_team(db, auth)
         if team:
             query = query.filter(
@@ -495,6 +543,15 @@ def list_assignments(
     assignments = query.order_by(LearningAssignment.created_at.desc()).all()
     if not assignments:
         return []
+
+    for assignment in assignments:
+        if assignment.created_by:
+            assignment.created_by_name = _resolve_user_display_name(
+                db,
+                auth.organization_id,
+                assignment.created_by,
+                assignment.created_by_name,
+            )
 
     assignment_ids = [a.id for a in assignments]
     completions = (
@@ -600,13 +657,29 @@ def complete_assignment(
         .first()
     )
     if existing:
+        if not existing.user_name:
+            existing.user_name = _resolve_user_display_name(
+                db,
+                auth.organization_id,
+                auth.user_id,
+                auth.user_name or auth.user_email,
+            )
+            db.commit()
+            db.refresh(existing)
         return existing
+
+    completion_user_name = _resolve_user_display_name(
+        db,
+        auth.organization_id,
+        auth.user_id,
+        auth.user_name or auth.user_email,
+    )
 
     completion = LearningAssignmentCompletion(
         assignment_id=assignment_id,
         organization_id=auth.organization_id,
         user_id=auth.user_id,
-        user_name=auth.user_name,
+        user_name=completion_user_name,
     )
     db.add(completion)
     db.commit()
@@ -635,9 +708,24 @@ def list_assignment_completions(
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    return (
+    completions = (
         db.query(LearningAssignmentCompletion)
         .filter(LearningAssignmentCompletion.assignment_id == assignment_id)
         .order_by(LearningAssignmentCompletion.completed_at.desc())
         .all()
     )
+
+    updated = False
+    for completion in completions:
+        if not completion.user_name:
+            completion.user_name = _resolve_user_display_name(
+                db,
+                auth.organization_id,
+                completion.user_id,
+            )
+            updated = True
+
+    if updated:
+        db.commit()
+
+    return completions

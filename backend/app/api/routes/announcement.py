@@ -11,15 +11,59 @@ from sqlalchemy.orm import Session
 from app.db.deps import get_db
 from app.models.announcement import Announcement
 from app.models.nurse import Nurse
+from app.models.organization import OrganizationMember
 from app.schemas.announcement import (
     AnnouncementCreate,
     AnnouncementUpdate,
     AnnouncementResponse,
 )
-from app.core.auth import AuthContext, get_org_required_auth, get_manager_auth
+from app.core.auth import (
+    AuthContext,
+    get_org_required_auth,
+    require_permission,
+)
+
+# Publishing / editing announcements is a delegatable action.
+get_manager_auth = require_permission("manage_announcements")
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _resolve_author_display_name(
+    db: Session,
+    organization_id: str,
+    user_id: Optional[str],
+    current_name: Optional[str],
+) -> Optional[str]:
+    if user_id:
+        linked_nurse = (
+            db.query(Nurse)
+            .filter(
+                Nurse.organization_id == organization_id,
+                Nurse.user_id == user_id,
+            )
+            .first()
+        )
+        if linked_nurse and linked_nurse.name:
+            return linked_nurse.name
+
+    if current_name and current_name != user_id:
+        return current_name
+
+    if user_id:
+        member = (
+            db.query(OrganizationMember)
+            .filter(
+                OrganizationMember.organization_id == organization_id,
+                OrganizationMember.user_id == user_id,
+            )
+            .first()
+        )
+        if member and (member.user_name or member.user_email):
+            return member.user_name or member.user_email
+
+    return user_id or current_name
 
 
 def _viewer_team(db: Session, auth: AuthContext) -> Optional[str]:
@@ -43,6 +87,13 @@ def create_announcement(
     db: Session = Depends(get_db),
 ):
     """Create an announcement. Managers and admins only."""
+    author_name = _resolve_author_display_name(
+        db,
+        auth.organization_id,
+        auth.user_id,
+        auth.user_name or auth.user_email,
+    )
+
     announcement = Announcement(
         organization_id=auth.organization_id,
         title=body.title,
@@ -52,7 +103,7 @@ def create_announcement(
         is_pinned=body.is_pinned,
         expires_at=body.expires_at,
         created_by=auth.user_id,
-        created_by_name=auth.user_name,
+        created_by_name=author_name,
     )
     db.add(announcement)
     db.commit()
@@ -87,7 +138,7 @@ def list_announcements(
             or_(Announcement.expires_at.is_(None), Announcement.expires_at > now)
         )
 
-    if not auth.can_manage:
+    if not auth.has_permission("manage_announcements"):
         team = _viewer_team(db, auth)
         if team:
             query = query.filter(
@@ -103,6 +154,14 @@ def list_announcements(
             )
 
     announcements = query.all()
+
+    for announcement in announcements:
+        announcement.created_by_name = _resolve_author_display_name(
+            db,
+            auth.organization_id,
+            announcement.created_by,
+            announcement.created_by_name,
+        )
 
     # Pinned first, then newest first.
     announcements.sort(key=lambda a: (not a.is_pinned, -a.created_at.timestamp()))

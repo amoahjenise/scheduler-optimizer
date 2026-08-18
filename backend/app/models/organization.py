@@ -18,7 +18,33 @@ class MemberRole(str, enum.Enum):
     """Roles for organization members."""
     ADMIN = "admin"           # Full access, manage users and settings
     MANAGER = "manager"       # Create/edit schedules, manage nurses
+    ASSISTANT_MANAGER = "assistant_manager"  # Stands in for the manager
     NURSE = "nurse"           # View schedules, create handovers
+
+
+# Actions an admin can delegate. Admins always hold all of them; what a
+# manager / assistant manager may do is configured per organization.
+# Note: assigning a nurse to a hand-off is deliberately NOT here — every
+# member can do that, including nurses.
+DELEGATABLE_PERMISSIONS = [
+    "manage_nurses",
+    "manage_schedules",
+    "manage_patients",
+    "manage_handovers",
+    "manage_announcements",
+    "manage_learning",
+    "view_burnout",
+    "manage_members",
+    "manage_org_settings",
+]
+
+# Managers get everything by default; assistant managers cover for the manager,
+# so they start with the same set and can be narrowed by the admin.
+DEFAULT_MANAGER_PERMISSIONS = list(DELEGATABLE_PERMISSIONS)
+DEFAULT_ASSISTANT_MANAGER_PERMISSIONS = list(DELEGATABLE_PERMISSIONS)
+
+# Only two assistant managers are allowed per organization.
+MAX_ASSISTANT_MANAGERS = 2
 
 
 class Organization(Base):
@@ -43,6 +69,14 @@ class Organization(Base):
     handoff_retention_days = Column(Integer, nullable=False, default=30)
     team_options = Column(JSON, nullable=False, default=lambda: list(DEFAULT_TEAMS))
     room_options = Column(JSON, nullable=False, default=lambda: list(DEFAULT_ROOMS))
+
+    # Which delegatable actions each non-admin leadership role may perform.
+    manager_permissions = Column(
+        JSON, nullable=False, default=lambda: list(DEFAULT_MANAGER_PERMISSIONS)
+    )
+    assistant_manager_permissions = Column(
+        JSON, nullable=False, default=lambda: list(DEFAULT_ASSISTANT_MANAGER_PERMISSIONS)
+    )
     
     # Branding
     logo_url = Column(Text, nullable=True)  # Base64 data URL or external URL
