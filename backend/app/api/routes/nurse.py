@@ -8,7 +8,7 @@ from pydantic import UUID4
 
 from app.db.deps import get_db
 from app.models.nurse import Nurse
-from app.models.organization import OrganizationMember
+from app.models.organization import OrganizationMember, MemberRole
 from app.schemas.nurse import NurseCreate, NurseUpdate, NurseResponse, NurseListResponse
 from app.core.auth import OptionalAuth, ManagerAuth, AuthContext
 
@@ -75,6 +75,41 @@ def _resolve_user_scope(auth: AuthContext, query_user_id: Optional[str]) -> Opti
         return auth.user_id
     # Unauthenticated - never allow user_id bypass
     return None
+
+
+def _assert_assistant_manager_membership(
+    db: Session,
+    *,
+    organization_id: Optional[str],
+    user_id: Optional[str],
+):
+    if not organization_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot validate assistant manager role without organization context",
+        )
+
+    if not user_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Assistant manager staffing role requires a linked member account",
+        )
+
+    membership = (
+        db.query(OrganizationMember)
+        .filter(
+            OrganizationMember.organization_id == organization_id,
+            OrganizationMember.user_id == user_id,
+            OrganizationMember.is_active == True,
+            OrganizationMember.is_approved == True,
+        )
+        .first()
+    )
+    if not membership or membership.role != MemberRole.ASSISTANT_MANAGER:
+        raise HTTPException(
+            status_code=400,
+            detail="Staffing role assistant manager is only allowed for approved assistant manager members",
+        )
 
 
 @router.get("", response_model=NurseListResponse)
@@ -211,6 +246,13 @@ def create_nurse(
         )
     
     # Create nurse with organization_id
+    if nurse_data.staffing_role == "assistant_manager":
+        _assert_assistant_manager_membership(
+            db,
+            organization_id=org_id,
+            user_id=effective_user_id,
+        )
+
     nurse = Nurse(
         user_id=effective_user_id,
         organization_id=org_id,
@@ -304,6 +346,15 @@ def update_nurse(
                 status_code=400,
                 detail=f"Nurse with name '{update_data['name']}' already exists"
             )
+
+    next_user_id = update_data["user_id"] if "user_id" in update_data else nurse.user_id
+    next_staffing_role = update_data.get("staffing_role", nurse.staffing_role)
+    if next_staffing_role == "assistant_manager":
+        _assert_assistant_manager_membership(
+            db,
+            organization_id=auth.organization_id or nurse.organization_id,
+            user_id=next_user_id,
+        )
     
     for field, value in update_data.items():
         setattr(nurse, field, value)

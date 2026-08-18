@@ -95,6 +95,10 @@ def get_todays_handovers(
     auth: OptionalAuth,
     db: Session = Depends(get_db),
     shift_type: Optional[str] = Query(None, description="Filter by shift type"),
+    split_by_shift: bool = Query(
+        False,
+        description="When true and shift_type is not provided, keep separate day/night entries per patient",
+    ),
 ):
     """
     Get all handovers for today's date.
@@ -122,10 +126,9 @@ def get_todays_handovers(
     if shift_type:
         query = query.filter(Handover.shift_type == shift_type)
     
-    # Return only the most recent handover per patient for today.
-    # This prevents inflated counts when duplicate rows exist.
-    # Dedup key = patient identity only (NOT shift_type), so each patient
-    # appears at most once in the list regardless of day/night handovers.
+    # Return only the most recent handover per patient key for today.
+    # By default this dedupes patient identity across shifts. When callers
+    # request split_by_shift, keep separate day/night rows for the same patient.
     ordered = query.order_by(Handover.updated_at.desc(), Handover.created_at.desc()).all()
 
     deduped: list[Handover] = []
@@ -140,6 +143,8 @@ def get_todays_handovers(
                 (handover.p_last_name or "").strip().lower(),
                 (handover.p_room_number or "").strip(),
             )
+        if split_by_shift and not shift_type:
+            key = (*key, handover.shift_type or "")
         if key in seen_keys:
             continue
         seen_keys.add(key)

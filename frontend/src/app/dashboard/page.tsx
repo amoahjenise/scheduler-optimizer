@@ -7,7 +7,7 @@ import { useTranslations, useLocale } from "next-intl";
 import {
   fetchPatientsAPI,
   fetchHandoversAPI,
-  fetchTodaysHandoversAPI,
+  fetchTodaysHandoversByShiftAPI,
   fetchOptimizedSchedulesAPI,
   fetchOptimizedScheduleByIdAPI,
   fetchDeletionActivitiesAPI,
@@ -364,15 +364,13 @@ export default function Dashboard() {
         const [
           nursesResult,
           patientsResult,
-          dayHandoversResult,
-          nightHandoversResult,
+          handoversByShiftResult,
           schedulesResult,
           deletionsResult,
         ] = await Promise.allSettled([
           listNursesAPI(user?.id || "", 1, 500, undefined, authHeaders),
           fetchPatientsAPI({ active_only: true }, authHeaders),
-          fetchTodaysHandoversAPI("day", authHeaders),
-          fetchTodaysHandoversAPI("night", authHeaders),
+          fetchTodaysHandoversByShiftAPI(authHeaders),
           fetchOptimizedSchedulesAPI(authHeaders, {
             includeScheduleData: false,
             timeoutMs: 12000,
@@ -431,18 +429,14 @@ export default function Dashboard() {
           patientsResult.status === "fulfilled"
             ? patientsResult.value
             : { patients: [], total: 0 };
-        const dayHandovers =
-          dayHandoversResult.status === "fulfilled"
-            ? dayHandoversResult.value
-            : { handovers: [], total: 0 };
-        const nightHandovers =
-          nightHandoversResult.status === "fulfilled"
-            ? nightHandoversResult.value
-            : { handovers: [], total: 0 };
+        const handoversByShift =
+          handoversByShiftResult.status === "fulfilled"
+            ? handoversByShiftResult.value
+            : { day: [], night: [], total: 0 };
 
         setTodayHandovers({
-          day: dayHandovers.handovers || [],
-          night: nightHandovers.handovers || [],
+          day: handoversByShift.day || [],
+          night: handoversByShift.night || [],
         });
 
         let schedulesList: OptimizedSchedule[] = [];
@@ -518,8 +512,8 @@ export default function Dashboard() {
         }
 
         // Include ALL handovers: both linked (patient_id) and embedded (p_first_name)
-        const allHandoversDay = dayHandovers.handovers || [];
-        const allHandoversNight = nightHandovers.handovers || [];
+        const allHandoversDay = handoversByShift.day || [];
+        const allHandoversNight = handoversByShift.night || [];
 
         // Combine and dedupe by patient + shift (defensive guard)
         const allHandoversRaw = [...allHandoversDay, ...allHandoversNight];

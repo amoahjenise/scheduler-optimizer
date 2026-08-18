@@ -1155,6 +1155,26 @@ export async function fetchTodaysHandoversAPI(
   return res.json();
 }
 
+export async function fetchTodaysHandoversByShiftAPI(
+  headers?: Record<string, string>,
+): Promise<{ day: Handover[]; night: Handover[]; total: number }> {
+  const res = await fetch(`${API_BASE}/handovers/today?split_by_shift=true`, {
+    headers,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    throw new Error(err?.detail || "Failed to fetch today's handovers");
+  }
+
+  const payload = (await res.json()) as { handovers?: Handover[]; total?: number };
+  const all = payload.handovers || [];
+  return {
+    day: all.filter((handover) => handover.shift_type === "day"),
+    night: all.filter((handover) => handover.shift_type === "night"),
+    total: payload.total || all.length,
+  };
+}
+
 export async function fetchYesterdaysHandoversAPI(
   shift_type?: ShiftType,
 ): Promise<{ handovers: Handover[]; total: number }> {
