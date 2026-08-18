@@ -108,6 +108,23 @@ async def get_shift_codes(
     return ShiftCodesListResponse(shift_codes=shift_codes, time_slots=time_slots)
 
 
+@router.get("/manage", response_model=List[ShiftCodeResponse])
+async def list_manageable_shift_codes(
+    auth: OrgAuth,
+    db: Session = Depends(get_db),
+):
+    """Return organization-owned shift codes (with IDs) for admin CRUD UI."""
+    return (
+        db.query(ShiftCode)
+        .filter(
+            ShiftCode.organization_id == auth.organization_id,
+            ShiftCode.is_active == True,
+        )
+        .order_by(ShiftCode.display_order, ShiftCode.code)
+        .all()
+    )
+
+
 @router.post("", response_model=ShiftCodeResponse)
 async def create_shift_code(
     shift_code: ShiftCodeCreate,

@@ -18,7 +18,17 @@ import {
 } from "lucide-react";
 import { useOrganization } from "../context/OrganizationContext";
 import RolePermissionsSection from "./RolePermissionsSection";
-import { cleanupOldHandoversAPI, listNursesAPI, type Nurse } from "../lib/api";
+import {
+  cleanupOldHandoversAPI,
+  createShiftCodeAPI,
+  deleteShiftCodeAPI,
+  initializeDefaultShiftCodesAPI,
+  listManageableShiftCodesAPI,
+  listNursesAPI,
+  updateShiftCodeAPI,
+  type Nurse,
+  type ShiftCodeManageItemAPI,
+} from "../lib/api";
 import { getApiBase } from "../lib/runtimeApiBase";
 import { DEFAULT_ROOMS } from "../lib/roomsConfig";
 import { DEFAULT_TEAMS } from "../lib/teamsConfig";
@@ -50,6 +60,17 @@ interface AssistantManagerMappingOption {
   nurse_id?: string;
 }
 
+type ShiftTypeOption = "day" | "night" | "combined";
+
+interface ShiftCodeDraft {
+  code: string;
+  label: string;
+  start_time: string;
+  end_time: string;
+  hours: string;
+  shift_type: ShiftTypeOption;
+}
+
 const getSettingsSections = (t: SettingsTranslator, isAdmin: boolean) =>
   [
     ...(isAdmin ? [{ id: "logo-settings", label: t("logo") }] : []),
@@ -58,6 +79,9 @@ const getSettingsSections = (t: SettingsTranslator, isAdmin: boolean) =>
       ? [{ id: "assignment-print-layout-settings", label: t("printLayoutMenu") }]
       : []),
     ...(isAdmin ? [{ id: "staffing-defaults", label: t("staffing") }] : []),
+    ...(isAdmin
+      ? [{ id: "shift-codes-settings", label: t("shiftCodesManagementTitle") }]
+      : []),
     ...(isAdmin
       ? [{ id: "staffing-teams-settings", label: t("staffingTeams") }]
       : []),
@@ -120,6 +144,32 @@ export default function SettingsPage() {
     "success" | "error" | null
   >(null);
   const [staffingTeamsLoading, setStaffingTeamsLoading] = useState(false);
+  const [shiftCodes, setShiftCodes] = useState<ShiftCodeManageItemAPI[]>([]);
+  const [shiftCodesLoading, setShiftCodesLoading] = useState(false);
+  const [shiftCodesSaving, setShiftCodesSaving] = useState(false);
+  const [shiftCodesMessage, setShiftCodesMessage] = useState("");
+  const [shiftCodesMessageType, setShiftCodesMessageType] = useState<
+    "success" | "error" | null
+  >(null);
+  const [editingShiftCodeId, setEditingShiftCodeId] = useState<string | null>(
+    null,
+  );
+  const [newShiftCodeDraft, setNewShiftCodeDraft] = useState<ShiftCodeDraft>({
+    code: "",
+    label: "",
+    start_time: "07:00",
+    end_time: "15:15",
+    hours: "7.5",
+    shift_type: "day",
+  });
+  const [editShiftCodeDraft, setEditShiftCodeDraft] = useState<ShiftCodeDraft>({
+    code: "",
+    label: "",
+    start_time: "",
+    end_time: "",
+    hours: "",
+    shift_type: "day",
+  });
   const [assistantManagers, setAssistantManagers] = useState<
     AssistantManagerMappingOption[]
   >([]);
@@ -408,6 +458,43 @@ export default function SettingsPage() {
     };
   }, [orgId, getAuthHeaders]);
 
+  useEffect(() => {
+    if (!orgId || !isAdmin) {
+      setShiftCodes([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadShiftCodes() {
+      setShiftCodesLoading(true);
+      try {
+        const headers = await getAuthHeaders();
+        const items = await listManageableShiftCodesAPI(headers);
+        if (!cancelled) {
+          setShiftCodes(items);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setShiftCodes([]);
+          setShiftCodesMessage(
+            err instanceof Error ? err.message : t("shiftCodesLoadFailed"),
+          );
+          setShiftCodesMessageType("error");
+        }
+      } finally {
+        if (!cancelled) {
+          setShiftCodesLoading(false);
+        }
+      }
+    }
+
+    loadShiftCodes();
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId, isAdmin, getAuthHeaders, t]);
+
   const persistTeams = async (nextTeams: string[]) => {
     if (!orgId) return;
     setTeamsLoading(true);
@@ -621,6 +708,168 @@ export default function SettingsPage() {
       );
       setAssistantManagerMapMessageType("error");
       setTimeout(() => setAssistantManagerMapMessage(""), 3000);
+    }
+  };
+
+  const showShiftCodeMessage = (
+    text: string,
+    type: "success" | "error",
+  ) => {
+    setShiftCodesMessage(text);
+    setShiftCodesMessageType(type);
+    setTimeout(() => setShiftCodesMessage(""), 3000);
+  };
+
+  const parseShiftHours = (value: string): number | null => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  };
+
+  const beginEditShiftCode = (item: ShiftCodeManageItemAPI) => {
+    setEditingShiftCodeId(item.id);
+    setEditShiftCodeDraft({
+      code: item.code,
+      label: item.label,
+      start_time: item.start_time,
+      end_time: item.end_time,
+      hours: String(item.hours),
+      shift_type: item.shift_type,
+    });
+  };
+
+  const cancelEditShiftCode = () => {
+    setEditingShiftCodeId(null);
+    setEditShiftCodeDraft({
+      code: "",
+      label: "",
+      start_time: "",
+      end_time: "",
+      hours: "",
+      shift_type: "day",
+    });
+  };
+
+  const reloadShiftCodes = async () => {
+    const headers = await getAuthHeaders();
+    const items = await listManageableShiftCodesAPI(headers);
+    setShiftCodes(items);
+  };
+
+  const handleInitializeDefaultShiftCodes = async () => {
+    if (!orgId) return;
+    setShiftCodesSaving(true);
+    try {
+      const headers = await getAuthHeaders();
+      await initializeDefaultShiftCodesAPI(orgId, headers);
+      await reloadShiftCodes();
+      showShiftCodeMessage(t("shiftCodesInitialized"), "success");
+    } catch (err) {
+      showShiftCodeMessage(
+        err instanceof Error ? err.message : t("shiftCodesInitializeFailed"),
+        "error",
+      );
+    } finally {
+      setShiftCodesSaving(false);
+    }
+  };
+
+  const handleCreateShiftCode = async () => {
+    const code = newShiftCodeDraft.code.trim();
+    const label = newShiftCodeDraft.label.trim();
+    const hours = parseShiftHours(newShiftCodeDraft.hours);
+    if (!code || !label || !hours) {
+      showShiftCodeMessage(t("shiftCodeValidationError"), "error");
+      return;
+    }
+
+    setShiftCodesSaving(true);
+    try {
+      const headers = await getAuthHeaders();
+      await createShiftCodeAPI(
+        {
+          code,
+          label,
+          start_time: newShiftCodeDraft.start_time,
+          end_time: newShiftCodeDraft.end_time,
+          hours,
+          shift_type: newShiftCodeDraft.shift_type,
+          display_order: shiftCodes.length + 1,
+        },
+        headers,
+      );
+      await reloadShiftCodes();
+      setNewShiftCodeDraft({
+        code: "",
+        label: "",
+        start_time: "07:00",
+        end_time: "15:15",
+        hours: "7.5",
+        shift_type: "day",
+      });
+      showShiftCodeMessage(t("shiftCodeCreated"), "success");
+    } catch (err) {
+      showShiftCodeMessage(
+        err instanceof Error ? err.message : t("shiftCodeCreateFailed"),
+        "error",
+      );
+    } finally {
+      setShiftCodesSaving(false);
+    }
+  };
+
+  const handleSaveShiftCode = async (shiftCodeId: string) => {
+    const code = editShiftCodeDraft.code.trim();
+    const label = editShiftCodeDraft.label.trim();
+    const hours = parseShiftHours(editShiftCodeDraft.hours);
+    if (!code || !label || !hours) {
+      showShiftCodeMessage(t("shiftCodeValidationError"), "error");
+      return;
+    }
+
+    setShiftCodesSaving(true);
+    try {
+      const headers = await getAuthHeaders();
+      await updateShiftCodeAPI(
+        shiftCodeId,
+        {
+          code,
+          label,
+          start_time: editShiftCodeDraft.start_time,
+          end_time: editShiftCodeDraft.end_time,
+          hours,
+          shift_type: editShiftCodeDraft.shift_type,
+        },
+        headers,
+      );
+      await reloadShiftCodes();
+      cancelEditShiftCode();
+      showShiftCodeMessage(t("shiftCodeUpdated"), "success");
+    } catch (err) {
+      showShiftCodeMessage(
+        err instanceof Error ? err.message : t("shiftCodeUpdateFailed"),
+        "error",
+      );
+    } finally {
+      setShiftCodesSaving(false);
+    }
+  };
+
+  const handleDeleteShiftCode = async (item: ShiftCodeManageItemAPI) => {
+    if (!confirm(t("confirmDeleteShiftCode", { code: item.code }))) return;
+
+    setShiftCodesSaving(true);
+    try {
+      const headers = await getAuthHeaders();
+      await deleteShiftCodeAPI(item.id, headers);
+      await reloadShiftCodes();
+      showShiftCodeMessage(t("shiftCodeDeleted"), "success");
+    } catch (err) {
+      showShiftCodeMessage(
+        err instanceof Error ? err.message : t("shiftCodeDeleteFailed"),
+        "error",
+      );
+    } finally {
+      setShiftCodesSaving(false);
     }
   };
 
@@ -1778,6 +2027,279 @@ export default function SettingsPage() {
               {staffingMessage && (
                 <div className="mt-3 p-2 rounded-lg text-sm bg-green-50 text-green-800 border border-green-200">
                   {staffingMessage}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Shift Codes Management Card (Admin Only) */}
+          {isAdmin && (
+            <div
+              id="shift-codes-settings"
+              className="scroll-mt-36 bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6"
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <Users className="w-6 h-6 text-violet-600" />
+                <h2 className="text-xl font-semibold text-gray-900">
+                  {t("shiftCodesManagementTitle")}
+                </h2>
+                <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
+                  {t("admin")}
+                </span>
+              </div>
+              <p className="text-sm text-gray-600 mb-4">
+                {t("shiftCodesManagementDesc")}
+              </p>
+
+              {shiftCodesLoading ? (
+                <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600">
+                  {t("loadingShiftCodes")}
+                </div>
+              ) : shiftCodes.length === 0 ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  {t("noOrgShiftCodes")}
+                </div>
+              ) : (
+                <div className="space-y-3 mb-5">
+                  {shiftCodes.map((item) => {
+                    const isEditing = editingShiftCodeId === item.id;
+                    return (
+                      <div
+                        key={item.id}
+                        className="rounded-lg border border-gray-200 p-3"
+                      >
+                        {isEditing ? (
+                          <div className="grid grid-cols-1 sm:grid-cols-6 gap-2">
+                            <input
+                              value={editShiftCodeDraft.code}
+                              onChange={(e) =>
+                                setEditShiftCodeDraft((prev) => ({
+                                  ...prev,
+                                  code: e.target.value,
+                                }))
+                              }
+                              className="px-2 py-1.5 text-sm border border-gray-300 rounded"
+                              placeholder={t("shiftCodeFieldCode")}
+                            />
+                            <input
+                              value={editShiftCodeDraft.label}
+                              onChange={(e) =>
+                                setEditShiftCodeDraft((prev) => ({
+                                  ...prev,
+                                  label: e.target.value,
+                                }))
+                              }
+                              className="px-2 py-1.5 text-sm border border-gray-300 rounded sm:col-span-2"
+                              placeholder={t("shiftCodeFieldLabel")}
+                            />
+                            <input
+                              type="time"
+                              value={editShiftCodeDraft.start_time}
+                              onChange={(e) =>
+                                setEditShiftCodeDraft((prev) => ({
+                                  ...prev,
+                                  start_time: e.target.value,
+                                }))
+                              }
+                              className="px-2 py-1.5 text-sm border border-gray-300 rounded"
+                            />
+                            <input
+                              type="time"
+                              value={editShiftCodeDraft.end_time}
+                              onChange={(e) =>
+                                setEditShiftCodeDraft((prev) => ({
+                                  ...prev,
+                                  end_time: e.target.value,
+                                }))
+                              }
+                              className="px-2 py-1.5 text-sm border border-gray-300 rounded"
+                            />
+                            <input
+                              type="number"
+                              min={0.25}
+                              step={0.25}
+                              value={editShiftCodeDraft.hours}
+                              onChange={(e) =>
+                                setEditShiftCodeDraft((prev) => ({
+                                  ...prev,
+                                  hours: e.target.value,
+                                }))
+                              }
+                              className="px-2 py-1.5 text-sm border border-gray-300 rounded"
+                              placeholder={t("shiftCodeFieldHours")}
+                            />
+                            <select
+                              value={editShiftCodeDraft.shift_type}
+                              onChange={(e) =>
+                                setEditShiftCodeDraft((prev) => ({
+                                  ...prev,
+                                  shift_type: e.target.value as ShiftTypeOption,
+                                }))
+                              }
+                              className="px-2 py-1.5 text-sm border border-gray-300 rounded"
+                            >
+                              <option value="day">{t("shiftTypeDay")}</option>
+                              <option value="night">{t("shiftTypeNight")}</option>
+                              <option value="combined">{t("shiftTypeCombined")}</option>
+                            </select>
+                            <div className="sm:col-span-6 flex gap-2 justify-end">
+                              <button
+                                onClick={() => handleSaveShiftCode(item.id)}
+                                disabled={shiftCodesSaving}
+                                className="px-3 py-1.5 text-sm font-medium bg-green-600 text-white rounded-lg hover:bg-green-700"
+                              >
+                                {tCommon("save")}
+                              </button>
+                              <button
+                                onClick={cancelEditShiftCode}
+                                disabled={shiftCodesSaving}
+                                className="px-3 py-1.5 text-sm font-medium bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+                              >
+                                {tCommon("cancel")}
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                              <p className="text-sm font-semibold text-gray-900">
+                                {item.code} - {item.label}
+                              </p>
+                              <p className="text-xs text-gray-600">
+                                {item.start_time} - {item.end_time} | {item.hours}h | {item.shift_type}
+                              </p>
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => beginEditShiftCode(item)}
+                                disabled={shiftCodesSaving}
+                                className="px-3 py-1.5 text-sm font-medium bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+                              >
+                                {t("editShiftCodeBtn")}
+                              </button>
+                              <button
+                                onClick={() => handleDeleteShiftCode(item)}
+                                disabled={shiftCodesSaving}
+                                className="px-3 py-1.5 text-sm font-medium bg-red-50 text-red-700 rounded-lg hover:bg-red-100"
+                              >
+                                {tCommon("delete")}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="rounded-lg border border-gray-200 p-3 mb-4">
+                <p className="text-sm font-medium text-gray-800 mb-2">
+                  {t("addShiftCode")}
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-6 gap-2">
+                  <input
+                    value={newShiftCodeDraft.code}
+                    onChange={(e) =>
+                      setNewShiftCodeDraft((prev) => ({
+                        ...prev,
+                        code: e.target.value,
+                      }))
+                    }
+                    className="px-2 py-1.5 text-sm border border-gray-300 rounded"
+                    placeholder={t("shiftCodeFieldCode")}
+                  />
+                  <input
+                    value={newShiftCodeDraft.label}
+                    onChange={(e) =>
+                      setNewShiftCodeDraft((prev) => ({
+                        ...prev,
+                        label: e.target.value,
+                      }))
+                    }
+                    className="px-2 py-1.5 text-sm border border-gray-300 rounded sm:col-span-2"
+                    placeholder={t("shiftCodeFieldLabel")}
+                  />
+                  <input
+                    type="time"
+                    value={newShiftCodeDraft.start_time}
+                    onChange={(e) =>
+                      setNewShiftCodeDraft((prev) => ({
+                        ...prev,
+                        start_time: e.target.value,
+                      }))
+                    }
+                    className="px-2 py-1.5 text-sm border border-gray-300 rounded"
+                  />
+                  <input
+                    type="time"
+                    value={newShiftCodeDraft.end_time}
+                    onChange={(e) =>
+                      setNewShiftCodeDraft((prev) => ({
+                        ...prev,
+                        end_time: e.target.value,
+                      }))
+                    }
+                    className="px-2 py-1.5 text-sm border border-gray-300 rounded"
+                  />
+                  <input
+                    type="number"
+                    min={0.25}
+                    step={0.25}
+                    value={newShiftCodeDraft.hours}
+                    onChange={(e) =>
+                      setNewShiftCodeDraft((prev) => ({
+                        ...prev,
+                        hours: e.target.value,
+                      }))
+                    }
+                    className="px-2 py-1.5 text-sm border border-gray-300 rounded"
+                    placeholder={t("shiftCodeFieldHours")}
+                  />
+                  <select
+                    value={newShiftCodeDraft.shift_type}
+                    onChange={(e) =>
+                      setNewShiftCodeDraft((prev) => ({
+                        ...prev,
+                        shift_type: e.target.value as ShiftTypeOption,
+                      }))
+                    }
+                    className="px-2 py-1.5 text-sm border border-gray-300 rounded"
+                  >
+                    <option value="day">{t("shiftTypeDay")}</option>
+                    <option value="night">{t("shiftTypeNight")}</option>
+                    <option value="combined">{t("shiftTypeCombined")}</option>
+                  </select>
+                </div>
+                <div className="mt-3 flex gap-2 justify-end">
+                  <button
+                    onClick={handleCreateShiftCode}
+                    disabled={shiftCodesSaving}
+                    className="px-3 py-1.5 text-sm font-medium bg-violet-600 text-white rounded-lg hover:bg-violet-700"
+                  >
+                    {tCommon("add")}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                onClick={handleInitializeDefaultShiftCodes}
+                disabled={shiftCodesSaving}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+              >
+                <RefreshCw className="w-4 h-4" />
+                {t("initializeDefaultShiftCodes")}
+              </button>
+
+              {shiftCodesMessage && (
+                <div
+                  className={`mt-4 p-3 rounded-lg text-sm ${
+                    shiftCodesMessageType === "success"
+                      ? "bg-green-50 text-green-800 border border-green-200"
+                      : "bg-red-50 text-red-800 border border-red-200"
+                  }`}
+                >
+                  {shiftCodesMessage}
                 </div>
               )}
             </div>

@@ -54,6 +54,18 @@ class ShiftCode(Base):
     def __repr__(self):
         return f"<ShiftCode {self.code} ({self.label})>"
 
+    @property
+    def hours(self) -> float:
+        """Backward-compatible alias used by scheduling/admin APIs."""
+        return float(self.paid_hours or 0.0)
+
+    @hours.setter
+    def hours(self, value: float) -> None:
+        paid = float(value or 0.0)
+        unpaid = float(self.unpaid_break_hours or 0.0)
+        self.paid_hours = paid
+        self.total_hours = paid + unpaid
+
 
 class TimeSlot(Base):
     """

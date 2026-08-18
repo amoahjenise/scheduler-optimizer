@@ -1655,6 +1655,21 @@ export interface ShiftCodesResponse {
   time_slots: TimeSlotAPI[];
 }
 
+export interface ShiftCodeManageItemAPI {
+  id: string;
+  organization_id?: string | null;
+  code: string;
+  label: string;
+  start_time: string;
+  end_time: string;
+  hours: number;
+  shift_type: "day" | "night" | "combined";
+  display_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export async function getShiftCodesAPI(
   organizationId?: string,
 ): Promise<ShiftCodesResponse> {
@@ -1696,6 +1711,27 @@ export async function createShiftCodeAPI(
   return res.json();
 }
 
+export async function updateShiftCodeAPI(
+  shiftCodeId: string,
+  shiftCode: {
+    code?: string;
+    label?: string;
+    start_time?: string;
+    end_time?: string;
+    hours?: number;
+    shift_type?: "day" | "night" | "combined";
+    display_order?: number;
+    is_active?: boolean;
+  },
+  headers?: Record<string, string>,
+): Promise<ShiftCodeManageItemAPI> {
+  return apiRequest<ShiftCodeManageItemAPI>(`/shift-codes/${shiftCodeId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
+    body: JSON.stringify(shiftCode),
+  });
+}
+
 export async function deleteShiftCodeAPI(
   shiftCodeId: string,
   headers?: Record<string, string>,
@@ -1729,6 +1765,14 @@ export async function initializeDefaultShiftCodesAPI(
   }
 
   return res.json();
+}
+
+export async function listManageableShiftCodesAPI(
+  headers?: Record<string, string>,
+): Promise<ShiftCodeManageItemAPI[]> {
+  return apiRequest<ShiftCodeManageItemAPI[]>("/shift-codes/manage", {
+    headers,
+  });
 }
 
 // ============= Scheduling Management APIs =============
