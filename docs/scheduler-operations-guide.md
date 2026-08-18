@@ -107,6 +107,9 @@ Purpose:
 - helping weekend rotation coverage
 - clarifying reporting and coverage by group
 - supporting delegation in larger units
+- aligning each team with a dedicated assistant manager when the organization uses that model
+
+The operating goal is to have one assistant manager per team so leadership coverage, team accountability, and weekend coverage are clearly mapped.
 
 A nurse can belong to a staffing team even if they still have a standard nursing role.
 
