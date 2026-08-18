@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useUser } from "@clerk/nextjs";
 import { Shield, Loader2, Check } from "lucide-react";
 import {
   useOrganization,
@@ -8,6 +9,8 @@ import {
   MAX_ASSISTANT_MANAGERS,
   type MemberRoleValue,
 } from "../context/OrganizationContext";
+import { listNursesAPI } from "../lib/api";
+import { buildNurseNameByUserId, resolveDisplayName } from "../lib/nameDisplay";
 import { getApiBase } from "../lib/runtimeApiBase";
 
 interface MemberRow {
@@ -39,11 +42,15 @@ const ASSIGNABLE_ROLES: { value: MemberRoleValue; label: string }[] = [
 ];
 
 export default function RolePermissionsSection() {
+  const { user } = useUser();
   const { currentOrganization, isAdmin, getAuthHeaders, refreshOrganizations } =
     useOrganization();
   const orgId = currentOrganization?.id;
 
   const [members, setMembers] = useState<MemberRow[]>([]);
+  const [nurseNameByUserId, setNurseNameByUserId] = useState<
+    Record<string, string>
+  >({});
   const [managerPerms, setManagerPerms] = useState<string[]>([]);
   const [assistantPerms, setAssistantPerms] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,6 +59,36 @@ export default function RolePermissionsSection() {
   const [updatingMemberId, setUpdatingMemberId] = useState<string | null>(null);
   const [roleUpdateMessage, setRoleUpdateMessage] = useState<string>("");
   const [error, setError] = useState("");
+
+  const getMemberDisplay = useCallback(
+    (member?: MemberRow | null) => {
+      if (!member) {
+        return {
+          primary: "",
+          accountName: null as string | null,
+          userId: null as string | null,
+        };
+      }
+
+      const nurseName = nurseNameByUserId[member.user_id] || null;
+      const accountName = member.user_name || member.user_email || null;
+      const primary =
+        resolveDisplayName({
+          nurseName,
+          accountName,
+          userId: member.user_id,
+          allowUserIdFallback: true,
+        }) || member.user_id;
+
+      return {
+        primary,
+        accountName:
+          accountName && accountName !== primary ? accountName : null,
+        userId: member.user_id && member.user_id !== primary ? member.user_id : null,
+      };
+    },
+    [nurseNameByUserId],
+  );
 
   const load = useCallback(async () => {
     if (!orgId) return;
@@ -65,6 +102,25 @@ export default function RolePermissionsSection() {
         }),
         fetch(`${getApiBase()}/organizations/${orgId}/members`, { headers }),
       ]);
+
+      if (user?.id) {
+        try {
+          const nurses = await listNursesAPI(user.id, 1, 500, undefined, headers);
+          const lookup = buildNurseNameByUserId(nurses.nurses || []);
+          setNurseNameByUserId(
+            Object.fromEntries(
+              Array.from(lookup.entries()).map(([userId, nurse]) => [
+                userId,
+                nurse.name,
+              ]),
+            ),
+          );
+        } catch {
+          setNurseNameByUserId({});
+        }
+      } else {
+        setNurseNameByUserId({});
+      }
 
       if (permsRes.ok) {
         const data = await permsRes.json();
@@ -80,7 +136,7 @@ export default function RolePermissionsSection() {
     } finally {
       setLoading(false);
     }
-  }, [orgId, getAuthHeaders]);
+  }, [orgId, getAuthHeaders, user?.id]);
 
   useEffect(() => {
     load();
@@ -178,6 +234,7 @@ export default function RolePermissionsSection() {
   const currentManager = members.find(
     (m) => m.role === "manager" && m.is_active,
   );
+  const currentManagerDisplay = getMemberDisplay(currentManager);
 
   const renderMatrix = (
     title: string,
@@ -296,16 +353,21 @@ export default function RolePermissionsSection() {
               )}
               <div className="border-b border-gray-100 bg-gray-50 px-3 py-2 text-xs text-gray-600">
                 One manager is allowed per organization. Up to {MAX_ASSISTANT_MANAGERS} assistant managers are allowed.
-                {currentManager ? ` Current manager: ${currentManager.user_name || currentManager.user_email || currentManager.user_id}.` : ""}
+                {currentManager
+                  ? ` Current manager: ${currentManagerDisplay.primary}.`
+                  : ""}
               </div>
               {members
                 .filter((m) => m.is_approved)
                 .map((member) => {
                   const isOwnerAdmin = member.role === "admin";
                   const isUpdating = updatingMemberId === member.id;
+                  const memberDisplay = getMemberDisplay(member);
                   const assistantSlotFull =
                     assistantCount >= MAX_ASSISTANT_MANAGERS &&
                     member.role !== "assistant_manager";
+                  const managerSlotTaken =
+                    !!currentManager && currentManager.id !== member.id;
                   return (
                     <div
                       key={member.id}
@@ -313,13 +375,16 @@ export default function RolePermissionsSection() {
                     >
                       <div className="min-w-0">
                         <p className="truncate text-sm font-medium text-gray-900">
-                          {member.user_name ||
-                            member.user_email ||
-                            member.user_id}
+                          {memberDisplay.primary}
                         </p>
-                        {member.user_email && (
+                        {memberDisplay.accountName && (
                           <p className="truncate text-xs text-gray-500">
-                            {member.user_email}
+                            Account: {memberDisplay.accountName}
+                          </p>
+                        )}
+                        {memberDisplay.userId && (
+                          <p className="truncate text-xs text-gray-500">
+                            User ID: {memberDisplay.userId}
                           </p>
                         )}
                       </div>
@@ -344,6 +409,7 @@ export default function RolePermissionsSection() {
                               key={r.value}
                               value={r.value}
                               disabled={
+                                (r.value === "manager" && managerSlotTaken) ||
                                 r.value === "assistant_manager" &&
                                 assistantSlotFull
                               }
