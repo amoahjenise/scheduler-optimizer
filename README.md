@@ -153,6 +153,7 @@ flowchart LR
 - `docs/bugfix-handover-refresh.md`
 - `docs/translation-merge-notes.md`
 - `docs/scheduler-operations-guide.md` — internal staffing and scheduling concepts, shift codes, role hierarchy, staffing teams, coverage logic, and feature usage guidance without sensitive data
+- `docs/manager-scheduling-checklist.md` — quick operational checklist for managers reviewing or approving schedules
 
 ## Testing
 
