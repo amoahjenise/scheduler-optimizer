@@ -10,11 +10,17 @@ export function PageLoadingIndicator() {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
+  const frameRef = useRef<number | undefined>(undefined);
+
+  const clearPendingLoading = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    if (frameRef.current) cancelAnimationFrame(frameRef.current);
+  };
 
   // Clear loading when route finishes navigating
   useEffect(() => {
     setIsLoading(false);
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    clearPendingLoading();
   }, [pathname, searchParams]);
 
   // Intercept all <a> clicks that are client-side navigations
@@ -37,16 +43,22 @@ export function PageLoadingIndicator() {
       // Check if modifier keys are held (open in new tab)
       if (e.metaKey || e.ctrlKey || e.shiftKey) return;
 
-      // This is a client-side navigation — show loading immediately
-      setIsLoading(true);
+      // Defer to the next frame to avoid mutating state while the router is rendering.
+      if (frameRef.current) cancelAnimationFrame(frameRef.current);
+      frameRef.current = requestAnimationFrame(() => {
+        setIsLoading(true);
 
-      // Safety timeout: clear loading after 8s in case navigation is very slow
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      timeoutRef.current = setTimeout(() => setIsLoading(false), 8000);
+        // Safety timeout: clear loading after 8s in case navigation is very slow
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => setIsLoading(false), 8000);
+      });
     };
 
     document.addEventListener("click", handleClick, true);
-    return () => document.removeEventListener("click", handleClick, true);
+    return () => {
+      document.removeEventListener("click", handleClick, true);
+      clearPendingLoading();
+    };
   }, []);
 
   // Also handle programmatic navigation via button clicks that look like nav
