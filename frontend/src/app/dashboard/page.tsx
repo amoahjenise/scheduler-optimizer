@@ -225,6 +225,7 @@ export default function Dashboard() {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [currentNurseName, setCurrentNurseName] = useState<string | null>(null);
   const [currentNurseTeam, setCurrentNurseTeam] = useState<string | null>(null);
+  const [greetingNameReady, setGreetingNameReady] = useState(false);
   // Kept for the printable assignment sheet (nurse -> patients).
   const [todayHandovers, setTodayHandovers] = useState<{
     day: Handover[];
@@ -349,6 +350,7 @@ export default function Dashboard() {
     async function loadStats() {
       setStats((prev) => ({ ...prev, loading: true }));
       setRefreshError(null);
+      setGreetingNameReady(false);
 
       try {
         const authHeaders = await getAuthHeaders();
@@ -394,6 +396,7 @@ export default function Dashboard() {
           const currentNurse = user?.id ? nurseNameByUserId.get(user.id) : null;
           setCurrentNurseName(currentNurse?.name || null);
           setCurrentNurseTeam(currentNurse?.team || null);
+          setGreetingNameReady(true);
         } else {
           console.warn(
             "Failed to load nurse display mapping:",
@@ -402,6 +405,7 @@ export default function Dashboard() {
           setOrgRoster([]);
           setCurrentNurseName(null);
           setCurrentNurseTeam(null);
+          setGreetingNameReady(true);
         }
 
         const resolveActorDisplayName = (
@@ -948,12 +952,13 @@ export default function Dashboard() {
         ? t("goodAfternoon")
         : t("goodEvening");
 
-  const displayGreetingName =
-    resolveDisplayName({
-      nurseName: currentNurseName,
-      accountName: getAccountDisplayName(user),
-      allowUserIdFallback: false,
-    }) || "";
+  const displayGreetingName = greetingNameReady
+    ? resolveDisplayName({
+        nurseName: currentNurseName,
+        accountName: getAccountDisplayName(user),
+        allowUserIdFallback: false,
+      }) || ""
+    : "";
 
   const weekDays = Array.from({ length: 7 }, (_, index) => {
     const dayDate = new Date(2024, 0, 7 + index);
