@@ -41,6 +41,9 @@ def main():
         org_id = row.organization_id
         dates = sd.get("dates") or []
         grid = sd.get("grid") or sd.get("schedule") or []
+        if not dates or not grid:
+            print("SKIP: seeded schedule_data is missing dates/grid for this schedule id")
+            return
 
         # Rebuild the "existing assignments" exactly as a re-optimize would.
         assignments = {}

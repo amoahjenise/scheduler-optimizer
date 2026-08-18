@@ -58,11 +58,8 @@ for nurse_data in test_nurses:
     print(f"{nurse_name}")
     print(f"{'=' * 80}")
     
-    # Simulate OCR grid row
-    ocr_row = []
-    for date in dates:
-        shift = pref_shifts.get(date, "—")
-        ocr_row.append(shift)
+    # Build per-day preference list in the same shape used by RobustScheduler.
+    ocr_row = [pref_shifts.get(date, "") for date in dates]
     
     # Create scheduler instance
     scheduler = RobustScheduler(
@@ -82,15 +79,10 @@ for nurse_data in test_nurses:
         if shift_code != "—":
             print(f"  {date}: {shift_code}")
     
-    # Simulate full OCR import
-    # Build OCR_GRID in the format the backend expects
-    ocr_grid = [{
-        "nurse": nurse_name,
-        "shifts": [ocr_row[i] for i in range(len(dates))]
-    }]
-    
-    # Import OCR using the actual OCR import Step 1
-    scheduler.ocr_step1_import_ocr_grid(ocr_grid, dates)
+    # Feed OCR-like preferences through the current scheduler pipeline.
+    scheduler.preferences = {nurse_name: ocr_row}
+    scheduler.schedule = {nurse_name: [None for _ in dates]}
+    scheduler.build_schedule()
     
     # Get the final schedule
     if nurse_name in scheduler.schedule:

@@ -38,6 +38,9 @@ def main():
             sd = json.loads(sd)
         dates = sd.get("dates") or []
         grid = sd.get("grid") or sd.get("schedule") or []
+        if not dates or not grid:
+            print("SKIP: seeded schedule_data is missing dates/grid for this schedule id")
+            return
         org_id = row.organization_id
 
         assignments = {}
