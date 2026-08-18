@@ -148,7 +148,15 @@ export function OrganizationSwitcher({
   const roleColors = {
     admin: "bg-purple-100 text-purple-700",
     manager: "bg-blue-100 text-blue-700",
+    assistant_manager: "bg-indigo-100 text-indigo-700",
     nurse: "bg-green-100 text-green-700",
+  };
+
+  const roleLabels = {
+    admin: "Admin",
+    manager: "Manager",
+    assistant_manager: "Assistant Manager",
+    nurse: "Nurse",
   };
 
   return (
@@ -164,7 +172,7 @@ export function OrganizationSwitcher({
           <span
             className={`px-2 py-0.5 text-xs font-medium rounded-full ${roleColors[currentMembership.role]}`}
           >
-            {currentMembership.role}
+            {roleLabels[currentMembership.role]}
           </span>
         )}
         <ChevronDown
@@ -206,7 +214,7 @@ export function OrganizationSwitcher({
                     <p
                       className={`text-xs ${roleColors[membership.role]} inline-block px-1.5 py-0.5 rounded-full`}
                     >
-                      {membership.role}
+                      {roleLabels[membership.role]}
                     </p>
                     {!membership.is_approved && (
                       <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full">

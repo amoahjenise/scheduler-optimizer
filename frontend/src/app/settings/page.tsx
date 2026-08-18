@@ -27,6 +27,7 @@ import {
   fetchAndCacheOrganizationConfig,
   updateAndCacheOrganizationConfig,
 } from "../lib/orgConfig";
+import { resolveDisplayName } from "../lib/nameDisplay";
 import {
   loadStaffingDefaults,
   saveStaffingDefaults,
@@ -666,10 +667,12 @@ export default function SettingsPage() {
               return {
                 user_id: member.user_id,
                 name:
-                  member.user_name ||
-                  linkedNurse?.name ||
-                  member.user_email ||
-                  member.user_id,
+                  resolveDisplayName({
+                    nurseName: linkedNurse?.name,
+                    accountName: member.user_name || member.user_email,
+                    userId: member.user_id,
+                    allowUserIdFallback: true,
+                  }) || member.user_id,
                 employee_id: linkedNurse?.employee_id || undefined,
                 nurse_id: linkedNurse?.id,
               };
@@ -682,7 +685,12 @@ export default function SettingsPage() {
         if (!cancelled) {
           const fallback = roleBasedManagers.map((member) => ({
             user_id: member.user_id,
-            name: member.user_name || member.user_email || member.user_id,
+            name:
+              resolveDisplayName({
+                accountName: member.user_name || member.user_email,
+                userId: member.user_id,
+                allowUserIdFallback: true,
+              }) || member.user_id,
             employee_id: undefined,
             nurse_id: undefined,
           }));
