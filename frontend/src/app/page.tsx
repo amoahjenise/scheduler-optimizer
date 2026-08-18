@@ -4,7 +4,6 @@ import React from "react";
 import { SignedIn, SignedOut, SignInButton, SignUpButton } from "@clerk/nextjs";
 import { motion } from "framer-motion";
 import { useTranslations } from "next-intl";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   ArrowRight,
@@ -165,28 +164,15 @@ const Navigation = () => {
 
 // Dashboard Button Component
 const DashboardButton = () => {
-  const router = useRouter();
   const t = useTranslations("landing");
-
-  const handleDashboardClick = () => {
-    router.push("/dashboard");
-
-    // If app-router navigation hangs, force a hard navigation.
-    window.setTimeout(() => {
-      if (window.location.pathname !== "/dashboard") {
-        window.location.assign("/dashboard");
-      }
-    }, 350);
-  };
-
   return (
-    <button
-      onClick={handleDashboardClick}
+    <Link
+      href="/dashboard"
       className="flex items-center gap-2 px-5 py-2.5 bg-white text-gray-900 text-sm font-semibold rounded-full transition-all hover:bg-white/90 shadow-lg"
     >
       {t("nav.dashboard")}
       <ArrowRight className="w-4 h-4" />
-    </button>
+    </Link>
   );
 };
 
