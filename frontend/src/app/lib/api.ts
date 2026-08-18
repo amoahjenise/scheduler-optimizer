@@ -1595,7 +1595,7 @@ export interface OrganizationMemberOption {
   user_id: string;
   user_email?: string | null;
   user_name?: string | null;
-  role: "admin" | "manager" | "nurse";
+  role: "admin" | "manager" | "assistant_manager" | "nurse";
   is_active: boolean;
   is_approved: boolean;
 }

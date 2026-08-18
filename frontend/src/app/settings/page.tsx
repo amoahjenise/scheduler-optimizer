@@ -42,6 +42,13 @@ type SettingsTranslator = (
   values?: Record<string, unknown>,
 ) => string;
 
+interface AssistantManagerMappingOption {
+  user_id: string;
+  name: string;
+  employee_id?: string | null;
+  nurse_id?: string;
+}
+
 const getSettingsSections = (t: SettingsTranslator, isAdmin: boolean) =>
   [
     ...(isAdmin ? [{ id: "logo-settings", label: t("logo") }] : []),
@@ -112,7 +119,9 @@ export default function SettingsPage() {
     "success" | "error" | null
   >(null);
   const [staffingTeamsLoading, setStaffingTeamsLoading] = useState(false);
-  const [assistantManagers, setAssistantManagers] = useState<Nurse[]>([]);
+  const [assistantManagers, setAssistantManagers] = useState<
+    AssistantManagerMappingOption[]
+  >([]);
   const [assistantManagerTeamMap, setAssistantManagerTeamMap] = useState<
     Record<string, string>
   >({});
@@ -585,15 +594,19 @@ export default function SettingsPage() {
   };
 
   const handleAssistantManagerTeamChange = async (
-    assistantManagerNurseId: string,
+    assistantManagerUserId: string,
     staffingTeam: string,
+    legacyNurseId?: string,
   ) => {
     try {
       const nextMap = { ...assistantManagerTeamMap };
+      if (legacyNurseId && legacyNurseId !== assistantManagerUserId) {
+        delete nextMap[legacyNurseId];
+      }
       if (staffingTeam) {
-        nextMap[assistantManagerNurseId] = staffingTeam;
+        nextMap[assistantManagerUserId] = staffingTeam;
       } else {
-        delete nextMap[assistantManagerNurseId];
+        delete nextMap[assistantManagerUserId];
       }
       await persistAssistantManagerTeamMap(nextMap);
       setAssistantManagerMapMessage(t("assistantManagerMappingSaved"));
@@ -619,6 +632,17 @@ export default function SettingsPage() {
     let cancelled = false;
 
     async function loadAssistantManagers() {
+      const roleBasedManagers = approvedMembers.filter(
+        (member) => member.role === "assistant_manager" && member.is_approved,
+      );
+
+      if (roleBasedManagers.length === 0) {
+        if (!cancelled) {
+          setAssistantManagers([]);
+        }
+        return;
+      }
+
       try {
         const authHeaders = await getAuthHeaders();
         const nursesResult = await listNursesAPI(
@@ -629,15 +653,40 @@ export default function SettingsPage() {
           authHeaders,
         );
         if (!cancelled) {
-          setAssistantManagers(
-            (nursesResult.nurses || []).filter(
-              (nurse) => nurse.staffing_role === "assistant_manager",
-            ),
+          const nursesByUserId = new Map<string, Nurse>();
+          for (const nurse of nursesResult.nurses || []) {
+            if (nurse.user_id) {
+              nursesByUserId.set(nurse.user_id, nurse);
+            }
+          }
+
+          const options: AssistantManagerMappingOption[] = roleBasedManagers.map(
+            (member) => {
+              const linkedNurse = nursesByUserId.get(member.user_id);
+              return {
+                user_id: member.user_id,
+                name:
+                  member.user_name ||
+                  linkedNurse?.name ||
+                  member.user_email ||
+                  member.user_id,
+                employee_id: linkedNurse?.employee_id || undefined,
+                nurse_id: linkedNurse?.id,
+              };
+            },
           );
+
+          setAssistantManagers(options);
         }
       } catch (error) {
         if (!cancelled) {
-          setAssistantManagers([]);
+          const fallback = roleBasedManagers.map((member) => ({
+            user_id: member.user_id,
+            name: member.user_name || member.user_email || member.user_id,
+            employee_id: undefined,
+            nurse_id: undefined,
+          }));
+          setAssistantManagers(fallback);
         }
       }
     }
@@ -648,7 +697,13 @@ export default function SettingsPage() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user?.id, orgLoading, currentOrganization?.id, isAdmin]);
+  }, [
+    user?.id,
+    orgLoading,
+    currentOrganization?.id,
+    isAdmin,
+    approvedMembers,
+  ]);
 
   const handleAddRoom = async () => {
     const trimmed = newRoom.trim();
@@ -1855,7 +1910,7 @@ export default function SettingsPage() {
                 <div className="space-y-3">
                   {assistantManagers.map((assistantManager) => (
                     <div
-                      key={assistantManager.id}
+                      key={assistantManager.user_id}
                       className="rounded-lg border border-gray-200 p-3"
                     >
                       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -1870,11 +1925,17 @@ export default function SettingsPage() {
                           </p>
                         </div>
                         <select
-                          value={assistantManagerTeamMap[assistantManager.id] || ""}
+                          value={
+                            assistantManagerTeamMap[assistantManager.user_id] ||
+                            (assistantManager.nurse_id
+                              ? assistantManagerTeamMap[assistantManager.nurse_id] || ""
+                              : "")
+                          }
                           onChange={(e) =>
                             handleAssistantManagerTeamChange(
-                              assistantManager.id,
+                              assistantManager.user_id,
                               e.target.value,
+                              assistantManager.nurse_id,
                             )
                           }
                           disabled={assistantManagerMapSaving}

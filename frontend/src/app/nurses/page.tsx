@@ -715,7 +715,7 @@ export default function NursesPage() {
                   </div>
 
                   {/* Employee ID & Seniority Row */}
-                  <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">
                         {t("employeeIdLabel")}
@@ -776,6 +776,10 @@ export default function NursesPage() {
                         ))}
                       </select>
                     </div>
+                  </div>
+
+                  {/* Staffing Role & Weekend Team Row */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">
                         {t("staffingRole")}
