@@ -111,24 +111,54 @@ export default function SchedulesPage() {
 
     const groups = new Map<string, OptimizedSchedule[]>();
 
-    const getRevisionRootId = (schedule: OptimizedSchedule) => {
+    const byId = new Map<string, OptimizedSchedule>();
+    const parentById = new Map<string, string>();
+    for (const schedule of schedules) {
+      byId.set(schedule.id, schedule);
+
+      if (schedule.family_root_id && schedule.family_root_id.trim()) {
+        parentById.set(schedule.id, schedule.family_root_id.trim());
+        continue;
+      }
+
       try {
         const raw =
           typeof schedule.schedule_data === "string"
             ? JSON.parse(schedule.schedule_data)
             : schedule.schedule_data || {};
-        const root =
+        const parent =
           (raw as any)?.revision_of || (raw as any)?.draft_state?.revision_of;
-        return typeof root === "string" && root.length > 0 ? root : schedule.id;
+        if (typeof parent === "string" && parent.trim()) {
+          parentById.set(schedule.id, parent.trim());
+        }
       } catch {
-        return schedule.id;
+        // Ignore malformed payload and fall back to self id.
       }
+    }
+
+    const getRevisionRootId = (schedule: OptimizedSchedule) => {
+      const visited = new Set<string>();
+      let currentId = schedule.id;
+      let rootId = schedule.id;
+
+      while (true) {
+        if (visited.has(currentId)) break;
+        visited.add(currentId);
+
+        const parent = parentById.get(currentId);
+        if (!parent) break;
+
+        rootId = parent;
+        if (!byId.has(parent)) break;
+        currentId = parent;
+      }
+
+      return rootId;
     };
 
     for (const schedule of schedules) {
       const rootId = getRevisionRootId(schedule);
-      const range = resolveRange(schedule);
-      const groupKey = `${rootId}:${range.start}:${range.end}`;
+      const groupKey = rootId;
       const existing = groups.get(groupKey) || [];
       existing.push(schedule);
       groups.set(groupKey, existing);
@@ -288,6 +318,9 @@ export default function SchedulesPage() {
                               {group.versions.length} versions
                             </span>
                           )}
+                          <span className="text-xs text-slate-500">
+                            Rev ID: {schedule.id.slice(0, 8)}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -326,13 +359,10 @@ export default function SchedulesPage() {
                           }
                           className="px-2 py-1 rounded border border-gray-200 text-gray-600 hover:bg-gray-50"
                         >
-                          {new Date(version.created_at).toLocaleDateString(
-                            locale,
-                            {
-                              month: "short",
-                              day: "numeric",
-                            },
-                          )}
+                          {version.id.slice(0, 8)} · {new Date(version.created_at).toLocaleDateString(locale, {
+                            month: "short",
+                            day: "numeric",
+                          })}
                           {version.is_finalized ? " (final)" : " (draft)"}
                         </Link>
                       ))}

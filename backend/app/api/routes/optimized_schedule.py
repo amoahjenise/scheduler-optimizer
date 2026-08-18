@@ -9046,6 +9046,7 @@ async def list_optimized_schedules(
     query = query.filter(OptimizedSchedule.organization_id == auth.organization_id)
     
     schedules = query.order_by(OptimizedSchedule.created_at.desc()).limit(50).all()
+    schedule_lookup = {str(s.id): s for s in schedules}
     result = []
     for s in schedules:
         result_data = s.result or {}
@@ -9061,6 +9062,7 @@ async def list_optimized_schedules(
         
         result.append({
             "id": str(s.id),
+            "family_root_id": _schedule_revision_root(s, schedule_lookup),
             "schedule_id": str(s.schedule_id) if s.schedule_id else None,
             "organization_id": s.organization_id,
             "is_finalized": s.finalized,
@@ -9097,6 +9099,7 @@ async def get_optimized_schedule(
         
         return {
             "id": str(schedule.id),
+            "family_root_id": _schedule_revision_root(schedule),
             "schedule_id": str(schedule.schedule_id) if schedule.schedule_id else None,
             "organization_id": schedule.organization_id,
             "is_finalized": schedule.finalized,
@@ -9137,8 +9140,8 @@ async def finalize_schedule(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _schedule_revision_root(schedule) -> str:
-    """Return the id of the family root this schedule belongs to."""
+def _extract_revision_parent_id(schedule) -> Optional[str]:
+    """Return the direct revision parent id for a schedule, if present."""
     result_data = schedule.result or {}
     schedule_data = _normalize_schedule_payload(result_data)
 
@@ -9152,7 +9155,45 @@ def _schedule_revision_root(schedule) -> str:
     if not root and isinstance(result_data, dict):
         root = result_data.get("revision_of")
 
-    return str(root) if root else str(schedule.id)
+    return str(root) if root else None
+
+
+def _schedule_revision_root(
+    schedule,
+    schedule_lookup: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Return the canonical root id of a revision family.
+
+    Revisions may be chained (A -> B -> C). We walk parent pointers until we
+    reach the earliest known ancestor so all descendants stay in one family.
+    """
+    current_id = str(schedule.id)
+    parent_id = _extract_revision_parent_id(schedule)
+    if not parent_id:
+        return current_id
+
+    root_id = current_id
+    visited = {current_id}
+
+    while parent_id:
+        parent_id = str(parent_id)
+        if parent_id in visited:
+            break
+
+        visited.add(parent_id)
+        root_id = parent_id
+
+        parent_schedule = (
+            schedule_lookup.get(parent_id)
+            if isinstance(schedule_lookup, dict)
+            else None
+        )
+        if not parent_schedule:
+            break
+
+        parent_id = _extract_revision_parent_id(parent_schedule)
+
+    return root_id
 
 
 def _serialize_version_entry(db: Session, schedule) -> Dict[str, Any]:
@@ -9169,6 +9210,7 @@ def _serialize_version_entry(db: Session, schedule) -> Dict[str, Any]:
 
     return {
         "id": str(schedule.id),
+        "family_root_id": _schedule_revision_root(schedule),
         "organization_id": schedule.organization_id,
         "is_finalized": schedule.finalized,
         "start_date": start_date,
@@ -9181,7 +9223,7 @@ def _serialize_version_entry(db: Session, schedule) -> Dict[str, Any]:
 
 def _load_version_family(db: Session, auth: AuthContext, schedule) -> List[Any]:
     """Load every schedule that belongs to the same revision family, oldest first."""
-    root_id = _schedule_revision_root(schedule)
+    root_id = None
 
     siblings = (
         db.query(OptimizedSchedule)
@@ -9190,7 +9232,14 @@ def _load_version_family(db: Session, auth: AuthContext, schedule) -> List[Any]:
         .all()
     )
 
-    return [s for s in siblings if _schedule_revision_root(s) == root_id]
+    schedule_lookup = {str(s.id): s for s in siblings}
+    root_id = _schedule_revision_root(schedule, schedule_lookup)
+
+    return [
+        s
+        for s in siblings
+        if _schedule_revision_root(s, schedule_lookup) == root_id
+    ]
 
 
 @router.get("/{schedule_id}/versions")

@@ -92,6 +92,7 @@ export default function ScheduleDetailsPage() {
   // Version family state
   const [versions, setVersions] = useState<ScheduleVersion[]>([]);
   const [activeVersionId, setActiveVersionId] = useState<string | null>(null);
+  const [versionRootId, setVersionRootId] = useState<string | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const [showVersionTimeline, setShowVersionTimeline] = useState(false);
   const [nurseNameByUserId, setNurseNameByUserId] = useState<
@@ -136,6 +137,7 @@ export default function ScheduleDetailsPage() {
       const data = await fetchScheduleVersionsAPI(scheduleId, authHeaders);
       setVersions(data.versions);
       setActiveVersionId(data.active_id);
+      setVersionRootId(data.root_id || null);
 
       try {
         const nursesResponse = await listNursesAPI(
@@ -158,6 +160,7 @@ export default function ScheduleDetailsPage() {
     } catch (e) {
       console.error("Failed to load schedule versions", e);
       setVersions([]);
+      setVersionRootId(null);
     }
   }, [scheduleId, orgLoading, currentOrganization, getAuthHeaders, user?.id]);
 
@@ -434,7 +437,7 @@ export default function ScheduleDetailsPage() {
 
       const newDraft = await createDraftScheduleAPI(draftPayload, authHeaders);
       // Navigate to the scheduler to edit the new draft
-      router.push(`/scheduler?draft=${newDraft.id}`);
+      router.push(`/scheduler?scheduleId=${newDraft.id}`);
     } catch (error) {
       console.error("Failed to create revision:", error);
       setError(t("failedToCreateRevision") || "Failed to create revision");
@@ -526,6 +529,15 @@ export default function ScheduleDetailsPage() {
             </div>
           </div>
 
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 px-4 py-2 text-xs text-slate-600 flex flex-wrap items-center gap-4">
+            <span>
+              Revision ID: <span className="font-mono text-slate-800">{schedule.id}</span>
+            </span>
+            <span>
+              Family Root: <span className="font-mono text-slate-800">{versionRootId || schedule.id}</span>
+            </span>
+          </div>
+
           {versions.length > 1 && (
             <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -545,6 +557,7 @@ export default function ScheduleDetailsPage() {
                     {versions.map((version, index) => (
                       <option key={version.id} value={version.id}>
                         v{index + 1}
+                        {` [${version.id.slice(0, 8)}]`}
                         {version.id === activeVersionId ? " (active)" : ""}
                         {version.created_at
                           ? ` · ${new Date(version.created_at).toLocaleDateString()}`

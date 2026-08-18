@@ -2668,6 +2668,13 @@ export default function SchedulerPage() {
                 </div>
               )}
 
+              {savedScheduleId && (
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
+                  <span>Revision ID</span>
+                  <span className="font-mono">{savedScheduleId.slice(0, 8)}</span>
+                </div>
+              )}
+
               {/* Progress Steps - Reusable Component */}
               <ProgressSteps
                 steps={steps}

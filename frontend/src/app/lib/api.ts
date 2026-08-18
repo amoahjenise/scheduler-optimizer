@@ -119,6 +119,7 @@ async function apiRequest<T>(
 // Types
 export interface OptimizedSchedule {
   id: string;
+  family_root_id?: string;
   name?: string;
   organization_id?: string;
   created_by?: string | null;
@@ -2802,6 +2803,7 @@ export async function markNotificationReadAPI(
 
 export interface ScheduleVersion {
   id: string;
+  family_root_id?: string;
   organization_id?: string | null;
   is_finalized: boolean;
   start_date?: string | null;
