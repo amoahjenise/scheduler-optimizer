@@ -167,9 +167,21 @@ const Navigation = () => {
 const DashboardButton = () => {
   const router = useRouter();
   const t = useTranslations("landing");
+
+  const handleDashboardClick = () => {
+    router.push("/dashboard");
+
+    // If app-router navigation hangs, force a hard navigation.
+    window.setTimeout(() => {
+      if (window.location.pathname !== "/dashboard") {
+        window.location.assign("/dashboard");
+      }
+    }, 350);
+  };
+
   return (
     <button
-      onClick={() => router.push("/dashboard")}
+      onClick={handleDashboardClick}
       className="flex items-center gap-2 px-5 py-2.5 bg-white text-gray-900 text-sm font-semibold rounded-full transition-all hover:bg-white/90 shadow-lg"
     >
       {t("nav.dashboard")}
