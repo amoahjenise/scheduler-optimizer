@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 clerk_client = Clerk(bearer_auth=settings.CLERK_SECRET_KEY)
 
 
+# Registered with and without the trailing slash to avoid a 307 redirect
+# round trip from the Next.js proxy.
+@router.get("", include_in_schema=False)
 @router.get("/")
 def list_deletion_activities(
     auth: OptionalAuth,

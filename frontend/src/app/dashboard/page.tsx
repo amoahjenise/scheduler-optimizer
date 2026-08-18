@@ -12,10 +12,12 @@ import {
   fetchDeletionActivitiesAPI,
   fetchNotificationsAPI,
   markNotificationReadAPI,
+  listNursesAPI,
   type Handover,
   type OptimizedSchedule,
   type DeletionActivity,
   type AppNotification,
+  type Nurse,
 } from "../lib/api";
 import {
   Calendar,
@@ -31,10 +33,17 @@ import {
   RefreshCw,
   UserCheck,
   Bell,
+  Printer,
 } from "lucide-react";
 import { useOrganization } from "../context/OrganizationContext";
 import type { Patient } from "../lib/api";
 import { FEATURES } from "../lib/featureFlags";
+import { printAssignmentSheet } from "./printAssignments";
+import {
+  buildNurseNameByUserId,
+  getAccountDisplayName,
+  resolveDisplayName,
+} from "../lib/nameDisplay";
 
 interface ScheduleShift {
   nurse: string;
@@ -55,9 +64,46 @@ interface RecentActivityItem {
   title: string;
   subtitle: string;
   timestamp: number;
+  dedupeMode?: "window" | "exactKey";
+  dedupeKey?: string;
 }
 
 const RECENT_ACTIVITY_LIMIT = 3;
+const ACTIVITY_DEDUPE_WINDOW_MS = 10 * 60 * 1000;
+
+function dedupeActivities(items: RecentActivityItem[]): RecentActivityItem[] {
+  const exactSeen = new Set<string>();
+  const lastSeenByKey = new Map<string, number>();
+  const unique: RecentActivityItem[] = [];
+
+  for (const item of items) {
+    const normalizedSubtitle = item.subtitle.replace(/\s+/g, " ").trim();
+    const key =
+      item.dedupeKey || `${item.type}|${item.title}|${normalizedSubtitle}`;
+
+    if (item.dedupeMode === "exactKey") {
+      if (exactSeen.has(key)) {
+        continue;
+      }
+      exactSeen.add(key);
+      unique.push(item);
+      continue;
+    }
+
+    const previousTimestamp = lastSeenByKey.get(key);
+    if (
+      previousTimestamp !== undefined &&
+      previousTimestamp - item.timestamp <= ACTIVITY_DEDUPE_WINDOW_MS
+    ) {
+      continue;
+    }
+
+    lastSeenByKey.set(key, item.timestamp);
+    unique.push(item);
+  }
+
+  return unique;
+}
 
 function parseTimeToMinutes(value: string): number | null {
   const match = value.match(/^(\d{1,2}):(\d{2})$/);
@@ -131,6 +177,13 @@ export default function Dashboard() {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [pendingJoinApprovals, setPendingJoinApprovals] = useState(0);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [currentNurseName, setCurrentNurseName] = useState<string | null>(null);
+  const [currentNurseTeam, setCurrentNurseTeam] = useState<string | null>(null);
+  // Kept for the printable assignment sheet (nurse -> patients).
+  const [todayHandovers, setTodayHandovers] = useState<{
+    day: Handover[];
+    night: Handover[];
+  }>({ day: [], night: [] });
 
   useEffect(() => {
     async function loadStats() {
@@ -139,14 +192,73 @@ export default function Dashboard() {
 
       try {
         const authHeaders = await getAuthHeaders();
+        const accountDisplayName = getAccountDisplayName(user);
+        let nurseNameByUserId = new Map<
+          string,
+          { name: string; team: string | null }
+        >();
 
-        // Load core dashboard stats fail-soft so one slow endpoint doesn't block all tiles.
-        const [patientsResult, dayHandoversResult, nightHandoversResult] =
-          await Promise.allSettled([
-            fetchPatientsAPI({ active_only: true }, authHeaders),
-            fetchTodaysHandoversAPI("day", authHeaders),
-            fetchTodaysHandoversAPI("night", authHeaders),
-          ]);
+        // Single parallel wave. These used to run as three sequential
+        // round trips (nurses → patients/handovers → schedules/activities),
+        // so their latencies stacked before anything could render.
+        const [
+          nursesResult,
+          patientsResult,
+          dayHandoversResult,
+          nightHandoversResult,
+          schedulesResult,
+          deletionsResult,
+        ] = await Promise.allSettled([
+          listNursesAPI(user?.id || "", 1, 500, undefined, authHeaders),
+          fetchPatientsAPI({ active_only: true }, authHeaders),
+          fetchTodaysHandoversAPI("day", authHeaders),
+          fetchTodaysHandoversAPI("night", authHeaders),
+          fetchOptimizedSchedulesAPI(authHeaders, {
+            includeScheduleData: false,
+            timeoutMs: 12000,
+            retryCount: 0,
+          }),
+          fetchDeletionActivitiesAPI(authHeaders, 25, {
+            timeoutMs: 10000,
+            retryCount: 0,
+          }),
+        ]);
+
+        if (nursesResult.status === "fulfilled") {
+          const orgNurses = nursesResult.value.nurses || [];
+          nurseNameByUserId = buildNurseNameByUserId(orgNurses);
+          const currentNurse = user?.id ? nurseNameByUserId.get(user.id) : null;
+          setCurrentNurseName(currentNurse?.name || null);
+          setCurrentNurseTeam(currentNurse?.team || null);
+        } else {
+          console.warn(
+            "Failed to load nurse display mapping:",
+            nursesResult.reason,
+          );
+          setCurrentNurseName(null);
+          setCurrentNurseTeam(null);
+        }
+
+        const resolveActorDisplayName = (
+          userId?: string | null,
+          rawName?: string | null,
+          options?: { allowUserIdFallback?: boolean },
+        ) => {
+          const nurseMatch = userId ? nurseNameByUserId.get(userId) : undefined;
+          const accountMatch =
+            userId && user?.id && userId === user.id
+              ? accountDisplayName
+              : rawName;
+
+          return (
+            resolveDisplayName({
+              nurseName: nurseMatch?.name,
+              accountName: accountMatch,
+              userId,
+              allowUserIdFallback: options?.allowUserIdFallback,
+            }) || "?"
+          );
+        };
 
         const patientsRes =
           patientsResult.status === "fulfilled"
@@ -161,24 +273,21 @@ export default function Dashboard() {
             ? nightHandoversResult.value
             : { handovers: [], total: 0 };
 
+        setTodayHandovers({
+          day: dayHandovers.handovers || [],
+          night: nightHandovers.handovers || [],
+        });
+
         let schedulesList: OptimizedSchedule[] = [];
         let deletionActivities: DeletionActivity[] = [];
-        const [schedulesResult, deletionsResult] = await Promise.allSettled([
-          fetchOptimizedSchedulesAPI(authHeaders, {
-            includeScheduleData: false,
-            timeoutMs: 12000,
-            retryCount: 0,
-          }),
-          fetchDeletionActivitiesAPI(authHeaders, 25, {
-            timeoutMs: 10000,
-            retryCount: 0,
-          }),
-        ]);
 
         if (schedulesResult.status === "fulfilled") {
           schedulesList = schedulesResult.value;
         } else {
-          console.warn("Failed to load schedules list:", schedulesResult.reason);
+          console.warn(
+            "Failed to load schedules list:",
+            schedulesResult.reason,
+          );
         }
 
         if (deletionsResult.status === "fulfilled") {
@@ -396,26 +505,22 @@ export default function Dashboard() {
               ? (scheduleDataRaw as Record<string, any>)
               : {};
 
-          const fallbackUserName =
-            user?.fullName ||
-            (user?.firstName
-              ? `${user.firstName.trim().charAt(0).toUpperCase()}${user.firstName.trim().slice(1)}`
-              : undefined) ||
-            user?.primaryEmailAddress?.emailAddress ||
-            "";
-
-          const rawCreatedBy =
+          const createdByName =
             rawSchedule.created_by_name ||
-            rawSchedule.created_by ||
             scheduleData.created_by_name ||
             scheduleData.createdByName ||
+            null;
+          const createdById =
+            rawSchedule.created_by ||
             scheduleData.created_by ||
-            scheduleData.createdBy;
+            scheduleData.createdBy ||
+            null;
 
-          const authorName =
-            rawCreatedBy === user?.id && fallbackUserName
-              ? fallbackUserName
-              : rawCreatedBy || null;
+          const authorName = resolveActorDisplayName(
+            createdById,
+            createdByName,
+            { allowUserIdFallback: true },
+          );
 
           const createdDate = new Date(
             schedule.created_at,
@@ -454,19 +559,25 @@ export default function Dashboard() {
                 : t("handoverDeleted", { label: activity.object_label }),
           subtitle:
             t("deletedByActivity", {
-              name: activity.performed_by_name || "?",
+              name: resolveActorDisplayName(
+                activity.performed_by_user_id,
+                activity.performed_by_name,
+                { allowUserIdFallback: true },
+              ),
             }) + (activity.details ? ` • ${activity.details}` : ""),
           timestamp: new Date(activity.occurred_at).getTime(),
+          dedupeMode: "exactKey",
+          dedupeKey: `deletion|${(activity.performed_by_name || "?").trim().toLowerCase()}|${(activity.details || "").trim().toLowerCase()}`,
         }));
 
-        const mergedRecentActivities = [
-          ...(FEATURES.PATIENT_MANAGEMENT ? patientActivities : []),
-          ...handoverActivities,
-          ...scheduleActivities,
-          ...deletionRecentActivities,
-        ]
-          .sort((a, b) => b.timestamp - a.timestamp)
-          .slice(0, RECENT_ACTIVITY_LIMIT);
+        const mergedRecentActivities = dedupeActivities(
+          [
+            ...(FEATURES.PATIENT_MANAGEMENT ? patientActivities : []),
+            ...handoverActivities,
+            ...scheduleActivities,
+            ...deletionRecentActivities,
+          ].sort((a, b) => b.timestamp - a.timestamp),
+        ).slice(0, RECENT_ACTIVITY_LIMIT);
 
         setPatients(patientsRes.patients || []);
         setRecentActivities(mergedRecentActivities);
@@ -551,7 +662,8 @@ export default function Dashboard() {
         // Use list response for discovery, then hydrate only the active schedule.
         let { data: scheduleData } = resolveRange(activeSchedule);
         const needsHydration =
-          !Array.isArray(scheduleData?.dates) || scheduleData.dates.length === 0;
+          !Array.isArray(scheduleData?.dates) ||
+          scheduleData.dates.length === 0;
 
         if (needsHydration && activeSchedule.id) {
           try {
@@ -571,7 +683,10 @@ export default function Dashboard() {
               scheduleData = rawData as Record<string, any>;
             }
           } catch (hydrateErr) {
-            console.warn("Failed to hydrate active schedule details:", hydrateErr);
+            console.warn(
+              "Failed to hydrate active schedule details:",
+              hydrateErr,
+            );
           }
         }
 
@@ -640,9 +755,12 @@ export default function Dashboard() {
     if (user?.id && !orgLoading) {
       loadStats();
 
-      // Auto-refresh every 30 seconds
+      // Auto-refresh every 30 seconds, but only while the tab is visible.
+      // Background tabs previously kept refetching the full dashboard.
       const interval = setInterval(() => {
-        loadStats();
+        if (document.visibilityState === "visible") {
+          loadStats();
+        }
       }, 30000);
 
       return () => clearInterval(interval);
@@ -678,10 +796,12 @@ export default function Dashboard() {
         ? t("goodAfternoon")
         : t("goodEvening");
 
-  const firstName = user?.firstName?.trim();
-  const displayFirstName = firstName
-    ? `${firstName.charAt(0).toUpperCase()}${firstName.slice(1)}`
-    : "there";
+  const displayGreetingName =
+    resolveDisplayName({
+      nurseName: currentNurseName,
+      accountName: getAccountDisplayName(user),
+      allowUserIdFallback: false,
+    }) || "";
 
   const weekDays = Array.from({ length: 7 }, (_, index) => {
     const dayDate = new Date(2024, 0, 7 + index);
@@ -717,9 +837,15 @@ export default function Dashboard() {
                 })}
               </p>
               <h1 className="text-[28px] font-bold text-gray-900">
-                {greeting}, {displayFirstName}
+                {greeting}
+                {displayGreetingName ? ` ${displayGreetingName}` : ""}
               </h1>
-              <div className="mt-2">
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                {currentNurseTeam && (
+                  <span className="inline-flex items-center rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
+                    {t("assignedTeam")}: {currentNurseTeam}
+                  </span>
+                )}
                 <span
                   className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold border ${
                     isDayShiftActive
@@ -734,16 +860,37 @@ export default function Dashboard() {
               </div>
             </div>
             <div className="flex flex-col items-end gap-1">
-              <button
-                onClick={() => setRefreshKey((prev) => prev + 1)}
-                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-[#1A5CFF] hover:bg-blue-50 rounded-xl transition-colors disabled:opacity-70 disabled:cursor-not-allowed"
-                disabled={stats.loading}
-              >
-                <RefreshCw
-                  className={`w-4 h-4 ${stats.loading ? "animate-spin" : ""}`}
-                />
-                {stats.loading ? t("refreshing") : t("refresh")}
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() =>
+                    printAssignmentSheet({
+                      organizationName:
+                        currentOrganization?.name || "Chronofy",
+                      date: new Date(),
+                      locale,
+                      dayStaff: todaySchedule?.dayStaff || [],
+                      nightStaff: todaySchedule?.nightStaff || [],
+                      dayHandovers: todayHandovers.day,
+                      nightHandovers: todayHandovers.night,
+                    })
+                  }
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-[#1A5CFF] hover:bg-blue-50 rounded-xl transition-colors"
+                  title={t("printAssignmentsHint")}
+                >
+                  <Printer className="w-4 h-4" />
+                  {t("printAssignments")}
+                </button>
+                <button
+                  onClick={() => setRefreshKey((prev) => prev + 1)}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-[#1A5CFF] hover:bg-blue-50 rounded-xl transition-colors disabled:opacity-70 disabled:cursor-not-allowed"
+                  disabled={stats.loading}
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 ${stats.loading ? "animate-spin" : ""}`}
+                  />
+                  {stats.loading ? t("refreshing") : t("refresh")}
+                </button>
+              </div>
               <p className="text-[11px] text-gray-400 min-h-[16px]">
                 {stats.loading
                   ? t("updatingDashboard")
@@ -1191,10 +1338,14 @@ export default function Dashboard() {
                         {/* Hover Tooltip */}
                         {hoveredDay === index && daySchedule && hasSchedule && (
                           <div
-                            className="absolute left-1/2 top-full z-[60] mt-2 w-64 -translate-x-1/2 rounded-xl border border-gray-200 bg-white p-3 shadow-xl"
+                            className="absolute left-1/2 top-full z-[60] w-64 -translate-x-1/2 pt-2"
                             onMouseEnter={() => setHoveredDay(index)}
                             onMouseLeave={() => setHoveredDay(null)}
                           >
+                            {/* pt-2 above acts as an invisible bridge: with a
+                                margin the cursor left the hover area before
+                                reaching the popup, which closed it instantly. */}
+                            <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-xl">
                             <div className="text-xs font-semibold text-gray-900 mb-2">
                               {dayDate.toLocaleDateString(locale, {
                                 weekday: "short",
@@ -1246,6 +1397,7 @@ export default function Dashboard() {
                                 </div>
                               </div>
                             )}
+                            </div>
                           </div>
                         )}
                       </div>

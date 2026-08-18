@@ -16,6 +16,9 @@ from app.services.deletion_activity import record_deletion_activity
 router = APIRouter()
 
 
+# Registered with and without the trailing slash. The Next.js proxy strips
+# trailing slashes, which previously made every call pay for a 307 redirect.
+@router.get("", response_model=PatientListResponse, include_in_schema=False)
 @router.get("/", response_model=PatientListResponse)
 def get_patients(
     auth: OptionalAuth,
