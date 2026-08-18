@@ -22,7 +22,10 @@ const apiBaseUrl =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
 const nextConfig: NextConfig = {
-  distDir: isDev ? `.next/dev-${devPort}` : ".next",
+  // Keep dev and production build artifacts separate.
+  // Running `next build` while `next dev` is active can otherwise remove
+  // dev manifests and cause intermittent 500s (ENOENT on manifest files).
+  distDir: isDev ? `.next/dev-${devPort}` : ".next-prod",
   // Fix lockfile detection warning by explicitly setting the workspace root
   outputFileTracingRoot: path.join(__dirname, "./"),
   pageExtensions: ["js", "jsx", "ts", "tsx"],
