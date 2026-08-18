@@ -32,6 +32,18 @@ npm run dev
 
 Frontend runs on `http://127.0.0.1:3000` and calls the backend at `http://127.0.0.1:8000`.
 
+## Admin Quick Start
+
+This project is primarily a unit scheduling and staffing system. The most important internal concepts to understand are:
+
+- Shift codes define the actual schedule assignments used in the unit.
+- Staffing roles separate basic staff access from leadership coverage responsibilities.
+- Staffing teams group nurses for operational coverage and weekend rotation logic.
+- Full coverage means the schedule meets minimum safe staffing requirements by day and time block, not just a raw total count.
+- The scheduler prioritizes preserving valid existing assignments, honoring leave, and then filling coverage gaps while balancing hours and constraints.
+
+For the longer internal reference, see `docs/scheduler-operations-guide.md`.
+
 ## Environment
 
 Frontend:
