@@ -66,7 +66,7 @@ export default function RolePermissionsSection() {
         return {
           primary: "",
           accountName: null as string | null,
-          userId: null as string | null,
+          accountEmail: null as string | null,
         };
       }
 
@@ -84,7 +84,7 @@ export default function RolePermissionsSection() {
         primary,
         accountName:
           accountName && accountName !== primary ? accountName : null,
-        userId: member.user_id && member.user_id !== primary ? member.user_id : null,
+        accountEmail: member.user_email || null,
       };
     },
     [nurseNameByUserId],
@@ -382,9 +382,9 @@ export default function RolePermissionsSection() {
                             Account: {memberDisplay.accountName}
                           </p>
                         )}
-                        {memberDisplay.userId && (
+                        {memberDisplay.accountEmail && (
                           <p className="truncate text-xs text-gray-500">
-                            User ID: {memberDisplay.userId}
+                            Account email: {memberDisplay.accountEmail}
                           </p>
                         )}
                       </div>
