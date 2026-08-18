@@ -595,7 +595,7 @@ export default function SchedulerPage() {
       metadata.set(normalizeNurseName(nurse.name), nurse);
     }
 
-    for (const nurse of organizationNurses) {
+    for (const nurse of allOrganizationNurses) {
       const isPartTime = nurse.employment_type === "part-time";
       const configuredBiWeeklyTarget = isPartTime
         ? defaultPartTimeMaxWeeklyHours
@@ -651,7 +651,7 @@ export default function SchedulerPage() {
 
     return metadata;
   }, [
-    organizationNurses,
+    allOrganizationNurses,
     manualNurses,
     defaultFullTimeMaxWeeklyHours,
     defaultPartTimeMaxWeeklyHours,

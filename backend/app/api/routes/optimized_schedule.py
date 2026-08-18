@@ -27,6 +27,7 @@ from app.core.auth import get_optional_auth, AuthContext
 from app.models.optimized_schedule import OptimizedSchedule
 from app.models.system_prompt import SystemPrompt
 from app.models.nurse import Nurse
+from app.models.organization import OrganizationMember
 from app.schemas.optimized_schedule import OptimizeRequest, OptimizeResponse, RefineRequest, InsightsRequest
 from app.api.routes.system_prompts import get_system_prompt, DEFAULT_PROMPT_CONTENT, build_default_prompt_content
 from app.services.deletion_activity import record_deletion_activity
@@ -59,6 +60,139 @@ def _humanize_ai_error(action: str, exc: Exception) -> str:
             "Please retry in about 30-60 seconds."
         )
     return f"Unable to {action} right now. Please try again."
+
+
+def _leave_name_key(name: Any) -> str:
+    """Normalize a nurse name for leave-status matching (accent/case/spacing safe)."""
+    text = unicodedata.normalize("NFKD", str(name or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def apply_org_leave_status(
+    nurses: List[Dict],
+    assignments: Optional[Dict[str, List[str]]],
+    organization_id: Optional[str],
+    db: Session,
+) -> Set[str]:
+    """Force leave status from the database onto the optimization payload.
+
+    The frontend can omit or send stale leave flags (for example when nurses on
+    leave are filtered out of the selectable list). Scheduling correctness must
+    not depend on that, so leave state is re-read from the database here and
+    applied to both the nurse objects and any pre-existing assignments.
+
+    Returns the set of normalized names that are on leave.
+    """
+    if not organization_id or not nurses:
+        return set()
+
+    try:
+        db_nurses = (
+            db.query(Nurse)
+            .filter(Nurse.organization_id == organization_id)
+            .all()
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"LEAVE ENFORCEMENT: unable to read nurse leave status: {exc}")
+        return set()
+
+    leave_by_key: Dict[str, Dict[str, bool]] = {}
+    for db_nurse in db_nurses:
+        leave_by_key[_leave_name_key(db_nurse.name)] = {
+            "isOnMaternityLeave": bool(db_nurse.is_on_maternity_leave),
+            "isOnSickLeave": bool(db_nurse.is_on_sick_leave),
+            "isOnSabbatical": bool(db_nurse.is_on_sabbatical),
+        }
+
+    on_leave_keys: Set[str] = set()
+
+    for nurse in nurses:
+        key = _leave_name_key(nurse.get("name"))
+        db_flags = leave_by_key.get(key)
+        if not db_flags:
+            # Unknown to the roster (manual/OCR-only entry): keep payload values.
+            continue
+
+        nurse["isOnMaternityLeave"] = db_flags["isOnMaternityLeave"]
+        nurse["isOnSickLeave"] = db_flags["isOnSickLeave"]
+        nurse["isOnSabbatical"] = db_flags["isOnSabbatical"]
+
+        if any(db_flags.values()):
+            on_leave_keys.add(key)
+            logger.info(
+                f"  LEAVE ENFORCEMENT: '{nurse.get('name')}' is on leave "
+                f"(maternity={db_flags['isOnMaternityLeave']}, "
+                f"sick={db_flags['isOnSickLeave']}, "
+                f"sabbatical={db_flags['isOnSabbatical']}) — all shifts cleared"
+            )
+
+    # Clear any carried-over shifts so a re-optimization cannot preserve them.
+    if on_leave_keys and assignments:
+        for assigned_name in list(assignments.keys()):
+            if _leave_name_key(assigned_name) in on_leave_keys:
+                assignments[assigned_name] = ["" for _ in assignments[assigned_name]]
+
+    if on_leave_keys:
+        logger.info(f"LEAVE ENFORCEMENT: {len(on_leave_keys)} nurse(s) excluded from scheduling")
+
+    return on_leave_keys
+
+
+def enforce_leave_all_off(
+    schedule: Dict[str, List[Dict]],
+    nurses: List[Dict],
+    date_list: List[str],
+) -> int:
+    """Force every nurse on leave to be all-OFF in a finished schedule.
+
+    The optimizer runs several passes after the main build (coverage patching,
+    target balancing, under-target filling). Those passes see a nurse on leave
+    as having zero hours — i.e. maximally under target — and happily hand them
+    shifts. This is the single authoritative sweep that runs last, so leave
+    status can never be undone by a later pass.
+
+    Returns the number of working shifts that were cleared.
+    """
+    if not schedule or not nurses:
+        return 0
+
+    on_leave = {
+        _leave_name_key(n.get("name"))
+        for n in nurses
+        if (
+            bool(n.get("isOnMaternityLeave"))
+            or bool(n.get("isOnSickLeave"))
+            or bool(n.get("isOnSabbatical"))
+        )
+    }
+    if not on_leave:
+        return 0
+
+    cleared = 0
+    for nurse_name, row in schedule.items():
+        if _leave_name_key(nurse_name) not in on_leave:
+            continue
+        for day_idx in range(len(row)):
+            shift = row[day_idx]
+            if shift and float(shift.get("hours", 0) or 0) > 0:
+                cleared += 1
+            row[day_idx] = {
+                "id": str(uuid.uuid4()),
+                "date": date_list[day_idx] if day_idx < len(date_list) else "",
+                "shift": "",
+                "shiftType": "off",
+                "hours": 0,
+                "startTime": "",
+                "endTime": "",
+            }
+
+    if cleared:
+        logger.warning(
+            f"LEAVE ENFORCEMENT (final): cleared {cleared} shift(s) from "
+            f"{len(on_leave)} nurse(s) on leave"
+        )
+    return cleared
 
 # ============================================================================
 # MCH CONTRACT CONSTANTS
@@ -277,13 +411,57 @@ def _extract_schedule_actor(result_data: Any, schedule_data: Dict[str, Any]) -> 
         or schedule_obj.get("createdByName")
     )
 
+    # Legacy fallback: some payloads stored only the Clerk id in created_by_name.
+    # Treat that as created_by so we can resolve proper display names.
+    if not created_by and isinstance(created_by_name, str) and created_by_name.startswith("user_"):
+        created_by = created_by_name
+
     return (
         str(created_by) if created_by else None,
         str(created_by_name) if created_by_name else None,
     )
 
 
-def _with_actor_metadata(payload: Any, auth: AuthContext) -> Dict[str, Any]:
+def _resolve_actor_display_name(
+    db: Session,
+    organization_id: Optional[str],
+    created_by: Optional[str],
+    created_by_name: Optional[str],
+) -> Optional[str]:
+    """Resolve actor display name: nurse name -> account name -> user id."""
+    if created_by and organization_id:
+        nurse = (
+            db.query(Nurse)
+            .filter(
+                Nurse.organization_id == organization_id,
+                Nurse.user_id == created_by,
+            )
+            .first()
+        )
+        if nurse and nurse.name:
+            return nurse.name
+
+    if created_by and organization_id:
+        member = (
+            db.query(OrganizationMember)
+            .filter(
+                OrganizationMember.organization_id == organization_id,
+                OrganizationMember.user_id == created_by,
+            )
+            .first()
+        )
+        if member and (member.user_name or member.user_email):
+            return member.user_name or member.user_email
+
+    if created_by_name and created_by_name != created_by:
+        return created_by_name
+
+    if created_by:
+        return created_by
+    return created_by_name
+
+
+def _with_actor_metadata(payload: Any, auth: AuthContext, db: Session) -> Dict[str, Any]:
     """Return a schedule payload enriched with actor metadata."""
     payload_obj = payload if isinstance(payload, dict) else {}
     enriched = {**payload_obj}
@@ -291,7 +469,13 @@ def _with_actor_metadata(payload: Any, auth: AuthContext) -> Dict[str, Any]:
     if auth.is_authenticated and auth.user_id:
         enriched["created_by"] = auth.user_id
 
-    actor_name = (auth.user_name or auth.user_email or "").strip()
+    actor_name = _resolve_actor_display_name(
+        db,
+        auth.organization_id,
+        auth.user_id if auth.is_authenticated else None,
+        auth.user_name or auth.user_email,
+    )
+    actor_name = (actor_name or "").strip()
     if actor_name:
         enriched["created_by_name"] = actor_name
 
@@ -1506,6 +1690,11 @@ class RobustScheduler:
 
     def can_work(self, nurse_name: str, date: str, is_night: bool = False, hours: int = 12) -> bool:
         """Check if a nurse can work on a given date"""
+        # Nurses on maternity/sick/sabbatical leave are unavailable, period.
+        # This is the central gate used by the fill/balance passes.
+        if nurse_name in self.nurses_on_leave:
+            return False
+
         day_idx = self.date_list.index(date) if date in self.date_list else -1
         
         # MCH Night Linkage: if this slot is locked for Z23 continuation, no new shifts
@@ -3728,6 +3917,13 @@ class RobustScheduler:
                 logger.warning(f"  Available schedule names: {list(schedule_name_by_norm.values())}")
                 continue
 
+            # Nurses on maternity/sick/sabbatical leave must stay all-OFF.
+            # Re-applying their previous shifts here would silently put an
+            # unavailable nurse back on the schedule.
+            if schedule_name in self.nurses_on_leave:
+                logger.info(f"  🚫 OCR OVERLAY SKIP: '{schedule_name}' is on leave — staying all-OFF")
+                continue
+
             for day_idx, raw_ocr in enumerate(pref_shifts or []):
                 if day_idx >= len(self.date_list):
                     break
@@ -3889,6 +4085,30 @@ class RobustScheduler:
         self._final_safety_pass()
         logger.info(f"  ⏱ STEP 5 (safety pass) completed in {_time.monotonic() - _step_t0:.2f}s")
 
+        # ============================================================
+        # STEP 6: LEAVE ENFORCEMENT (final word)
+        # Nurses on maternity/sick/sabbatical leave must never appear with a
+        # working shift. Individual passes already skip them, but this sweep
+        # guarantees the outcome no matter which pass ran, so a nurse marked
+        # unavailable can never be carried over by a re-optimization.
+        # ============================================================
+        if self.nurses_on_leave:
+            cleared = 0
+            for nurse_name in self.nurses_on_leave:
+                row = self.schedule.get(nurse_name)
+                if not row:
+                    continue
+                for day_idx, shift in enumerate(row):
+                    if shift and shift.get("hours", 0) > 0:
+                        cleared += 1
+                    if day_idx < len(self.date_list):
+                        row[day_idx] = self.assign_off(nurse_name, self.date_list[day_idx])
+            if cleared:
+                logger.warning(
+                    f"STEP 6 LEAVE ENFORCEMENT: cleared {cleared} shift(s) from "
+                    f"{len(self.nurses_on_leave)} nurse(s) on leave"
+                )
+
         logger.info(f"  ⏱ TOTAL build_schedule time: {_time.monotonic() - _build_t0:.2f}s")
         self._validate_schedule()
         return self.schedule
@@ -3938,7 +4158,13 @@ class RobustScheduler:
                 key=lambda x: -x[1],  # most over first
             )
             recipients = sorted(
-                [(n, d) for n, d in nurse_deltas if d < -3.75],
+                [
+                    (n, d)
+                    for n, d in nurse_deltas
+                    # Nurses on leave always read as maximally under-target
+                    # (0h scheduled). They must never receive shifts.
+                    if d < -3.75 and n not in self.nurses_on_leave
+                ],
                 key=lambda x: x[1],  # most under first
             )
 
@@ -5960,6 +6186,11 @@ class ScheduleOptimizer:
             schedule = ScheduleOptimizer.fill_under_target_nurses(schedule, date_list, nurses, shifts_info, assignments or {})
         except Exception as e:
             logging.warning(f"Under-target fill failed: {e}")
+
+        # ABSOLUTE LAST WORD: nurses on maternity/sick/sabbatical leave must be
+        # all-OFF. The passes above treat them as under-target and will assign
+        # them shifts, so this sweep has to run after every one of them.
+        enforce_leave_all_off(schedule, nurses, date_list)
 
         return schedule
 
@@ -8126,10 +8357,12 @@ async def optimize_with_preferences(
             }
         }
         
+        payload = _with_actor_metadata(schedule_data, auth, db)
+
         new_schedule = OptimizedSchedule(
             schedule_id=req.schedule_id if req.schedule_id else None,
             organization_id=org_id,
-            result=schedule_data,
+            result=payload,
             finalized=False,
         )
         db.add(new_schedule)
@@ -8213,7 +8446,18 @@ async def optimize_with_constraints(
         logger.info("=" * 80)
         
         ScheduleOptimizer.validate_constraints_structure(constraints)
-        
+
+        # AUTHORITATIVE LEAVE CHECK: the database decides who is on
+        # maternity/sick/sabbatical leave, not the incoming payload. This also
+        # wipes any shifts carried over from the version being re-optimized, so
+        # a nurse put on leave cannot survive a re-optimization.
+        apply_org_leave_status(
+            constraints.get("nurses", []),
+            assignments,
+            auth.organization_id,
+            db,
+        )
+
         # Build nurse_defaults from database for any nurses missing from the frontend payload
         nurse_defaults = {}
         org_id = auth.organization_id
@@ -8251,7 +8495,7 @@ async def optimize_with_constraints(
             if existing_draft:
                 # Keep one draft lifecycle: update existing draft instead of creating duplicates
                 existing_draft.organization_id = org_id
-                existing_draft.result = schedule
+                existing_draft.result = _with_actor_metadata(schedule, auth, db)
                 existing_draft.finalized = False
                 # No updated_at column yet; refresh created_at so Recent Activity reflects latest draft changes
                 existing_draft.created_at = datetime.utcnow()
@@ -8263,7 +8507,7 @@ async def optimize_with_constraints(
             else:
                 new_schedule = OptimizedSchedule(
                     organization_id=org_id,
-                    result=schedule,
+                    result=_with_actor_metadata(schedule, auth, db),
                     finalized=False,
                 )
                 db.add(new_schedule)
@@ -8387,6 +8631,16 @@ async def optimize_schedule(
         
         # Preprocess all nurses from frontend
         all_nurses = ScheduleOptimizer.preprocess_nurse_data(req.nurses)
+
+        # AUTHORITATIVE LEAVE CHECK: the database is the source of truth for
+        # maternity/sick/sabbatical leave. This also clears any shifts carried
+        # over from a previous version of the schedule being re-optimized.
+        apply_org_leave_status(
+            all_nurses,
+            req.assignments,
+            auth.organization_id,
+            db,
+        )
         
         # CRITICAL DEBUG: Log offRequests received from frontend
         logger.info("=" * 60)
@@ -8542,7 +8796,7 @@ async def optimize_schedule(
         # Use authenticated organization_id
         org_id = auth.organization_id
 
-        schedule_payload = _with_actor_metadata(schedule, auth)
+        schedule_payload = _with_actor_metadata(schedule, auth, db)
 
         new_schedule = OptimizedSchedule(
             schedule_id=req.schedule_id if req.schedule_id else None,
@@ -8570,6 +8824,9 @@ async def optimize_schedule(
 # IMPORTANT: Specific routes must come BEFORE parameterized routes in FastAPI
 # Otherwise /{schedule_id} will match /refine and treat "refine" as an ID
 
+# Registered with and without the trailing slash to avoid a 307 redirect
+# round trip from the Next.js proxy on every dashboard load.
+@router.get("", include_in_schema=False)
 @router.get("/")
 async def list_optimized_schedules(
     include_schedule_data: bool = Query(
@@ -8596,6 +8853,12 @@ async def list_optimized_schedules(
         schedule_data = _normalize_schedule_payload(result_data)
         start_date, end_date = _resolve_schedule_date_range(result_data, schedule_data)
         created_by, created_by_name = _extract_schedule_actor(result_data, schedule_data)
+        display_name = _resolve_actor_display_name(
+            db,
+            s.organization_id,
+            created_by,
+            created_by_name,
+        )
         
         result.append({
             "id": str(s.id),
@@ -8606,7 +8869,7 @@ async def list_optimized_schedules(
             "end_date": end_date,
             "schedule_data": schedule_data if include_schedule_data else {},
             "created_by": created_by,
-            "created_by_name": created_by_name,
+            "created_by_name": display_name,
             "created_at": s.created_at.isoformat() if s.created_at else None,
         })
     return result
@@ -8626,6 +8889,12 @@ async def get_optimized_schedule(
         schedule_data = _normalize_schedule_payload(result_data)
         start_date, end_date = _resolve_schedule_date_range(result_data, schedule_data)
         created_by, created_by_name = _extract_schedule_actor(result_data, schedule_data)
+        display_name = _resolve_actor_display_name(
+            db,
+            schedule.organization_id,
+            created_by,
+            created_by_name,
+        )
         
         return {
             "id": str(schedule.id),
@@ -8636,7 +8905,7 @@ async def get_optimized_schedule(
             "end_date": end_date,
             "schedule_data": schedule_data,
             "created_by": created_by,
-            "created_by_name": created_by_name,
+            "created_by_name": display_name,
             "created_at": schedule.created_at.isoformat() if schedule.created_at else None,
         }
     except HTTPException:
@@ -8687,11 +8956,17 @@ def _schedule_revision_root(schedule) -> str:
     return str(root) if root else str(schedule.id)
 
 
-def _serialize_version_entry(schedule) -> Dict[str, Any]:
+def _serialize_version_entry(db: Session, schedule) -> Dict[str, Any]:
     result_data = schedule.result or {}
     schedule_data = _normalize_schedule_payload(result_data)
     start_date, end_date = _resolve_schedule_date_range(result_data, schedule_data)
     created_by, created_by_name = _extract_schedule_actor(result_data, schedule_data)
+    display_name = _resolve_actor_display_name(
+        db,
+        schedule.organization_id,
+        created_by,
+        created_by_name,
+    )
 
     return {
         "id": str(schedule.id),
@@ -8700,7 +8975,7 @@ def _serialize_version_entry(schedule) -> Dict[str, Any]:
         "start_date": start_date,
         "end_date": end_date,
         "created_by": created_by,
-        "created_by_name": created_by_name,
+        "created_by_name": display_name,
         "created_at": schedule.created_at.isoformat() if schedule.created_at else None,
     }
 
@@ -8730,7 +9005,7 @@ async def list_schedule_versions(
         schedule = _get_scoped_schedule_or_404(db, auth, schedule_id)
         family = _load_version_family(db, auth, schedule)
 
-        entries = [_serialize_version_entry(s) for s in family]
+        entries = [_serialize_version_entry(db, s) for s in family]
 
         # The active version is the newest finalized revision, else the newest revision.
         finalized = [e for e in entries if e["is_finalized"]]
@@ -8763,10 +9038,10 @@ async def promote_schedule_version(
     exactly one version in the family is active at a time.
     """
     try:
-        if not auth.is_authenticated or not auth.can_manage:
+        if not auth.is_authenticated or not auth.has_permission("manage_schedules"):
             raise HTTPException(
                 status_code=403,
-                detail="Only managers and admins can promote a schedule version",
+                detail="You do not have permission to manage schedules",
             )
 
         schedule = _get_scoped_schedule_or_404(db, auth, schedule_id)
@@ -8784,7 +9059,7 @@ async def promote_schedule_version(
         return {
             "success": True,
             "active_id": str(schedule.id),
-            "versions": [_serialize_version_entry(s) for s in family],
+            "versions": [_serialize_version_entry(db, s) for s in family],
         }
     except HTTPException:
         raise
@@ -8806,7 +9081,7 @@ async def create_draft_schedule(
         
         org_id = auth.organization_id
 
-        payload = _with_actor_metadata(schedule_data, auth)
+        payload = _with_actor_metadata(schedule_data, auth, db)
 
         new_schedule = OptimizedSchedule(
             organization_id=org_id,
@@ -8843,7 +9118,7 @@ async def update_draft_schedule(
 
         existing_payload = schedule.result if isinstance(schedule.result, dict) else {}
         patch_payload = schedule_data if isinstance(schedule_data, dict) else {}
-        merged_payload = _with_actor_metadata({**existing_payload, **patch_payload}, auth)
+        merged_payload = _with_actor_metadata({**existing_payload, **patch_payload}, auth, db)
 
         schedule.organization_id = auth.organization_id if auth.is_authenticated else schedule.organization_id
         schedule.result = merged_payload
@@ -8894,7 +9169,7 @@ async def save_and_finalize_schedule(
 
         if existing_draft:
             existing_draft.organization_id = org_id
-            existing_draft.result = _with_actor_metadata(schedule_data, auth)
+            existing_draft.result = _with_actor_metadata(schedule_data, auth, db)
             existing_draft.finalized = True
             # Surface finalize action in Recent Activity ordering
             existing_draft.created_at = datetime.utcnow()
@@ -8909,7 +9184,7 @@ async def save_and_finalize_schedule(
                 "message": "Schedule finalized successfully"
             }
 
-        payload = _with_actor_metadata(schedule_data, auth)
+        payload = _with_actor_metadata(schedule_data, auth, db)
 
         new_schedule = OptimizedSchedule(
             organization_id=org_id,
