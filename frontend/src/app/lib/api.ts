@@ -1457,9 +1457,6 @@ export async function analyzeScheduleInsightsAPI(payload: {
 
 export type StaffingRole = "nurse" | "assistant_manager";
 
-/** Optional Team A / Team B alternating-weekend rotation group. */
-export type WeekendTeam = string | null;
-
 export interface Nurse {
   id: string;
   user_id: string | null;
@@ -1468,7 +1465,6 @@ export interface Nurse {
   seniority?: string;
   team?: string;
   staffing_role?: StaffingRole;
-  weekend_team?: WeekendTeam;
   employment_type: "full-time" | "part-time";
   max_weekly_hours: number;
   bi_weekly_target_hours: number;
@@ -1494,7 +1490,6 @@ export interface NurseCreate {
   seniority?: string;
   team?: string;
   staffing_role?: StaffingRole;
-  weekend_team?: WeekendTeam;
   employment_type: "full-time" | "part-time";
   max_weekly_hours: number;
   target_weekly_hours?: number;
@@ -1517,7 +1512,6 @@ export interface NurseUpdate {
   seniority?: string;
   team?: string;
   staffing_role?: StaffingRole;
-  weekend_team?: WeekendTeam;
   employment_type?: "full-time" | "part-time";
   max_weekly_hours?: number;
   bi_weekly_target_hours?: number;

@@ -144,11 +144,12 @@ def apply_org_staffing_profile(
     organization_id: Optional[str],
     db: Session,
 ) -> Dict[str, Any]:
-    """Stamp DB-owned staffing role / weekend team onto the optimization payload.
+    """Stamp DB-owned staffing role / staffing team onto the optimization payload.
 
     The roster is the source of truth for who is an assistant manager and which
-    weekend rotation group a nurse belongs to, so these are re-read here instead
-    of trusting the incoming payload.
+    staffing team a nurse belongs to. Weekend rotation groups are derived from
+    staffing teams, so these are re-read here instead of trusting the incoming
+    payload.
 
     Returns the organization's weekend-rotation setting so callers can pass it
     through to the optimizer.
@@ -187,7 +188,7 @@ def apply_org_staffing_profile(
     profile_by_key = {
         _leave_name_key(db_nurse.name): {
             "staffingRole": (getattr(db_nurse, "staffing_role", None) or "nurse"),
-            "weekendTeam": getattr(db_nurse, "weekend_team", None),
+            "staffingTeam": getattr(db_nurse, "team", None),
         }
         for db_nurse in db_nurses
     }
@@ -200,7 +201,9 @@ def apply_org_staffing_profile(
             continue
 
         nurse["staffingRole"] = db_profile["staffingRole"]
-        nurse["weekendTeam"] = db_profile["weekendTeam"]
+        nurse["team"] = db_profile["staffingTeam"]
+        # Backward compatibility for downstream code that still reads weekendTeam.
+        nurse["weekendTeam"] = db_profile["staffingTeam"]
 
         if db_profile["staffingRole"] == "assistant_manager":
             assistant_managers.append(str(nurse.get("name")))
@@ -900,11 +903,10 @@ class RobustScheduler:
                 f"{sorted(self.assistant_manager_names)}"
             )
 
-        # Optional alternating-weekend rotation groups (A/B/C..., 1/2/3...).
-        self.weekend_team_rotation_enabled = bool(weekend_team_rotation_enabled)
+        # Alternating-weekend rotation groups derived from staffing teams.
         self.nurse_weekend_team: Dict[str, Optional[str]] = {}
         for n in nurses:
-            team_value = str(n.get("weekendTeam") or "").strip()
+            team_value = str(n.get("team") or n.get("weekendTeam") or "").strip()
             self.nurse_weekend_team[n["name"]] = team_value or None
 
         self.rotation_groups: List[str] = sorted(
@@ -914,6 +916,12 @@ class RobustScheduler:
                 if isinstance(group, str) and group.strip()
             },
             key=lambda g: g.lower(),
+        )
+
+        # If there are 2+ staffing teams, weekend alternation is meaningful and
+        # should be active even when legacy org toggles are off.
+        self.weekend_team_rotation_enabled = bool(
+            weekend_team_rotation_enabled or len(self.rotation_groups) > 1
         )
 
         if self.weekend_team_rotation_enabled:
@@ -3165,8 +3173,8 @@ class RobustScheduler:
                         self.schedule[nurse_name][day_idx] = self.assign_off(nurse_name, date)
                         nurse_consecutive_count[nurse_name] = 0
                     elif self._is_off_rotation_weekend(nurse_name, date):
-                        # Team A / Team B alternating weekends: this weekend
-                        # belongs to the other team.
+                        # Staffing teams alternate weekends: this weekend
+                        # belongs to another staffing team.
                         self.schedule[nurse_name][day_idx] = self.assign_off(nurse_name, date)
                         nurse_consecutive_count[nurse_name] = 0
                     elif self.has_reached_shift_limit(nurse_name, date):

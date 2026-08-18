@@ -11,7 +11,6 @@ class NurseBase(BaseModel):
     seniority: Optional[str] = Field(None, max_length=50)  # e.g., "3Y-283.95D"
     team: Optional[str] = Field(None, max_length=100)
     staffing_role: str = Field("nurse", pattern="^(nurse|assistant_manager)$")
-    weekend_team: Optional[str] = Field(None, min_length=1, max_length=20)
     employment_type: str = Field("full-time", pattern="^(full-time|part-time)$")
     max_weekly_hours: float = Field(37.5, ge=0, le=168)
     target_weekly_hours: Optional[float] = Field(None, ge=0, le=168)
@@ -40,7 +39,6 @@ class NurseUpdate(BaseModel):
     seniority: Optional[str] = Field(None, max_length=50)
     team: Optional[str] = Field(None, max_length=100)
     staffing_role: Optional[str] = Field(None, pattern="^(nurse|assistant_manager)$")
-    weekend_team: Optional[str] = Field(None, min_length=1, max_length=20)
     employment_type: Optional[str] = Field(None, pattern="^(full-time|part-time)$")
     max_weekly_hours: Optional[float] = Field(None, ge=0, le=168)
     target_weekly_hours: Optional[float] = Field(None, ge=0, le=168)

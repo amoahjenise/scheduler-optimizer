@@ -26,8 +26,8 @@ class Nurse(Base):
     # their contract hours) but do NOT count toward nurse staffing requirements.
     staffing_role = Column(String(50), nullable=False, default="nurse")  # "nurse" | "assistant_manager"
 
-    # Optional weekend rotation group ("A" / "B"). Only used when the
-    # organization enables weekend team rotation.
+    # Legacy weekend rotation field. Weekend rotation now uses `team`
+    # (staffing team) as the grouping key.
     weekend_team = Column(String(10), nullable=True)
     
     # Employment details (FTE contract)

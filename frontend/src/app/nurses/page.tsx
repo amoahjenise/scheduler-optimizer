@@ -26,7 +26,6 @@ interface FormData {
   seniority: string;
   team: string;
   staffing_role: "nurse" | "assistant_manager";
-  weekend_team: string;
   employment_type: "full-time" | "part-time";
   max_weekly_hours: number;
   is_chemo_certified: boolean;
@@ -61,7 +60,6 @@ export default function NursesPage() {
     seniority: "",
     team: "",
     staffing_role: "nurse",
-    weekend_team: "",
     employment_type: "full-time",
     max_weekly_hours: fullTimeBiWeeklyTarget,
     is_chemo_certified: false,
@@ -201,7 +199,6 @@ export default function NursesPage() {
       seniority: nurse.seniority || "",
       team: nurse.team || "",
       staffing_role: nurse.staffing_role || "nurse",
-      weekend_team: nurse.weekend_team || "",
       employment_type: nurse.employment_type,
       max_weekly_hours: nurse.max_weekly_hours,
       is_chemo_certified: nurse.is_chemo_certified,
@@ -228,7 +225,6 @@ export default function NursesPage() {
         seniority: formData.seniority || undefined,
         team: formData.team || undefined,
         staffing_role: formData.staffing_role,
-        weekend_team: formData.weekend_team || undefined,
         employment_type: formData.employment_type,
         max_weekly_hours: formData.max_weekly_hours,
         is_chemo_certified: formData.is_chemo_certified,
@@ -506,13 +502,6 @@ export default function NursesPage() {
                               ? t("assistantManager")
                               : t("nurseRole")}
                           </span>
-                          {nurse.weekend_team && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
-                              {t("weekendTeamBadge", {
-                                team: nurse.weekend_team,
-                              })}
-                            </span>
-                          )}
                           <span
                             className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
                               nurse.employment_type === "full-time"
@@ -715,7 +704,7 @@ export default function NursesPage() {
                   </div>
 
                   {/* Employee ID & Seniority Row */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">
                         {t("employeeIdLabel")}
@@ -750,6 +739,10 @@ export default function NursesPage() {
                         placeholder="e.g., 3Y-283.95D"
                       />
                     </div>
+                  </div>
+
+                  {/* Staffing Team & Staffing Role Row */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">
                         {t("staffingTeamLabel")}
@@ -776,10 +769,6 @@ export default function NursesPage() {
                         ))}
                       </select>
                     </div>
-                  </div>
-
-                  {/* Staffing Role & Weekend Team Row */}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1.5">
                         {t("staffingRole")}
@@ -801,23 +790,6 @@ export default function NursesPage() {
                           {t("assistantManager")}
                         </option>
                       </select>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                        {t("weekendTeam")}
-                      </label>
-                      <input
-                        type="text"
-                        value={formData.weekend_team}
-                        onChange={(e) =>
-                          setFormData({
-                            ...formData,
-                            weekend_team: e.target.value,
-                          })
-                        }
-                        className="w-full px-4 py-2.5 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-                        placeholder={t("weekendTeamPlaceholder")}
-                      />
                     </div>
                   </div>
 
